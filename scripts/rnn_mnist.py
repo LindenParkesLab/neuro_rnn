@@ -19,12 +19,12 @@ hidden_size = 128
 num_layers = 2
 
 # MNIST dataset
-train_dataset = torchvision.datasets.MNIST(root='./data',
+train_dataset = torchvision.datasets.MNIST(root='/home/lindenmp/research_projects/neuro_rnn/data',
                                            train=True,
                                            transform=transforms.ToTensor(),
                                            download=True)
 
-test_dataset = torchvision.datasets.MNIST(root='./data',
+test_dataset = torchvision.datasets.MNIST(root='/home/lindenmp/research_projects/neuro_rnn/data',
                                           train=False,
                                           transform=transforms.ToTensor())
 
@@ -44,12 +44,12 @@ class RNN(nn.Module):
         super(RNN, self).__init__()
         self.num_layers = num_layers
         self.hidden_size = hidden_size
-        self.rnn = nn.RNN(input_size, hidden_size, num_layers, batch_first=True)
+        # self.rnn = nn.RNN(input_size, hidden_size, num_layers, batch_first=True)
+        # or:
+        # self.rnn = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
+        self.rnn = nn.GRU(input_size, hidden_size, num_layers, batch_first=True)
         # -> x needs to be: (batch_size, seq, input_size)
 
-        # or:
-        # self.gru = nn.GRU(input_size, hidden_size, num_layers, batch_first=True)
-        # self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
         self.fc = nn.Linear(hidden_size, num_classes)
 
     def forward(self, x):
