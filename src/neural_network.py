@@ -6,16 +6,18 @@ import numpy as np
 
 
 class RNN(nn.Module):
-    def __init__(self, input_size, hidden_size, num_layers, num_classes, type='rnn', nonlinearity='tanh'):
+    def __init__(self, input_size, hidden_size, num_layers, num_classes, type='rnn-tanh'):
         super(RNN, self).__init__()
         self.num_layers = num_layers
         self.hidden_size = hidden_size
-        if type == 'rnn':
-            self.rnn = nn.RNN(input_size, hidden_size, num_layers, nonlinearity=nonlinearity)
+        if type == 'rnn-tanh':
+            self.rnn = nn.RNN(input_size, hidden_size, num_layers, nonlinearity='tanh')
+        elif type == 'rnn-relu':
+            self.rnn = nn.RNN(input_size, hidden_size, num_layers, nonlinearity='relu')
         elif type == 'lstm':
-            self.rnn = nn.LSTM(input_size, hidden_size, num_layers, nonlinearity=nonlinearity)
+            self.rnn = nn.LSTM(input_size, hidden_size, num_layers)
         elif type == 'gru':
-            self.rnn = nn.GRU(input_size, hidden_size, num_layers, nonlinearity=nonlinearity)
+            self.rnn = nn.GRU(input_size, hidden_size, num_layers)
         self.fc = nn.Linear(hidden_size, num_classes)
 
 
