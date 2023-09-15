@@ -67,3 +67,16 @@ def build_reg_ken(n_epochs=1000, hidden_size=200, type='spotlight', buffer_frac=
     elif type == 'comet':
         return kernel - (kernel_lagged * kernel_frac)
 
+def get_p_val_string(p_val):
+    if p_val == 0.0:
+        p_str = "-log10($\mathit{:}$)>25".format('{p}')
+    elif p_val < 0.05:
+        p_str = '$\mathit{:}$ = {:0.0e}'.format('{p}', p_val)
+    # elif p_val < 0.001:
+    #     p_str = '$\mathit{:}$ < 0.001'.format('{p}')
+    # elif p_val >= 0.001 and p_val < 0.05:
+    #     p_str = '$\mathit{:}$ < 0.05'.format('{p}')
+    else:
+        p_str = "$\mathit{:}$ = {:.3f}".format('{p}', p_val)
+
+    return p_str
