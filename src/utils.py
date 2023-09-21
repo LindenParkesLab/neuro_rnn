@@ -6,10 +6,10 @@ def normalize_x(x):
     return (x - np.min(x)) / (np.max(x) - np.min(x))
 
 
-def get_kernel(hidden_size=200, location=0):
+def get_kernel(hidden_size=200, location=0, kernel_std_frac=0.2):
     kernel_size = hidden_size - 1  # kernel size
     kernel_size_half = kernel_size//2  # half size of kernel
-    kernel_std = int((kernel_size-1)*.1)
+    kernel_std = int((kernel_size-1) * kernel_std_frac)
     kernel_1d = signal.gaussian(kernel_size, std=kernel_std).reshape(kernel_size, 1)
     kernel_2d = np.outer(kernel_1d, kernel_1d)
     kernel = np.zeros((hidden_size, hidden_size))
@@ -36,24 +36,24 @@ def map_kernel_to_epochs(n_epochs=1000, hidden_size=200):
     return kernel_location
 
 
-def build_reg_ken(n_epochs=1000, hidden_size=200, type='spotlight', buffer_frac=0.1, kernel_frac=0.25):
+def build_reg_ken(n_epochs=1000, hidden_size=200, kernel_std_frac=0.2, type='spotlight', comet_buffer_frac=0.1, comet_tail_frac=0.25):
     kernel_location = map_kernel_to_epochs(n_epochs=n_epochs, hidden_size=hidden_size)
     # kernel_location = np.flip(kernel_location)
 
     kernel = np.zeros((hidden_size, hidden_size, n_epochs))
     if type == 'additive' or type == 'comet':
         kernel_lagged = np.zeros((hidden_size, hidden_size, n_epochs))
-        buffer = int(n_epochs * buffer_frac)
+        buffer = int(n_epochs * comet_buffer_frac)
 
     for epoch in range(n_epochs):
         if type == 'spotlight':
-            kernel[:, :, epoch] = get_kernel(hidden_size=hidden_size, location=kernel_location[epoch])
+            kernel[:, :, epoch] = get_kernel(hidden_size=hidden_size, location=kernel_location[epoch], kernel_std_frac=kernel_std_frac)
         elif type == 'additive' or type == 'comet':
             if epoch == 0:
-                kernel[:, :, epoch] = get_kernel(hidden_size=hidden_size, location=kernel_location[epoch])
+                kernel[:, :, epoch] = get_kernel(hidden_size=hidden_size, location=kernel_location[epoch], kernel_std_frac=kernel_std_frac)
                 previous_kernel = kernel[:, :, epoch].copy()
             else:
-                new_kernel = get_kernel(hidden_size=hidden_size, location=kernel_location[epoch])
+                new_kernel = get_kernel(hidden_size=hidden_size, location=kernel_location[epoch], kernel_std_frac=kernel_std_frac)
                 new_kernel -= previous_kernel
                 new_kernel[new_kernel < 0] = 0
                 kernel[:, :, epoch] = previous_kernel + new_kernel
@@ -65,7 +65,7 @@ def build_reg_ken(n_epochs=1000, hidden_size=200, type='spotlight', buffer_frac=
     if type == 'spotlight' or type == 'additive':
         return kernel
     elif type == 'comet':
-        return kernel - (kernel_lagged * kernel_frac)
+        return kernel - (kernel_lagged * comet_tail_frac)
 
 def get_p_val_string(p_val):
     if p_val == 0.0:
