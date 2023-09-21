@@ -59,7 +59,14 @@ def train(dataset, args):
     tes_accuracy = np.zeros((args.n_runs, ))
     trained_models = dict()
 
-    if args.kernel_type == 'comet':
+    if args.kernel_type is None:
+        file_str = 'task-{:}-{:}-{:}-{:}_' \
+                   'model-{:}-{:}-{:}-{:}-{:}_' \
+                   'reg-{:}-{:}-{:}' \
+            .format(args.task, args.dt, args.seq_len, args.batch_size,
+                    args.rnn_model, args.hidden_size, args.n_runs, args.n_epochs, args.lr,
+                    args.reg_type, args.reg_weight, args.kernel_type)
+    elif args.kernel_type == 'comet':
         file_str = 'task-{:}-{:}-{:}-{:}_' \
                    'model-{:}-{:}-{:}-{:}-{:}_' \
                    'reg-{:}-{:}-{:}-{:}-{:}-{:}' \

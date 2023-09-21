@@ -154,7 +154,7 @@ def run_testing(dataset, model, n_trials=1000):
         accuracy += gt[-1] == outputs[-1]
 
     accuracy /= n_trials
-    print('Average accuracy across {:d} trials: {:.2f}%'.format(n_trials, accuracy))
+    print('Average accuracy across {:} trials: {:.2f}%'.format(n_trials, accuracy*100))
 
     # t_overall = timer() - t_overall
     # print('Finished testing in {0}'.format(timedelta(seconds=t_overall)))
