@@ -53,22 +53,8 @@ class RNN(nn.Module):
             return out
 
 
-def train(model_environment, n_epochs=1000):
+def run_training(dataset, model, optimizer, criterion, scheduler=None, n_epochs=1000, reg_type='l2', reg_weight=0.001, distance_tensor=None):
     t_overall = timer()
-    # core variables
-    try:
-        dataset = model_environment['dataset']
-        model = model_environment['model']
-
-        optimizer = model_environment['optimizer']
-        criterion = model_environment['criterion']
-
-        reg_type = model_environment['reg_type']
-        reg_weight = model_environment['reg_weight']
-        kernel_type = model_environment['kernel_type']
-    except KeyError:
-        print('Core variables not found')
-
     if next(model.parameters()).is_cuda:
         device = torch.device('cuda')
     else:
@@ -97,12 +83,12 @@ def train(model_environment, n_epochs=1000):
 
         # perform regularization
         reg = 0.0
-        if kernel_type is None:
+        if distance_tensor is None:
             reg += reg_weight * model.regularization(model.rnn.weight_hh_l0, type=reg_type)
-        elif kernel_type == 'euclidean' or kernel_type == 'static':
-            reg += reg_weight * model.regularization(model.rnn.weight_hh_l0, type=reg_type, matrix=model_environment['distance_tensor'])
-        else:
-            reg += reg_weight * model.regularization(model.rnn.weight_hh_l0, type=reg_type, matrix=model_environment['distance_tensor'][:, :, epoch])
+        elif distance_tensor.ndim == 2:
+            reg += reg_weight * model.regularization(model.rnn.weight_hh_l0, type=reg_type, matrix=distance_tensor)
+        elif distance_tensor.ndim == 3:
+            reg += reg_weight * model.regularization(model.rnn.weight_hh_l0, type=reg_type, matrix=distance_tensor[:, :, epoch])
         # add regularization component
         loss += reg
 
@@ -111,14 +97,14 @@ def train(model_environment, n_epochs=1000):
         # perform optimization
         optimizer.step()
         # update scheduler
-        if 'scheduler' in model_environment:
-            model_environment['scheduler'].step()
+        if scheduler is not None:
+            scheduler.step()
 
         training_loss.append(loss.item())
         # print statistics
         running_loss += loss.item()
-        if epoch % 100 == 99:
-            print('epoch {:d}, running loss: {:0.5f}'.format(epoch + 1, running_loss / 100))
+        if epoch % 500 == 499:
+            print('epoch {:d}, running loss: {:0.5f}'.format(epoch + 1, running_loss / 500))
             running_loss = 0.0
 
     t_overall = timer() - t_overall
@@ -127,22 +113,15 @@ def train(model_environment, n_epochs=1000):
     return np.asarray(training_loss)
 
 
-def test(model_environment, n_trials=1000):
-    t_overall = timer()
-    # core variables
-    try:
-        dataset = model_environment['dataset']
-        model = model_environment['model']
-    except KeyError:
-        print('Core variables not found')
-
+def run_testing(dataset, model, n_trials=1000):
+    # t_overall = timer()
     if next(model.parameters()).is_cuda:
         device = torch.device('cuda')
     else:
         device = torch.device('cpu')
 
     # compute test performance
-    performance = 0
+    accuracy = 0
     for trial in range(n_trials):
         dataset.env.reset(seed=trial)
         dataset.env.new_trial()
@@ -155,12 +134,12 @@ def test(model_environment, n_trials=1000):
         except:
             outputs = outputs.detach().numpy()
         outputs = np.argmax(outputs, axis=-1).squeeze()
-        performance += gt[-1] == outputs[-1]
+        accuracy += gt[-1] == outputs[-1]
 
-    performance /= n_trials
-    print('Average performance in {:d} trials: {:.2f}'.format(n_trials, performance))
+    accuracy /= n_trials
+    print('Average accuracy across {:d} trials: {:.2f}%'.format(n_trials, accuracy))
 
-    t_overall = timer() - t_overall
-    print('Finished testing in {0}'.format(timedelta(seconds=t_overall)))
+    # t_overall = timer() - t_overall
+    # print('Finished testing in {0}'.format(timedelta(seconds=t_overall)))
 
-    return performance
+    return accuracy
