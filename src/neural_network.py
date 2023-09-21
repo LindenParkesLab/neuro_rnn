@@ -35,13 +35,13 @@ class RNN(nn.Module):
         # output_mask[:, int(hidden_size-(hidden_size * (1 - frac))):] = True
         self.register_buffer('output_mask', output_mask)
 
-        gain = 1.0
-        for m in self.modules():
-            if isinstance(m, nn.RNN):
-                init.xavier_normal_(m.weight_ih_l0, gain=gain)
-                init.xavier_normal_(m.weight_hh_l0, gain=gain)
-            elif isinstance(m, nn.Linear):
-                init.xavier_normal_(m.weight, gain=gain)
+        # gain = 1.0
+        # for m in self.modules():
+        #     if isinstance(m, nn.RNN):
+        #         init.xavier_uniform_(m.weight_ih_l0, gain=gain)
+        #         init.xavier_uniform_(m.weight_hh_l0, gain=gain)
+        #     elif isinstance(m, nn.Linear):
+        #         init.xavier_uniform_(m.weight, gain=gain)
 
 
     def regularization(self, w, type='l1', matrix=None):
