@@ -142,7 +142,7 @@ def get_args():
     parser.add_argument('--reg_type', type=str, default='l2')
     parser.add_argument('--reg_weight', type=float, default=0.001)
     parser.add_argument('--kernel_type', type=str, default=None)
-    parser.add_argument('--kernel_std_frac', type=float, default=0.2)
+    parser.add_argument('--kernel_std_frac', type=float, default=0.25)
     parser.add_argument('--comet_buffer_frac', type=float, default=0.1)
     parser.add_argument('--comet_tail_frac', type=float, default=0.25)
 
