@@ -1,168 +1,155 @@
-import os, random, time
-from timeit import default_timer as timer
-from datetime import timedelta
+import os, random, argparse
 import numpy as np
-import scipy as sp
 from scipy.spatial import distance
-from scipy import signal
 import pandas as pd
-import bct
 import neurogym as ngym
+from tqdm import tqdm
 
 import torch
 import torch.nn as nn
 # Device configuration
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-torch.backends.cudnn.enabled = True
-torch.backends.cudnn.deterministic = True
 
-from src.neural_network import RNN
+from src.neural_network import RNN, run_training, run_testing
 from src.utils import normalize_x, build_reg_ken
 
-#%%
-# parameters
+# %%
+def train(dataset, args):
+    # setup output dir
+    if not os.path.exists(args.outdir):
+        os.makedirs(args.outdir)
 
-# task
-task = 'PerceptualDecisionMaking-v0'
-# task = 'MultiSensoryIntegration-v0'
-kwargs = {'dt': 100}
-seq_len = 200
-batch_size = 128
+    # get basic task params
+    input_size = dataset.env.observation_space.shape[0]
+    num_classes = dataset.env.action_space.n
 
-# RNN
-# architecture
-hidden_size = 200
-n_epochs = 1000
-num_layers = 1
-# optimizer
-learning_rate = 0.001
-eps = 1e-08
-betas = (0.9, 0.999)
-# regularization
-# reg_type = 'l1'
-reg_type = 'l2'
-reg_weight = 0.001
-
-#%%
-datadir = '/home/lindenmp/research_projects/neuro_rnn/data'
-# modeldir = '/home/lindenmp/research_projects/neuro_rnn/results/models'
-modeldir = '/media/lindenmp/storage/research_projects/neuro_rnn/results/pytorch/model'
-if not os.path.exists(modeldir):
-    os.makedirs(modeldir)
-
-if hidden_size == 400:
-    centroids = pd.read_csv(os.path.join(datadir, 'hcp_schaefer400_centroids.csv'))
-else:
-    centroids = pd.read_csv(os.path.join(datadir, 'hcp_schaefer200_centroids.csv'))
-
-centroids.set_index("ROI Name", inplace=True)
-centroids = centroids[:hidden_size]
-print(centroids.head())
-
-distance_matrix = distance.pdist(centroids, "euclidean")  # get euclidean distances between nodes
-distance_matrix = distance.squareform(distance_matrix)  # reshape to square matrix
-distance_matrix = normalize_x(distance_matrix)
-
-#%%
-# Make supervised dataset
-dataset = ngym.Dataset(task, env_kwargs=kwargs, batch_size=batch_size, seq_len=seq_len)
-input_size = dataset.env.observation_space.shape[0]
-num_classes = dataset.env.action_space.n
-
-#%%
-rnn_models = ['rnn-tanh', 'rnn-relu', 'lstm', 'gru']
-# kernels = [None, 'standard', 'spotlight', 'additive', 'comet']
-kernels = [None, 'euclidean', 'static', 'additive', 'comet']
-runs = 50
-
-for rnn_model in rnn_models:
-    for kernel_type in kernels:
-        # regularization
-        if kernel_type is None:
-            pass  # no distance penalty
-        elif kernel_type == 'euclidean':
-            # static distance matrix for regularization
-            distance_tensor = torch.from_numpy(distance_matrix).type(torch.float).to(device)
-        elif kernel_type == 'static':
-            # dynamic distance matrix for regularization
-            kernel = build_reg_ken(n_epochs=n_epochs, hidden_size=hidden_size, type='additive')
-            distance_kernel = 1 - kernel[:, :, -1]
-            distance_tensor = torch.from_numpy(distance_kernel).type(torch.float).to(device)
+    # setup regularization kernel
+    if args.kernel_type is None:
+        # no distance penalty
+        distance_tensor = None
+    elif args.kernel_type == 'euclidean':
+        # static distance matrix for regularization
+        if args.hidden_size == 400:
+            centroids = pd.read_csv(os.path.join(args.datadir, 'hcp_schaefer400_centroids.csv'))
         else:
-            # dynamic distance matrix for regularization
-            kernel = build_reg_ken(n_epochs=n_epochs, hidden_size=hidden_size, type=kernel_type)
-            distance_kernel = 1 - kernel
-            distance_tensor = torch.from_numpy(distance_kernel).type(torch.float).to(device)
+            centroids = pd.read_csv(os.path.join(args.datadir, 'hcp_schaefer200_centroids.csv'))
 
-        for run in np.arange(runs):
-            print(task, rnn_model, kernel_type, run)
-            file_str = '{:}_' \
-                       '{:}-{:}-{:}-{:}_' \
-                       '{:}-{:}-{:}_' \
-                       'run-{:}'.format(task,
-                                    rnn_model, hidden_size, n_epochs, learning_rate,
-                                    kernel_type, reg_type, reg_weight,
-                                    run)
+        centroids.set_index("ROI Name", inplace=True)
+        centroids = centroids[:args.hidden_size]
+        distance_matrix = distance.pdist(centroids, "euclidean")  # get euclidean distances between nodes
+        distance_matrix = distance.squareform(distance_matrix)  # reshape to square matrix
+        distance_matrix = normalize_x(distance_matrix)
 
-            if os.path.isfile(os.path.join(modeldir, file_str + '.pt')):
-                print('skipping..')
-            else:
-                t_overall = timer()
+        distance_tensor = torch.from_numpy(distance_matrix).type(torch.float).to(device)
+    elif args.kernel_type == 'static':
+        # dynamic distance matrix for regularization
+        kernel = build_reg_ken(n_epochs=args.n_epochs, hidden_size=args.hidden_size, kernel_std_frac=args.kernel_std_frac,
+                               type='additive', comet_buffer_frac=args.comet_buffer_frac, comet_tail_frac=args.comet_tail_frac)
+        distance_kernel = 1 - kernel[:, :, -1]
+        distance_tensor = torch.from_numpy(distance_kernel).type(torch.float).to(device)
+    else:
+        # dynamic distance matrix for regularization
+        kernel = build_reg_ken(n_epochs=args.n_epochs, hidden_size=args.hidden_size, kernel_std_frac=args.kernel_std_frac,
+                               type=args.kernel_type, comet_buffer_frac=args.comet_buffer_frac, comet_tail_frac=args.comet_tail_frac)
+        distance_kernel = 1 - kernel
+        distance_tensor = torch.from_numpy(distance_kernel).type(torch.float).to(device)
 
-                # seed random seed for reproducibility across runs
-                random.seed(run)
-                np.random.seed(run)
-                torch.manual_seed(run)
-                torch.cuda.manual_seed(run)
-                torch.cuda.manual_seed_all(run)
+    # variable containers
+    tra_loss = np.zeros((args.n_runs, args.n_epochs))
+    tes_accuracy = np.zeros((args.n_runs, ))
+    trained_models = dict()
 
-                # instantiate model
-                model = RNN(input_size, hidden_size, num_layers, num_classes, type=rnn_model).to(device)
-                # Loss and optimizer
-                criterion = nn.CrossEntropyLoss()
-                optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, betas=betas, eps=eps)
+    if args.kernel_type == 'comet':
+        file_str = 'task-{:}-{:}-{:}-{:}_' \
+                   'model-{:}-{:}-{:}-{:}-{:}_' \
+                   'reg-{:}-{:}-{:}-{:}-{:}-{:}' \
+            .format(args.task, args.dt, args.seq_len, args.batch_size,
+                    args.rnn_model, args.hidden_size, args.n_runs, args.n_epochs, args.lr,
+                    args.reg_type, args.reg_weight, args.kernel_type, args.kernel_std_frac, args.comet_buffer_frac, args.comet_tail_frac)
+    else:
+        file_str = 'task-{:}-{:}-{:}-{:}_' \
+                   'model-{:}-{:}-{:}-{:}-{:}_' \
+                   'reg-{:}-{:}-{:}-{:}' \
+            .format(args.task, args.dt, args.seq_len, args.batch_size,
+                    args.rnn_model, args.hidden_size, args.n_runs, args.n_epochs, args.lr,
+                    args.reg_type, args.reg_weight, args.kernel_type, args.kernel_std_frac)
+    print('\n')
+    print(file_str)
 
-                # Train the model
-                running_loss = 0.0
-                for epoch in range(n_epochs):
-                    # get data
-                    dataset.env.reset(seed=epoch)
-                    inputs, labels = dataset()
-                    inputs = torch.from_numpy(inputs).type(torch.float).to(device)
-                    labels = torch.from_numpy(labels.flatten()).type(torch.long).to(device)
-                    # zero the parameter gradients
-                    optimizer.zero_grad()
-                    # outputs
-                    outputs = model(inputs)
-                    # loss
-                    loss = criterion(outputs.view(-1, num_classes), labels)
-                    # regularization
-                    reg = 0.0
-                    for parameter in model.parameters():
-                        if parameter.ndim == 2 and parameter.shape[0] == hidden_size and parameter.shape[1] == hidden_size:
-                            if kernel_type is None:
-                                reg += reg_weight * model.regularization(parameter, type=reg_type)
-                            elif kernel_type == 'euclidean' or kernel_type == 'static':
-                                reg += reg_weight * model.regularization(parameter, type=reg_type, matrix=distance_tensor)
-                            else:
-                                reg += reg_weight * model.regularization(parameter, type=reg_type, matrix=distance_tensor[:, :, epoch])
-                            break
-                    # add regularization component
-                    loss += reg
-                    # perform backward pass
-                    loss.backward()
-                    # perform optimization
-                    optimizer.step()
+    for run in np.arange(args.n_runs):
+        print('Run {:}'.format(run))
+        # seed random seed for reproducibility across runs
+        random.seed(run)
+        np.random.seed(run)
+        torch.manual_seed(run)
+        torch.cuda.manual_seed(run)
+        torch.cuda.manual_seed_all(run)
 
-                    # print statistics
-                    running_loss += loss.item()
-                    if epoch == 0 or epoch % 100 == 99:
-                        print('{:d} loss: {:0.5f}'.format(epoch + 1, running_loss / 200))
-                        running_loss = 0.0
-                        # print(reg)
+        # initialize the model
+        model = RNN(input_size, args.hidden_size, num_classes, type=args.rnn_model).to(device)
+        optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+        criterion = nn.CrossEntropyLoss()
+        scheduler = None
+        # train the model
+        tra_loss[run, :] = run_training(dataset=dataset, model=model, optimizer=optimizer, criterion=criterion,
+                                        scheduler=scheduler, n_epochs=args.n_epochs, reg_type=args.reg_type,
+                                        reg_weight=args.reg_weight, distance_tensor=distance_tensor)
+        # test model performance
+        tes_accuracy[run] = run_testing(dataset=dataset, model=model, n_trials=1000)
+        # store trained model
+        trained_models[run] = model.state_dict()
 
-                t_overall = timer() - t_overall
-                print('Finished Training in {0}'.format(timedelta(seconds=t_overall)))
+    # save model and outputs
+    torch.save(trained_models, os.path.join(args.outdir, file_str + '.pt'))
+    log_args = {
+        'tra_loss': tra_loss,
+        'tes_accuracy': tes_accuracy
+    }
+    np.save(os.path.join(args.outdir, file_str), log_args)
 
-                # save model parameters
-                torch.save(model.state_dict(), os.path.join(modeldir, file_str + '.pt'))
+def get_args():
+    '''function to get args from command line and return the args
+
+    Returns:
+        args: args that could be used by other function
+    '''
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument('--datadir', type=str, default='/home/lindenmp/research_projects/neuro_rnn/data')
+    parser.add_argument('--outdir', type=str, default='/media/lindenmp/storage/research_projects/neuro_rnn/results/pytorch/model')
+
+    # data parameters
+    parser.add_argument('--task', type=str, default='PerceptualDecisionMaking-v0')
+    parser.add_argument('--dt', type=int, default=100)
+    parser.add_argument('--seq_len', type=int, default=200)
+    parser.add_argument('--batch_size', type=int, default=128)
+
+    # RNN model and training parameters
+    parser.add_argument('--rnn_model', type=str, default='rnn-tanh')
+    parser.add_argument('--hidden_size', type=int, default=200)
+    parser.add_argument('--n_runs', type=int, default=50)
+    parser.add_argument('--n_epochs', type=int, default=5000)
+    parser.add_argument('--lr', type=float, default=0.001)
+
+    # regularization parameters
+    parser.add_argument('--reg_type', type=str, default='l2')
+    parser.add_argument('--reg_weight', type=float, default=0.001)
+    parser.add_argument('--kernel_type', type=str, default=None)
+    parser.add_argument('--kernel_std_frac', type=float, default=0.2)
+    parser.add_argument('--comet_buffer_frac', type=float, default=0.1)
+    parser.add_argument('--comet_tail_frac', type=float, default=0.25)
+
+    args = parser.parse_args()
+    args.datadir = os.path.expanduser(args.datadir)
+    args.outdir = os.path.expanduser(args.outdir)
+
+    return args
+
+
+if __name__ == '__main__':
+    args = get_args()
+
+    kwargs = {'dt': args.dt}
+    dataset = ngym.Dataset(args.task, env_kwargs=kwargs, batch_size=args.batch_size, seq_len=args.seq_len)
+
+    train(dataset=dataset, args=args)
