@@ -25,12 +25,23 @@ class RNN(nn.Module):
             self.rnn = nn.GRU(input_size, hidden_size, 1)
         self.fc = nn.Linear(hidden_size, num_classes)
 
+        frac = 0.33
+        input_mask = torch.zeros((hidden_size, input_size)).bool()
+        input_mask[:int(hidden_size * frac), :] = True
+        self.register_buffer('input_mask', input_mask)
+
+        output_mask = torch.zeros((num_classes, hidden_size)).bool()
+        output_mask[:, int(hidden_size-(hidden_size * frac)):] = True
+        # output_mask[:, int(hidden_size-(hidden_size * (1 - frac))):] = True
+        self.register_buffer('output_mask', output_mask)
+
+        gain = 1.0
         for m in self.modules():
             if isinstance(m, nn.RNN):
-                # init.xavier_uniform_(m.weight_ih_l0)
-                init.xavier_uniform_(m.weight_hh_l0)
+                init.xavier_normal_(m.weight_ih_l0, gain=gain)
+                init.xavier_normal_(m.weight_hh_l0, gain=gain)
             elif isinstance(m, nn.Linear):
-                init.xavier_uniform_(m.weight)
+                init.xavier_normal_(m.weight, gain=gain)
 
 
     def regularization(self, w, type='l1', matrix=None):
@@ -45,6 +56,11 @@ class RNN(nn.Module):
 
 
     def forward(self, x, return_hidden=False):
+        with torch.no_grad():
+            self.rnn.weight_ih_l0.mul_(self.input_mask)
+            self.rnn.bias_ih_l0.mul_(self.input_mask[:, 0])
+            self.fc.weight.mul_(self.output_mask)
+
         out, hidden = self.rnn(x)
         out = self.fc(out)
 
