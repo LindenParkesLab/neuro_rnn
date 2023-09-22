@@ -141,7 +141,7 @@ def get_args():
     # regularization parameters
     parser.add_argument('--reg_type', type=str, default='l2')
     parser.add_argument('--reg_weight', type=float, default=0.001)
-    parser.add_argument('--kernel_type', type=str, default=None)
+    parser.add_argument('--kernel_type', type=str, default='None')
     parser.add_argument('--kernel_std_frac', type=float, default=0.25)
     parser.add_argument('--comet_buffer_frac', type=float, default=0.1)
     parser.add_argument('--comet_tail_frac', type=float, default=0.25)
@@ -155,6 +155,9 @@ def get_args():
 
 if __name__ == '__main__':
     args = get_args()
+
+    if args.kernel_type == 'None':
+        args.kernel_type = None
 
     kwargs = {'dt': args.dt}
     dataset = ngym.Dataset(args.task, env_kwargs=kwargs, batch_size=args.batch_size, seq_len=args.seq_len)
