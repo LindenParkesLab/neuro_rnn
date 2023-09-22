@@ -10,11 +10,13 @@ import numpy as np
 
 
 class RNN(nn.Module):
-    def __init__(self, input_size, hidden_size, num_classes, type='rnn-tanh'):
+    def __init__(self, input_size, hidden_size, num_classes, type='rnn-tanh', mask_weights=False):
         super(RNN, self).__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.num_classes = num_classes
+        self.mask_weights = mask_weights
+
         if type == 'rnn-tanh':
             self.rnn = nn.RNN(input_size, hidden_size, 1, nonlinearity='tanh')
         elif type == 'rnn-relu':
@@ -25,15 +27,16 @@ class RNN(nn.Module):
             self.rnn = nn.GRU(input_size, hidden_size, 1)
         self.fc = nn.Linear(hidden_size, num_classes)
 
-        frac = 0.33
-        input_mask = torch.zeros((hidden_size, input_size)).bool()
-        input_mask[:int(hidden_size * frac), :] = True
-        self.register_buffer('input_mask', input_mask)
+        if self.mask_weights:
+            frac = 0.33
+            input_mask = torch.zeros((hidden_size, input_size)).bool()
+            input_mask[:int(hidden_size * frac), :] = True
+            self.register_buffer('input_mask', input_mask)
 
-        output_mask = torch.zeros((num_classes, hidden_size)).bool()
-        output_mask[:, int(hidden_size-(hidden_size * frac)):] = True
-        # output_mask[:, int(hidden_size-(hidden_size * (1 - frac))):] = True
-        self.register_buffer('output_mask', output_mask)
+            output_mask = torch.zeros((num_classes, hidden_size)).bool()
+            output_mask[:, int(hidden_size-(hidden_size * frac)):] = True
+            # output_mask[:, int(hidden_size-(hidden_size * (1 - frac))):] = True
+            self.register_buffer('output_mask', output_mask)
 
         # gain = 1.0
         # for m in self.modules():
@@ -56,10 +59,11 @@ class RNN(nn.Module):
 
 
     def forward(self, x, return_hidden=False):
-        with torch.no_grad():
-            self.rnn.weight_ih_l0.mul_(self.input_mask)
-            self.rnn.bias_ih_l0.mul_(self.input_mask[:, 0])
-            self.fc.weight.mul_(self.output_mask)
+        if self.mask_weights:
+            with torch.no_grad():
+                self.rnn.weight_ih_l0.mul_(self.input_mask)
+                self.rnn.bias_ih_l0.mul_(self.input_mask[:, 0])
+                self.fc.weight.mul_(self.output_mask)
 
         out, hidden = self.rnn(x)
         out = self.fc(out)

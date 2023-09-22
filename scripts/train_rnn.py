@@ -62,23 +62,29 @@ def train(dataset, args):
     if args.kernel_type is None:
         file_str = 'task-{:}-{:}-{:}-{:}_' \
                    'model-{:}-{:}-{:}-{:}-{:}_' \
+                   'wmask-{:}_' \
                    'reg-{:}-{:}-{:}' \
             .format(args.task, args.dt, args.seq_len, args.batch_size,
                     args.rnn_model, args.hidden_size, args.n_runs, args.n_epochs, args.lr,
+                    args.mask_weights,
                     args.reg_type, args.reg_weight, args.kernel_type)
     elif args.kernel_type == 'comet':
         file_str = 'task-{:}-{:}-{:}-{:}_' \
                    'model-{:}-{:}-{:}-{:}-{:}_' \
+                   'wmask-{:}_' \
                    'reg-{:}-{:}-{:}-{:}-{:}-{:}' \
             .format(args.task, args.dt, args.seq_len, args.batch_size,
                     args.rnn_model, args.hidden_size, args.n_runs, args.n_epochs, args.lr,
+                    args.mask_weights,
                     args.reg_type, args.reg_weight, args.kernel_type, args.kernel_std_frac, args.comet_buffer_frac, args.comet_tail_frac)
     else:
         file_str = 'task-{:}-{:}-{:}-{:}_' \
                    'model-{:}-{:}-{:}-{:}-{:}_' \
+                   'wmask-{:}_' \
                    'reg-{:}-{:}-{:}-{:}' \
             .format(args.task, args.dt, args.seq_len, args.batch_size,
                     args.rnn_model, args.hidden_size, args.n_runs, args.n_epochs, args.lr,
+                    args.mask_weights,
                     args.reg_type, args.reg_weight, args.kernel_type, args.kernel_std_frac)
     print('\n')
     print(file_str)
@@ -93,7 +99,7 @@ def train(dataset, args):
         torch.cuda.manual_seed_all(run)
 
         # initialize the model
-        model = RNN(input_size, args.hidden_size, num_classes, type=args.rnn_model).to(device)
+        model = RNN(input_size, args.hidden_size, num_classes, type=args.rnn_model, mask_weights=args.mask_weights).to(device)
         optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
         criterion = nn.CrossEntropyLoss()
         scheduler = None
@@ -137,6 +143,7 @@ def get_args():
     parser.add_argument('--n_runs', type=int, default=50)
     parser.add_argument('--n_epochs', type=int, default=5000)
     parser.add_argument('--lr', type=float, default=0.001)
+    parser.add_argument('--mask_weights', type=str, default='False')
 
     # regularization parameters
     parser.add_argument('--reg_type', type=str, default='l2')
@@ -158,6 +165,10 @@ if __name__ == '__main__':
 
     if args.kernel_type == 'None':
         args.kernel_type = None
+    if args.mask_weights == 'False':
+        args.mask_weights = False
+    elif args.mask_weights == 'True':
+        args.mask_weights = True
 
     kwargs = {'dt': args.dt}
     dataset = ngym.Dataset(args.task, env_kwargs=kwargs, batch_size=args.batch_size, seq_len=args.seq_len)
