@@ -58,7 +58,7 @@ class RNN(nn.Module):
             return torch.mul(torch.square(w), matrix).sum()
 
 
-    def forward(self, x, return_hidden=False):
+    def forward(self, x):
         if self.mask_weights:
             with torch.no_grad():
                 self.rnn.weight_ih_l0.mul_(self.input_mask)
@@ -66,12 +66,9 @@ class RNN(nn.Module):
                 self.fc.weight.mul_(self.output_mask)
 
         out, hidden = self.rnn(x)
-        out = self.fc(out)
+        x = self.fc(out)
 
-        if return_hidden:
-            return out, hidden
-        else:
-            return out
+        return x, out
 
 
 def run_training(dataset, model, optimizer, criterion, scheduler=None, n_epochs=1000, reg_type='l2', reg_weight=0.001, distance_tensor=None):
