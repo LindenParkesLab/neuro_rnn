@@ -7,6 +7,7 @@ import torch.utils.data
 import torch.nn as nn
 import torch.nn.init as init
 import numpy as np
+import pandas as pd
 
 
 class RNN(nn.Module):
@@ -94,7 +95,7 @@ def run_training(dataset, model, optimizer, criterion, scheduler=None, n_epochs=
         optimizer.zero_grad()
 
         # get model outputs
-        outputs = model(inputs)
+        outputs, _ = model(inputs)
 
         # compute loss
         loss = criterion(outputs.view(-1, model.num_classes), labels)
@@ -131,6 +132,15 @@ def run_training(dataset, model, optimizer, criterion, scheduler=None, n_epochs=
     return np.asarray(training_loss)
 
 
+def infer_test_timing(env):
+    """Infer timing of environment for testing."""
+    timing = {}
+    for period in env.timing.keys():
+        period_times = [env.sample_time(period) for _ in range(100)]
+        timing[period] = np.median(period_times)
+    return timing
+
+
 def run_testing(dataset, model, n_trials=1000):
     # t_overall = timer()
     if next(model.parameters()).is_cuda:
@@ -138,26 +148,47 @@ def run_testing(dataset, model, n_trials=1000):
     else:
         device = torch.device('cpu')
 
-    # compute test performance
-    accuracy = 0
-    for trial in range(n_trials):
-        dataset.env.reset(seed=trial)
-        dataset.env.new_trial()
-        ob, gt = dataset.env.ob, dataset.env.gt
-        ob = ob[:, np.newaxis, :]  # Add batch axis
-        inputs = torch.from_numpy(ob).type(torch.float).to(device)
-        outputs = model(inputs)
-        try:
-            outputs = outputs.detach().cpu().numpy()
-        except:
-            outputs = outputs.detach().numpy()
-        outputs = np.argmax(outputs, axis=-1).squeeze()
-        accuracy += gt[-1] == outputs[-1]
+    # Environment
+    env = dataset.env
+    env.timing = infer_test_timing(env)
+    env.reset(no_step=True)
 
-    accuracy /= n_trials
-    print('Average accuracy across {:} trials: {:.2f}%'.format(n_trials, accuracy*100))
+    with torch.no_grad():
+        # compute test performance
+        activity = list()
+        info = pd.DataFrame()
+        for trial in range(n_trials):
+            env.reset(seed=trial)
+            env.new_trial()
+            ob, gt = env.ob, env.gt
+            inputs = torch.from_numpy(ob[:, np.newaxis, :]).type(torch.float).to(device)
+            action_pred, hidden = model(inputs)
 
-    # t_overall = timer() - t_overall
-    # print('Finished testing in {0}'.format(timedelta(seconds=t_overall)))
+            # detach
+            try:
+                action_pred = action_pred.detach().cpu().numpy()
+                hidden = hidden.detach().cpu().numpy()
+            except:
+                action_pred = action_pred.detach().numpy()
+                hidden = hidden.detach().numpy()
 
-    return accuracy
+            # Compute performance
+            choice = np.argmax(action_pred[-1, 0, :])
+            correct = choice == gt[-1]
+
+            # Log stimulus period activity
+            activity.append(np.array(hidden)[:, 0, :])
+
+            # Log trial info
+            trial_info = env.trial
+            trial_info.update({'correct': correct, 'choice': choice})
+            info = pd.concat((info, pd.DataFrame([trial_info])), ignore_index=True)
+
+        activity = np.array(activity)
+        accuracy = np.mean(info['correct'])
+        print('Average accuracy across {:} trials: {:.2f}%'.format(n_trials, accuracy*100))
+
+        # t_overall = timer() - t_overall
+        # print('Finished testing in {0}'.format(timedelta(seconds=t_overall)))
+
+        return accuracy, activity, info
