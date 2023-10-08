@@ -14,82 +14,115 @@ from src.neural_network import RNN, run_training, run_testing
 from src.utils import normalize_x, build_reg_ken
 
 # %%
-def train(dataset, args):
-    # setup output dir
-    if not os.path.exists(args.outdir):
-        os.makedirs(args.outdir)
+def train(config):
+    # get config params
+    datadir = config['datadir']
+    outdir = config['outdir']
 
-    # get basic task params
+    # task parameters
+    task = config['task']
+    dataset = config['dataset']
     input_size = dataset.env.observation_space.shape[0]
     num_classes = dataset.env.action_space.n
+    decision = config['env_kwargs']['timing']['decision']
+
+    # RNN model and training parameters
+    rnn_model = config['rnn_model']
+    hidden_size = config['hidden_size']
+    n_runs = config['n_runs']
+    n_epochs = config['n_epochs']
+    lr = config['lr']
+    mask_weights = config['mask_weights']
+
+    # regularization parameters
+    reg_type = config['reg_type']
+    reg_weight = config['reg_weight']
+    kernel_type = config['kernel_type']
+    kernel_std_frac = config['kernel_std_frac']
+    comet_buffer_frac = config['comet_buffer_frac']
+    comet_tail_frac = config['comet_tail_frac']
+
+    # setup output dir
+    if not os.path.exists(outdir):
+        os.makedirs(outdir)
 
     # setup regularization kernel
-    if args.kernel_type is None:
+    if kernel_type is None:
         # no distance penalty
-        distance_tensor = None
-    elif args.kernel_type == 'euclidean':
+        regularization_kernel = None
+    elif kernel_type == 'euclidean':
         # static distance matrix for regularization
-        if args.hidden_size == 400:
-            centroids = pd.read_csv(os.path.join(args.datadir, 'hcp_schaefer400_centroids.csv'))
+        if hidden_size == 400:
+            centroids = pd.read_csv(os.path.join(datadir, 'hcp_schaefer400_centroids.csv'))
         else:
-            centroids = pd.read_csv(os.path.join(args.datadir, 'hcp_schaefer200_centroids.csv'))
+            centroids = pd.read_csv(os.path.join(datadir, 'hcp_schaefer200_centroids.csv'))
 
         centroids.set_index("ROI Name", inplace=True)
-        centroids = centroids[:args.hidden_size]
+        centroids = centroids[:hidden_size]
         distance_matrix = distance.pdist(centroids, "euclidean")  # get euclidean distances between nodes
         distance_matrix = distance.squareform(distance_matrix)  # reshape to square matrix
-        distance_matrix = normalize_x(distance_matrix)
-
-        distance_tensor = torch.from_numpy(distance_matrix).type(torch.float).to(device)
-    elif args.kernel_type == 'static':
+        regularization_kernel = normalize_x(distance_matrix)
+    elif kernel_type == 'static':
         # dynamic distance matrix for regularization
-        kernel = build_reg_ken(n_epochs=args.n_epochs, hidden_size=args.hidden_size, kernel_std_frac=args.kernel_std_frac,
-                               type='additive', comet_buffer_frac=args.comet_buffer_frac, comet_tail_frac=args.comet_tail_frac)
-        distance_kernel = 1 - kernel[:, :, -1]
-        distance_tensor = torch.from_numpy(distance_kernel).type(torch.float).to(device)
+        kernel = build_reg_ken(n_epochs=n_epochs, hidden_size=hidden_size, kernel_std_frac=kernel_std_frac,
+                               type='additive', comet_buffer_frac=comet_buffer_frac, comet_tail_frac=comet_tail_frac)
+        regularization_kernel = 1 - kernel[:, :, -1]
     else:
         # dynamic distance matrix for regularization
-        kernel = build_reg_ken(n_epochs=args.n_epochs, hidden_size=args.hidden_size, kernel_std_frac=args.kernel_std_frac,
-                               type=args.kernel_type, comet_buffer_frac=args.comet_buffer_frac, comet_tail_frac=args.comet_tail_frac)
-        distance_kernel = 1 - kernel
-        distance_tensor = torch.from_numpy(distance_kernel).type(torch.float).to(device)
+        kernel = build_reg_ken(n_epochs=n_epochs, hidden_size=hidden_size, kernel_std_frac=kernel_std_frac,
+                               type=kernel_type, comet_buffer_frac=comet_buffer_frac, comet_tail_frac=comet_tail_frac)
+        regularization_kernel = 1 - kernel
+
+    # setup weight masks
+    if mask_weights:
+        frac = 0.33
+        idx = int(hidden_size * frac)
+
+        output_weight_mask = np.zeros((num_classes, hidden_size)).astype(bool)
+        output_weight_mask[:, int(hidden_size - idx):] = True
+
+        input_weight_mask = np.zeros((hidden_size, input_size)).astype(bool)
+        input_weight_mask[:idx, :] = True
+    else:
+        input_weight_mask = None
+        output_weight_mask = None
 
     # variable containers
-    tra_loss = np.zeros((args.n_runs, args.n_epochs))
-    tes_accuracy = np.zeros((args.n_runs, ))
+    tra_loss = np.zeros((n_runs, n_epochs))
+    tes_accuracy = np.zeros((n_runs, ))
     trained_models = dict()
 
-    if args.kernel_type is None:
-        file_str = 'task-{:}-{:}-{:}-{:}_' \
+    if kernel_type is None:
+        file_str = 'task-{:}-{:}_' \
                    'model-{:}-{:}-{:}-{:}-{:}_' \
                    'wmask-{:}_' \
                    'reg-{:}-{:}-{:}' \
-            .format(args.task, args.dt, args.seq_len, args.batch_size,
-                    args.rnn_model, args.hidden_size, args.n_runs, args.n_epochs, args.lr,
-                    args.mask_weights,
-                    args.reg_type, args.reg_weight, args.kernel_type)
-    elif args.kernel_type == 'comet':
-        file_str = 'task-{:}-{:}-{:}-{:}_' \
+            .format(task, decision,
+                    rnn_model, hidden_size, n_runs, n_epochs, lr,
+                    mask_weights,
+                    reg_type, reg_weight, kernel_type)
+    elif kernel_type == 'comet':
+        file_str = 'task-{:}-{:}_' \
                    'model-{:}-{:}-{:}-{:}-{:}_' \
                    'wmask-{:}_' \
                    'reg-{:}-{:}-{:}-{:}-{:}-{:}' \
-            .format(args.task, args.dt, args.seq_len, args.batch_size,
-                    args.rnn_model, args.hidden_size, args.n_runs, args.n_epochs, args.lr,
-                    args.mask_weights,
-                    args.reg_type, args.reg_weight, args.kernel_type, args.kernel_std_frac, args.comet_buffer_frac, args.comet_tail_frac)
+            .format(task, decision,
+                    rnn_model, hidden_size, n_runs, n_epochs, lr,
+                    mask_weights,
+                    reg_type, reg_weight, kernel_type, kernel_std_frac, comet_buffer_frac, comet_tail_frac)
     else:
-        file_str = 'task-{:}-{:}-{:}-{:}_' \
+        file_str = 'task-{:}-{:}_' \
                    'model-{:}-{:}-{:}-{:}-{:}_' \
                    'wmask-{:}_' \
                    'reg-{:}-{:}-{:}-{:}' \
-            .format(args.task, args.dt, args.seq_len, args.batch_size,
-                    args.rnn_model, args.hidden_size, args.n_runs, args.n_epochs, args.lr,
-                    args.mask_weights,
-                    args.reg_type, args.reg_weight, args.kernel_type, args.kernel_std_frac)
+            .format(task, decision,
+                    rnn_model, hidden_size, n_runs, n_epochs, lr,
+                    mask_weights,
+                    reg_type, reg_weight, kernel_type, kernel_std_frac)
     print('\n')
     print(file_str)
 
-    for run in np.arange(args.n_runs):
+    for run in np.arange(n_runs):
         print('Run {:}'.format(run))
         # seed random seed for reproducibility across runs
         random.seed(run)
@@ -99,26 +132,27 @@ def train(dataset, args):
         torch.cuda.manual_seed_all(run)
 
         # initialize the model
-        model = RNN(input_size, args.hidden_size, num_classes, type=args.rnn_model, mask_weights=args.mask_weights).to(device)
-        optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+        model = RNN(input_size=input_size, hidden_size=hidden_size, num_classes=num_classes,
+                    type=rnn_model, regularization_kernel=regularization_kernel,
+                    input_weight_mask=input_weight_mask, output_weight_mask=output_weight_mask).to(device)
+        optimizer = torch.optim.Adam(model.parameters(), lr=lr)
         criterion = nn.CrossEntropyLoss()
         scheduler = None
         # train the model
         tra_loss[run, :] = run_training(dataset=dataset, model=model, optimizer=optimizer, criterion=criterion,
-                                        scheduler=scheduler, n_epochs=args.n_epochs, reg_type=args.reg_type,
-                                        reg_weight=args.reg_weight, distance_tensor=distance_tensor)
+                                        config=config, scheduler=scheduler)
         # test model performance
-        tes_accuracy[run] = run_testing(dataset=dataset, model=model, n_trials=1000)
+        tes_accuracy[run], _, _ = run_testing(dataset=dataset, model=model, n_trials=1000)
         # store trained model
         trained_models[run] = model.state_dict()
 
     # save model and outputs
-    torch.save(trained_models, os.path.join(args.outdir, file_str + '.pt'))
+    torch.save(trained_models, os.path.join(outdir, file_str + '.pt'))
     log_args = {
         'tra_loss': tra_loss,
         'tes_accuracy': tes_accuracy
     }
-    np.save(os.path.join(args.outdir, file_str), log_args)
+    np.save(os.path.join(outdir, file_str), log_args)
 
 def get_args():
     '''function to get args from command line and return the args
@@ -129,13 +163,14 @@ def get_args():
     parser = argparse.ArgumentParser()
 
     parser.add_argument('--datadir', type=str, default='/home/lindenmp/research_projects/neuro_rnn/data')
-    parser.add_argument('--outdir', type=str, default='/media/lindenmp/storage/research_projects/neuro_rnn/results/pytorch/model')
+    parser.add_argument('--outdir', type=str, default='/media/lindenmp/storage_ssd/research_projects/neuro_rnn/results/pytorch/model')
 
     # data parameters
     parser.add_argument('--task', type=str, default='PerceptualDecisionMaking-v0')
     parser.add_argument('--dt', type=int, default=100)
     parser.add_argument('--seq_len', type=int, default=200)
     parser.add_argument('--batch_size', type=int, default=128)
+    parser.add_argument('--decision', type=int, default=300)
 
     # RNN model and training parameters
     parser.add_argument('--rnn_model', type=str, default='rnn-tanh')
@@ -170,7 +205,39 @@ if __name__ == '__main__':
     elif args.mask_weights == 'True':
         args.mask_weights = True
 
-    kwargs = {'dt': args.dt}
-    dataset = ngym.Dataset(args.task, env_kwargs=kwargs, batch_size=args.batch_size, seq_len=args.seq_len)
+    timing = {'decision': args.decision}
+    env_kwargs = {'dt': args.dt, 'timing': timing}
 
-    train(dataset=dataset, args=args)
+    config = {
+        'datadir': args.datadir,
+        'outdir': args.outdir,
+
+        # task parameters
+        'task': args.task,
+        'dt': args.dt,
+        'seq_len': args.seq_len,
+        'batch_size': args.batch_size,
+
+        # RNN model and training parameters
+        'rnn_model': args.rnn_model,
+        'hidden_size': args.hidden_size,
+        'n_runs': args.n_runs,
+        'n_epochs': args.n_epochs,
+        'lr': args.lr,
+        'mask_weights': args.mask_weights,
+
+        # regularization parameters
+        'reg_type': args.reg_type,
+        'reg_weight': args.reg_weight,
+        'kernel_type': args.kernel_type,
+        'kernel_std_frac': args.kernel_std_frac,
+        'comet_buffer_frac': args.comet_buffer_frac,
+        'comet_tail_frac': args.comet_tail_frac,
+
+        'env_kwargs': env_kwargs
+    }
+
+    dataset = ngym.Dataset(config['task'], env_kwargs=config['env_kwargs'],
+                           batch_size=config['batch_size'], seq_len=config['seq_len'])
+    config['dataset'] = dataset
+    train(config=config)
