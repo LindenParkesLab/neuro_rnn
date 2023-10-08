@@ -1,4 +1,5 @@
 import numpy as np
+import scipy as sp
 from scipy import signal
 
 
@@ -80,3 +81,73 @@ def get_p_val_string(p_val):
         p_str = "$\mathit{:}$ = {:.3f}".format('{p}', p_val)
 
     return p_str
+
+
+def fix_labels(labels, decision=4, trim=2):
+    labels_out = labels.copy()
+    batch_size = labels.shape[1]
+    cut = decision - trim
+
+    x = labels_out != 0
+    x_pad = np.zeros((cut, batch_size)).astype(bool)
+    y = np.append(x[cut:, :], x_pad, axis=0)
+    xy = x*y
+    labels_out[xy] = 0
+
+    return labels_out
+
+
+def bandpower(ts, fs, fmin, fmax):
+    """
+    Helper function for compute_rlfp.
+
+    Parameters
+    ----------
+    ts : np.array (n_timepoints,)
+        time series
+    fs : np.float
+        sampling frequency
+    fs : np.fmin
+        minimum frequency of interest
+    fs : np.fmax
+        maximum frequency of interest
+    Returns
+    -------
+    rlfp : np.float
+        relative low frequency power
+    """
+
+    f, Pxx = sp.signal.periodogram(ts, fs=fs)
+    ind_min = np.argmax(f > fmin) - 1
+    ind_max = np.argmax(f > fmax) - 1
+
+    return np.trapz(Pxx[ind_min: ind_max], f[ind_min: ind_max])
+
+def compute_rlfp(ts, tr, low=None, high=None, num_bands=5, band_of_interest=1):
+    """
+    Parameters
+    ----------
+    ts : np.array (n_timepoints,)
+        time series
+    tr : np.float
+        tr in seconds
+
+    Returns
+    -------
+    rlfp : np.float
+        relative low frequency power
+    """
+
+    sample_freq = 1 / tr
+    nyq_freq = sample_freq / 2
+
+    y = sp.stats.zscore(ts)
+
+    if low is None and high is None:
+        band_intervals = np.linspace(0, nyq_freq, num_bands + 1)
+    else:
+        band_intervals = np.linspace(low, high, num_bands + 1)
+
+    band_freq_range = band_intervals[band_of_interest - 1:band_of_interest + 1]
+
+    return bandpower(y, sample_freq, band_freq_range[0], band_freq_range[1])
