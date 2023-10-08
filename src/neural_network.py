@@ -9,6 +9,7 @@ import torch.nn.init as init
 import numpy as np
 import pandas as pd
 
+from src.utils import fix_labels
 
 class RNN(nn.Module):
     def __init__(self, input_size, hidden_size, num_classes,
@@ -83,12 +84,19 @@ class RNN(nn.Module):
         return x, out
 
 
-def run_training(dataset, model, optimizer, criterion, scheduler=None, n_epochs=1000, reg_type='l2', reg_weight=0.001, distance_tensor=None):
+def run_training(dataset, model, optimizer, criterion, config, scheduler=None):
+    model.train()
     t_overall = timer()
     if next(model.parameters()).is_cuda:
         device = torch.device('cuda')
     else:
         device = torch.device('cpu')
+    dt = config['dt']
+    decision = config['env_kwargs']['timing']['decision']
+    n_epochs = config['n_epochs']
+    reg_type = config['reg_type']
+    reg_weight = config['reg_weight']
+    trim = int((decision - 100) / dt)
 
     # output container
     training_loss = []
@@ -99,6 +107,7 @@ def run_training(dataset, model, optimizer, criterion, scheduler=None, n_epochs=
         # get data
         dataset.env.reset(seed=epoch)
         inputs, labels = dataset()
+        labels = fix_labels(labels, decision=int(decision / dt), trim=trim)
         inputs = torch.from_numpy(inputs).type(torch.float).to(device)
         labels = torch.from_numpy(labels.flatten()).type(torch.long).to(device)
 
@@ -112,13 +121,15 @@ def run_training(dataset, model, optimizer, criterion, scheduler=None, n_epochs=
         loss = criterion(outputs.view(-1, model.num_classes), labels)
 
         # perform regularization
-        reg = 0.0
-        if distance_tensor is None:
-            reg += reg_weight * model.regularization(model.rnn.weight_hh_l0, type=reg_type)
-        elif distance_tensor.ndim == 2:
-            reg += reg_weight * model.regularization(model.rnn.weight_hh_l0, type=reg_type, matrix=distance_tensor)
-        elif distance_tensor.ndim == 3:
-            reg += reg_weight * model.regularization(model.rnn.weight_hh_l0, type=reg_type, matrix=distance_tensor[:, :, epoch])
+        if model.regularization_kernel is None:
+            reg = reg_weight * model.regularization(model.rnn.weight_hh_l0, type=reg_type)
+        else:
+            if model.regularization_kernel.ndim == 2:
+                reg = reg_weight * model.regularization(model.rnn.weight_hh_l0, type=reg_type,
+                                                        matrix=model.regularization_kernel)
+            elif model.regularization_kernel.ndim == 3:
+                reg = reg_weight * model.regularization(model.rnn.weight_hh_l0, type=reg_type,
+                                                        matrix=model.regularization_kernel[:, :, epoch])
         # add regularization component
         loss += reg
 
@@ -153,6 +164,7 @@ def infer_test_timing(env):
 
 
 def run_testing(dataset, model, n_trials=1000):
+    model.eval()
     # t_overall = timer()
     if next(model.parameters()).is_cuda:
         device = torch.device('cuda')
