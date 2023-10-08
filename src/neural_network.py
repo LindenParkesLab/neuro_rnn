@@ -11,12 +11,12 @@ import pandas as pd
 
 
 class RNN(nn.Module):
-    def __init__(self, input_size, hidden_size, num_classes, type='rnn-tanh', mask_weights=False):
+    def __init__(self, input_size, hidden_size, num_classes,
+                 type='rnn-tanh', regularization_kernel=None, input_weight_mask=None, output_weight_mask=None):
         super(RNN, self).__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.num_classes = num_classes
-        self.mask_weights = mask_weights
 
         if type == 'rnn-tanh':
             self.rnn = nn.RNN(input_size, hidden_size, 1, nonlinearity='tanh')
@@ -28,25 +28,35 @@ class RNN(nn.Module):
             self.rnn = nn.GRU(input_size, hidden_size, 1)
         self.fc = nn.Linear(hidden_size, num_classes)
 
-        if self.mask_weights:
-            frac = 0.33
-            input_mask = torch.zeros((hidden_size, input_size)).bool()
-            input_mask[:int(hidden_size * frac), :] = True
-            self.register_buffer('input_mask', input_mask)
+        if type == 'lstm':
+            n_repeats = 4
+        elif type == 'gru':
+            n_repeats = 3
+        else:
+            n_repeats = 1
 
-            output_mask = torch.zeros((num_classes, hidden_size)).bool()
-            output_mask[:, int(hidden_size-(hidden_size * frac)):] = True
-            # output_mask[:, int(hidden_size-(hidden_size * (1 - frac))):] = True
-            self.register_buffer('output_mask', output_mask)
+        if regularization_kernel is not None:
+            regularization_kernel = torch.from_numpy(regularization_kernel).type(torch.float)
+            if regularization_kernel.ndim == 2:
+                regularization_kernel = regularization_kernel.repeat(n_repeats, 1)
+            elif regularization_kernel.ndim == 3:
+                regularization_kernel = regularization_kernel.repeat(n_repeats, 1, 1)
+            self.register_buffer('regularization_kernel', regularization_kernel)
+        else:
+            self.regularization_kernel = regularization_kernel
 
-        # gain = 1.0
-        # for m in self.modules():
-        #     if isinstance(m, nn.RNN):
-        #         init.xavier_uniform_(m.weight_ih_l0, gain=gain)
-        #         init.xavier_uniform_(m.weight_hh_l0, gain=gain)
-        #     elif isinstance(m, nn.Linear):
-        #         init.xavier_uniform_(m.weight, gain=gain)
+        if input_weight_mask is not None:
+            input_weight_mask = torch.from_numpy(input_weight_mask).type(torch.float)
+            input_weight_mask = input_weight_mask.repeat(n_repeats, 1)
+            self.register_buffer('input_weight_mask', input_weight_mask)
+        else:
+            self.input_weight_mask = input_weight_mask
 
+        if output_weight_mask is not None:
+            output_weight_mask = torch.from_numpy(output_weight_mask).type(torch.float)
+            self.register_buffer('output_weight_mask', output_weight_mask)
+        else:
+            self.output_weight_mask = output_weight_mask
 
     def regularization(self, w, type='l1', matrix=None):
         if type == 'l1' and matrix is None:
@@ -60,11 +70,12 @@ class RNN(nn.Module):
 
 
     def forward(self, x):
-        if self.mask_weights:
-            with torch.no_grad():
-                self.rnn.weight_ih_l0.mul_(self.input_mask)
-                self.rnn.bias_ih_l0.mul_(self.input_mask[:, 0])
-                self.fc.weight.mul_(self.output_mask)
+        with torch.no_grad():
+            if self.input_weight_mask is not None:
+                self.rnn.weight_ih_l0.mul_(self.input_weight_mask)
+                self.rnn.bias_ih_l0.mul_(self.input_weight_mask[:, 0])
+            if self.output_weight_mask is not None:
+                self.fc.weight.mul_(self.output_weight_mask)
 
         out, hidden = self.rnn(x)
         x = self.fc(out)
