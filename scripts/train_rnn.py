@@ -90,6 +90,11 @@ def train(config):
     # variable containers
     tra_loss = np.zeros((n_runs, n_epochs))
     tes_accuracy = np.zeros((n_runs, ))
+    n_trials = 1000
+    dataset.env.reset(seed=0)
+    dataset.env.new_trial()
+    activity = np.zeros((n_runs, n_trials, dataset.env.gt.shape[0], hidden_size))
+    info = dict()
     trained_models = dict()
 
     if kernel_type is None:
@@ -125,11 +130,11 @@ def train(config):
     for run in np.arange(n_runs):
         print('Run {:}'.format(run))
         # seed random seed for reproducibility across runs
-        random.seed(run)
-        np.random.seed(run)
-        torch.manual_seed(run)
-        torch.cuda.manual_seed(run)
-        torch.cuda.manual_seed_all(run)
+        random.seed(int(run))
+        np.random.seed(int(run))
+        torch.manual_seed(int(run))
+        torch.cuda.manual_seed(int(run))
+        torch.cuda.manual_seed_all(int(run))
 
         # initialize the model
         model = RNN(input_size=input_size, hidden_size=hidden_size, num_classes=num_classes,
@@ -142,7 +147,7 @@ def train(config):
         tra_loss[run, :] = run_training(dataset=dataset, model=model, optimizer=optimizer, criterion=criterion,
                                         config=config, scheduler=scheduler)
         # test model performance
-        tes_accuracy[run], _, _ = run_testing(dataset=dataset, model=model, n_trials=1000)
+        tes_accuracy[run], activity[run], info[run] = run_testing(dataset=dataset, model=model, n_trials=n_trials)
         # store trained model
         trained_models[run] = model.state_dict()
 
@@ -150,7 +155,9 @@ def train(config):
     torch.save(trained_models, os.path.join(outdir, file_str + '.pt'))
     log_args = {
         'tra_loss': tra_loss,
-        'tes_accuracy': tes_accuracy
+        'tes_accuracy': tes_accuracy,
+        'activity': activity,
+        'info': info
     }
     np.save(os.path.join(outdir, file_str), log_args)
 
