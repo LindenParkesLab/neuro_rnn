@@ -94,31 +94,42 @@ def run_training(dataset, model, optimizer, criterion, config, scheduler=None):
     dt = config['dt']
     decision = config['env_kwargs']['timing']['decision']
     n_epochs = config['n_epochs']
+    batch_size = config['batch_size']
     reg_type = config['reg_type']
     reg_weight = config['reg_weight']
     trim = int((decision - 100) / dt)
 
     # output container
     training_loss = []
+    running_loss = 0.0
+    validation_loss = []
+    running_loss_val = 0.0
+    test_accuracy = []
 
     # Train the model
-    running_loss = 0.0
     for epoch in range(n_epochs):
         # get data
-        dataset.env.reset(seed=epoch)
+        dataset.env.reset(seed=int(n_epochs+epoch))
         inputs, labels = dataset()
         labels = fix_labels(labels, decision=int(decision / dt), trim=trim)
-        inputs = torch.from_numpy(inputs).type(torch.float).to(device)
-        labels = torch.from_numpy(labels.flatten()).type(torch.long).to(device)
+        # split into train and validation
+        inputs_tra = inputs[:, :int(batch_size/2), :]
+        inputs_val = inputs[:, int(batch_size/2):, :]
+        labels_tra = labels[:, :int(batch_size/2)]
+        labels_val = labels[:, int(batch_size/2):]
+        # convert to tensor
+        inputs_tra = torch.from_numpy(inputs_tra).type(torch.float).to(device)
+        inputs_val = torch.from_numpy(inputs_val).type(torch.float).to(device)
+        labels_tra = torch.from_numpy(labels_tra.flatten()).type(torch.long).to(device)
+        labels_val = torch.from_numpy(labels_val.flatten()).type(torch.long).to(device)
 
         # zero the parameter gradients
         optimizer.zero_grad()
 
-        # get model outputs
-        outputs, _ = model(inputs)
-
-        # compute loss
-        loss = criterion(outputs.view(-1, model.num_classes), labels)
+        # get model outputs for training data
+        outputs, _ = model(inputs_tra)
+        # compute loss for training data
+        loss = criterion(outputs.view(-1, model.num_classes), labels_tra)
 
         # perform regularization
         if model.regularization_kernel is None:
@@ -140,18 +151,42 @@ def run_training(dataset, model, optimizer, criterion, config, scheduler=None):
         # update scheduler
         if scheduler is not None:
             scheduler.step()
-
+        # store loss
         training_loss.append(loss.item())
+
+        # validation
+        with torch.no_grad():
+            # get model outputs for validation data
+            outputs_val, _ = model(inputs_val)
+            # compute loss for validation data
+            loss_val = criterion(outputs_val.view(-1, model.num_classes), labels_val)
+            # store validation loss
+            validation_loss.append(loss_val.item())
+
         # print statistics
         running_loss += loss.item()
-        if epoch % 500 == 499:
-            print('epoch {:d}, running loss: {:0.5f}'.format(epoch + 1, running_loss / 500))
+        running_loss_val += loss_val.item()
+        n_trials = 1000
+        if epoch == 0:
+            model.eval()
+            tes_accuracy, activity, info = run_testing(dataset=dataset, model=model, n_trials=n_trials, verbose=False)
+            test_accuracy.append(tes_accuracy)
+            model.train()
+        elif epoch % 500 == 499:
+            model.eval()
+            tes_accuracy, activity, info = run_testing(dataset=dataset, model=model, n_trials=n_trials, verbose=False)
+            test_accuracy.append(tes_accuracy)
+            model.train()
+
+            print('epoch {:d} | running training loss: {:0.5f} | running validation loss: {:0.5f} | test accuracy: {:0.2f}%'
+                  .format(epoch + 1, running_loss / 500, running_loss_val / 500, tes_accuracy * 100))
             running_loss = 0.0
+            running_loss_val = 0.0
 
     t_overall = timer() - t_overall
     print('Finished training in {0}'.format(timedelta(seconds=t_overall)))
 
-    return np.asarray(training_loss)
+    return np.asarray(training_loss), np.asarray(validation_loss), np.asarray(test_accuracy)
 
 
 def infer_test_timing(env):
@@ -163,9 +198,7 @@ def infer_test_timing(env):
     return timing
 
 
-def run_testing(dataset, model, n_trials=1000):
-    model.eval()
-    # t_overall = timer()
+def run_testing(dataset, model, n_trials=1000, verbose=True):
     if next(model.parameters()).is_cuda:
         device = torch.device('cuda')
     else:
@@ -181,7 +214,7 @@ def run_testing(dataset, model, n_trials=1000):
         activity = list()
         info = pd.DataFrame()
         for trial in range(n_trials):
-            env.reset(seed=trial)
+            env.reset(seed=int(trial))
             env.new_trial()
             ob, gt = env.ob, env.gt
             inputs = torch.from_numpy(ob[:, np.newaxis, :]).type(torch.float).to(device)
@@ -209,9 +242,7 @@ def run_testing(dataset, model, n_trials=1000):
 
         activity = np.array(activity)
         accuracy = np.mean(info['correct'])
-        print('Average accuracy across {:} trials: {:.2f}%'.format(n_trials, accuracy*100))
-
-        # t_overall = timer() - t_overall
-        # print('Finished testing in {0}'.format(timedelta(seconds=t_overall)))
+        if verbose:
+            print('Average accuracy across {:} trials: {:.2f}%'.format(n_trials, accuracy*100))
 
         return accuracy, activity, info
