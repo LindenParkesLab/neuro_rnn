@@ -9,6 +9,7 @@ import torch
 import torch.nn as nn
 # Device configuration
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print(device)
 
 from src.neural_network import RNN, run_training, run_testing
 from src.utils import normalize_x, build_reg_ken
@@ -66,12 +67,14 @@ def train(config):
         # dynamic distance matrix for regularization
         kernel = build_reg_ken(n_epochs=n_epochs, hidden_size=hidden_size, kernel_std_frac=kernel_std_frac,
                                type='additive', comet_buffer_frac=comet_buffer_frac, comet_tail_frac=comet_tail_frac)
-        regularization_kernel = 1 - kernel[:, :, -1]
+        regularization_kernel = 1 - kernel[:, :, -1].copy()
+        del kernel
     else:
         # dynamic distance matrix for regularization
         kernel = build_reg_ken(n_epochs=n_epochs, hidden_size=hidden_size, kernel_std_frac=kernel_std_frac,
                                type=kernel_type, comet_buffer_frac=comet_buffer_frac, comet_tail_frac=comet_tail_frac)
-        regularization_kernel = 1 - kernel
+        regularization_kernel = 1 - kernel.copy()
+        del kernel
 
     # setup weight masks
     if mask_weights:
@@ -88,13 +91,13 @@ def train(config):
         output_weight_mask = None
 
     # variable containers
-    tra_loss = np.zeros((n_runs, n_epochs))
-    tes_accuracy = np.zeros((n_runs, ))
+    training_loss = np.zeros((n_runs, n_epochs))
+    validation_loss = np.zeros((n_runs, n_epochs))
+    test_accuracy = np.zeros((n_runs, int((n_epochs/500)+1)))
     n_trials = 1000
     dataset.env.reset(seed=0)
     dataset.env.new_trial()
     activity = np.zeros((n_runs, n_trials, dataset.env.gt.shape[0], hidden_size))
-    info = dict()
     trained_models = dict()
 
     if kernel_type is None:
@@ -144,20 +147,20 @@ def train(config):
         criterion = nn.CrossEntropyLoss()
         scheduler = None
         # train the model
-        tra_loss[run, :] = run_training(dataset=dataset, model=model, optimizer=optimizer, criterion=criterion,
-                                        config=config, scheduler=scheduler)
+        training_loss[run, :], validation_loss[run, :], test_accuracy[run, :] = run_training(dataset=dataset, model=model, optimizer=optimizer,
+                                                                                             criterion=criterion, config=config, scheduler=scheduler)
         # test model performance
-        tes_accuracy[run], activity[run], info[run] = run_testing(dataset=dataset, model=model, n_trials=n_trials)
+        _, activity[run], _ = run_testing(dataset=dataset, model=model, n_trials=n_trials)
         # store trained model
         trained_models[run] = model.state_dict()
 
     # save model and outputs
     torch.save(trained_models, os.path.join(outdir, file_str + '.pt'))
     log_args = {
-        'tra_loss': tra_loss,
-        'tes_accuracy': tes_accuracy,
+        'training_loss': training_loss,
+        'validation_loss': validation_loss,
+        'test_accuracy': test_accuracy,
         'activity': activity,
-        'info': info
     }
     np.save(os.path.join(outdir, file_str), log_args)
 
