@@ -105,6 +105,7 @@ def run_training(dataset, model, optimizer, criterion, config, scheduler=None):
     validation_loss = []
     running_loss_val = 0.0
     test_accuracy = []
+    hidden_weights = []
 
     # Train the model
     for epoch in range(n_epochs):
@@ -166,27 +167,36 @@ def run_training(dataset, model, optimizer, criterion, config, scheduler=None):
         # print statistics
         running_loss += loss.item()
         running_loss_val += loss_val.item()
-        n_trials = 1000
+        n_trials = 100
+        epoch_log = 100
         if epoch == 0:
             model.eval()
             tes_accuracy, activity, info = run_testing(dataset=dataset, model=model, n_trials=n_trials, verbose=False)
             test_accuracy.append(tes_accuracy)
+            hidden_weights.append(model.rnn.weight_hh_l0.detach().cpu().numpy())
             model.train()
-        elif epoch % 500 == 499:
+        elif epoch % epoch_log == int(epoch_log-1):
             model.eval()
             tes_accuracy, activity, info = run_testing(dataset=dataset, model=model, n_trials=n_trials, verbose=False)
             test_accuracy.append(tes_accuracy)
+            hidden_weights.append(model.rnn.weight_hh_l0.detach().cpu().numpy())
             model.train()
 
             print('epoch {:d} | running training loss: {:0.5f} | running validation loss: {:0.5f} | test accuracy: {:0.2f}%'
-                  .format(epoch + 1, running_loss / 500, running_loss_val / 500, tes_accuracy * 100))
+                  .format(epoch + 1, running_loss / epoch_log, running_loss_val / epoch_log, tes_accuracy * 100))
             running_loss = 0.0
             running_loss_val = 0.0
 
     t_overall = timer() - t_overall
     print('Finished training in {0}'.format(timedelta(seconds=t_overall)))
 
-    return np.asarray(training_loss), np.asarray(validation_loss), np.asarray(test_accuracy)
+    training_loss = np.asarray(training_loss)
+    validation_loss = np.asarray(validation_loss)
+    test_accuracy = np.asarray(test_accuracy)
+    hidden_weights = np.asarray(hidden_weights)
+    hidden_weights = np.transpose(hidden_weights, axes=[1, 2, 0])
+
+    return training_loss, validation_loss, test_accuracy, hidden_weights
 
 
 def infer_test_timing(env):

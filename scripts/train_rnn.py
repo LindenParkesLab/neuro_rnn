@@ -25,6 +25,8 @@ def train(config):
     dataset = config['dataset']
     input_size = dataset.env.observation_space.shape[0]
     num_classes = dataset.env.action_space.n
+    seq_len = config['seq_len']
+    batch_size = config['batch_size']
     decision = config['env_kwargs']['timing']['decision']
 
     # RNN model and training parameters
@@ -93,7 +95,16 @@ def train(config):
     # variable containers
     training_loss = np.zeros((n_runs, n_epochs))
     validation_loss = np.zeros((n_runs, n_epochs))
-    test_accuracy = np.zeros((n_runs, int((n_epochs/500)+1)))
+    epoch_log = 100
+    test_accuracy = np.zeros((n_runs, int((n_epochs/epoch_log)+1)))
+    if rnn_model == 'lstm':
+        n_repeats = 4
+    elif rnn_model == 'gru':
+        n_repeats = 3
+    else:
+        n_repeats = 1
+    hidden_weights = np.zeros((n_runs, hidden_size * n_repeats, hidden_size, int((n_epochs/epoch_log)+1)))
+
     n_trials = 1000
     dataset.env.reset(seed=0)
     dataset.env.new_trial()
@@ -101,29 +112,29 @@ def train(config):
     trained_models = dict()
 
     if kernel_type is None:
-        file_str = 'task-{:}-{:}_' \
+        file_str = 'task-{:}-{:}-{:}-{:}_' \
                    'model-{:}-{:}-{:}-{:}-{:}_' \
                    'wmask-{:}_' \
                    'reg-{:}-{:}-{:}' \
-            .format(task, decision,
+            .format(task, seq_len, batch_size, decision,
                     rnn_model, hidden_size, n_runs, n_epochs, lr,
                     mask_weights,
                     reg_type, reg_weight, kernel_type)
     elif kernel_type == 'comet':
-        file_str = 'task-{:}-{:}_' \
+        file_str = 'task-{:}-{:}-{:}-{:}_' \
                    'model-{:}-{:}-{:}-{:}-{:}_' \
                    'wmask-{:}_' \
                    'reg-{:}-{:}-{:}-{:}-{:}-{:}' \
-            .format(task, decision,
+            .format(task, seq_len, batch_size, decision,
                     rnn_model, hidden_size, n_runs, n_epochs, lr,
                     mask_weights,
                     reg_type, reg_weight, kernel_type, kernel_std_frac, comet_buffer_frac, comet_tail_frac)
     else:
-        file_str = 'task-{:}-{:}_' \
+        file_str = 'task-{:}-{:}-{:}-{:}_' \
                    'model-{:}-{:}-{:}-{:}-{:}_' \
                    'wmask-{:}_' \
                    'reg-{:}-{:}-{:}-{:}' \
-            .format(task, decision,
+            .format(task, seq_len, batch_size, decision,
                     rnn_model, hidden_size, n_runs, n_epochs, lr,
                     mask_weights,
                     reg_type, reg_weight, kernel_type, kernel_std_frac)
@@ -147,8 +158,11 @@ def train(config):
         criterion = nn.CrossEntropyLoss()
         scheduler = None
         # train the model
-        training_loss[run, :], validation_loss[run, :], test_accuracy[run, :] = run_training(dataset=dataset, model=model, optimizer=optimizer,
-                                                                                             criterion=criterion, config=config, scheduler=scheduler)
+        training_loss[run, :],\
+        validation_loss[run, :], \
+        test_accuracy[run, :], \
+        hidden_weights[run, :, :, :] = run_training(dataset=dataset, model=model, optimizer=optimizer,
+                                                    criterion=criterion, config=config, scheduler=scheduler)
         # test model performance
         _, activity[run], _ = run_testing(dataset=dataset, model=model, n_trials=n_trials)
         # store trained model
@@ -160,6 +174,7 @@ def train(config):
         'training_loss': training_loss,
         'validation_loss': validation_loss,
         'test_accuracy': test_accuracy,
+        'hidden_weights': hidden_weights,
         'activity': activity,
     }
     np.save(os.path.join(outdir, file_str), log_args)
