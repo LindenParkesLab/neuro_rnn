@@ -49,6 +49,9 @@ def train(config):
     if not os.path.exists(outdir):
         os.makedirs(outdir)
 
+    # for weight masks
+    frac = 0.33
+
     # setup regularization kernel
     if kernel_type is None:
         # no distance penalty
@@ -71,6 +74,21 @@ def train(config):
                                type='additive', comet_buffer_frac=comet_buffer_frac, comet_tail_frac=comet_tail_frac)
         regularization_kernel = 1 - kernel[:, :, -1].copy()
         del kernel
+    elif kernel_type == 'constant':
+        # dynamic distance matrix for regularization
+        kernel = build_reg_ken(n_epochs=n_epochs, hidden_size=hidden_size, kernel_std_frac=kernel_std_frac,
+                               type='additive', comet_buffer_frac=comet_buffer_frac, comet_tail_frac=comet_tail_frac)
+        regularization_kernel = 1 - kernel[:, :, -1].copy()
+        del kernel
+
+        idx = int(hidden_size * frac)
+        input_weight_mask = np.zeros((hidden_size, input_size)).astype(bool)
+        input_weight_mask[:idx, :] = True
+        output_weight_mask = np.zeros((num_classes, hidden_size)).astype(bool)
+        output_weight_mask[:, int(hidden_size - idx):] = True
+
+        min_val = np.min(regularization_kernel[:, input_weight_mask[:, 0]][output_weight_mask[0, :], :])
+        regularization_kernel[:] = min_val
     else:
         # dynamic distance matrix for regularization
         kernel = build_reg_ken(n_epochs=n_epochs, hidden_size=hidden_size, kernel_std_frac=kernel_std_frac,
@@ -80,14 +98,11 @@ def train(config):
 
     # setup weight masks
     if mask_weights:
-        frac = 0.33
         idx = int(hidden_size * frac)
-
-        output_weight_mask = np.zeros((num_classes, hidden_size)).astype(bool)
-        output_weight_mask[:, int(hidden_size - idx):] = True
-
         input_weight_mask = np.zeros((hidden_size, input_size)).astype(bool)
         input_weight_mask[:idx, :] = True
+        output_weight_mask = np.zeros((num_classes, hidden_size)).astype(bool)
+        output_weight_mask[:, int(hidden_size - idx):] = True
     else:
         input_weight_mask = None
         output_weight_mask = None
