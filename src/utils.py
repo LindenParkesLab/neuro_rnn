@@ -84,17 +84,20 @@ def get_p_val_string(p_val):
 
 
 def fix_labels(labels, decision=4, trim=2):
-    labels_out = labels.copy()
-    batch_size = labels.shape[1]
-    cut = decision - trim
+    if trim == 0:
+        return labels
+    else:
+        labels_out = labels.copy()
+        batch_size = labels.shape[1]
+        cut = decision - trim
 
-    x = labels_out != 0
-    x_pad = np.zeros((cut, batch_size)).astype(bool)
-    y = np.append(x[cut:, :], x_pad, axis=0)
-    xy = x*y
-    labels_out[xy] = 0
+        x = labels_out != 0
+        x_pad = np.zeros((cut, batch_size)).astype(bool)
+        y = np.append(x[cut:, :], x_pad, axis=0)
+        xy = x*y
+        labels_out[xy] = 0
 
-    return labels_out
+        return labels_out
 
 
 def bandpower(ts, fs, fmin, fmax):
