@@ -12,7 +12,7 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(device)
 
 from src.neural_network import RNN, run_training, run_testing
-from src.utils import normalize_x, build_reg_ken
+from src.utils import normalize_x, build_reg_ken, get_weight_masks
 
 # %%
 def train(config):
@@ -49,8 +49,9 @@ def train(config):
     if not os.path.exists(outdir):
         os.makedirs(outdir)
 
-    # for weight masks
+    # weight masks
     frac = 0.33
+    masks = get_weight_masks(hidden_size=hidden_size, frac=frac)
 
     # setup regularization kernel
     if kernel_type is None:
@@ -79,16 +80,9 @@ def train(config):
         kernel = build_reg_ken(n_epochs=n_epochs, hidden_size=hidden_size, kernel_std_frac=kernel_std_frac,
                                type='additive', comet_buffer_frac=comet_buffer_frac, comet_tail_frac=comet_tail_frac)
         regularization_kernel = 1 - kernel[:, :, -1].copy()
-        del kernel
-
-        idx = int(hidden_size * frac)
-        input_weight_mask = np.zeros((hidden_size, input_size)).astype(bool)
-        input_weight_mask[:idx, :] = True
-        output_weight_mask = np.zeros((num_classes, hidden_size)).astype(bool)
-        output_weight_mask[:, int(hidden_size - idx):] = True
-
-        min_val = np.min(regularization_kernel[:, input_weight_mask[:, 0]][output_weight_mask[0, :], :])
+        min_val = np.min(regularization_kernel[masks['mask_bu']])
         regularization_kernel[:] = min_val
+        del kernel
     else:
         # dynamic distance matrix for regularization
         kernel = build_reg_ken(n_epochs=n_epochs, hidden_size=hidden_size, kernel_std_frac=kernel_std_frac,
@@ -98,11 +92,8 @@ def train(config):
 
     # setup weight masks
     if mask_weights:
-        idx = int(hidden_size * frac)
-        input_weight_mask = np.zeros((hidden_size, input_size)).astype(bool)
-        input_weight_mask[:idx, :] = True
-        output_weight_mask = np.zeros((num_classes, hidden_size)).astype(bool)
-        output_weight_mask[:, int(hidden_size - idx):] = True
+        input_weight_mask = masks['input_weight_mask']
+        output_weight_mask = masks['output_weight_mask']
     else:
         input_weight_mask = None
         output_weight_mask = None
@@ -112,14 +103,6 @@ def train(config):
     validation_loss = np.zeros((n_runs, n_epochs))
     epoch_log = 100
     test_accuracy = np.zeros((n_runs, int((n_epochs/epoch_log)+1)))
-    if rnn_model == 'lstm':
-        n_repeats = 4
-    elif rnn_model == 'gru':
-        n_repeats = 3
-    else:
-        n_repeats = 1
-    hidden_weights = np.zeros((n_runs, hidden_size * n_repeats, hidden_size, int((n_epochs/epoch_log)+1)))
-
     n_trials = 1000
     dataset.env.reset(seed=0)
     dataset.env.new_trial()
@@ -173,15 +156,11 @@ def train(config):
         criterion = nn.CrossEntropyLoss()
         scheduler = None
         # train the model
-        training_loss[run, :],\
-        validation_loss[run, :], \
-        test_accuracy[run, :], \
-        hidden_weights[run, :, :, :] = run_training(dataset=dataset, model=model, optimizer=optimizer,
-                                                    criterion=criterion, config=config, scheduler=scheduler)
+        training_loss[run, :], validation_loss[run, :], test_accuracy[run, :], \
+        trained_models[run] = run_training(dataset=dataset, model=model, optimizer=optimizer,
+                                           criterion=criterion, config=config, scheduler=scheduler, return_models=True)
         # test model performance
         _, activity[run], _ = run_testing(dataset=dataset, model=model, n_trials=n_trials)
-        # store trained model
-        trained_models[run] = model.state_dict()
 
     # save model and outputs
     torch.save(trained_models, os.path.join(outdir, file_str + '.pt'))
@@ -189,7 +168,6 @@ def train(config):
         'training_loss': training_loss,
         'validation_loss': validation_loss,
         'test_accuracy': test_accuracy,
-        'hidden_weights': hidden_weights,
         'activity': activity,
     }
     np.save(os.path.join(outdir, file_str), log_args)
