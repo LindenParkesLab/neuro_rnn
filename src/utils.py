@@ -1,6 +1,7 @@
 import numpy as np
 import scipy as sp
 from scipy import signal
+import torch
 
 
 def normalize_x(x):
@@ -154,3 +155,53 @@ def compute_rlfp(ts, tr, low=None, high=None, num_bands=5, band_of_interest=1):
     band_freq_range = band_intervals[band_of_interest - 1:band_of_interest + 1]
 
     return bandpower(y, sample_freq, band_freq_range[0], band_freq_range[1])
+
+
+def get_weight_masks(hidden_size=200, frac=0.33):
+    idx = int(hidden_size * frac)
+
+    input_weight_mask = np.zeros((hidden_size,)).astype(bool)
+    input_weight_mask[:idx] = True
+    output_weight_mask = np.zeros((hidden_size, )).astype(bool)
+    output_weight_mask[int(hidden_size-idx):] = True
+    bystanders = ~(input_weight_mask + output_weight_mask)
+
+    # direct bottom-up connections
+    mask_bu = torch.zeros((hidden_size, hidden_size), dtype=torch.bool)
+    mask_bu[input_weight_mask, :] = True
+    mask_bu[:, ~output_weight_mask] = False
+
+    # direct top-down connections
+    mask_td = torch.zeros((hidden_size, hidden_size), dtype=torch.bool)
+    mask_td[output_weight_mask, :] = True
+    mask_td[:, ~input_weight_mask] = False
+
+    # within bystander connections
+    mask_wb = torch.zeros((hidden_size, hidden_size), dtype=torch.bool)
+    mask_wb[bystanders, :] = True
+    mask_wb[:, output_weight_mask] = False
+    mask_wb[:, input_weight_mask] = False
+
+    # input to bystanders
+    mask_ib = torch.zeros((hidden_size, hidden_size), dtype=torch.bool)
+    mask_ib[:, bystanders] = True
+    mask_ib[bystanders, :] = False
+    mask_ib[output_weight_mask, :] = False
+
+    # output to bystanders
+    mask_ob = torch.zeros((hidden_size, hidden_size), dtype=torch.bool)
+    mask_ob[:, bystanders] = True
+    mask_ob[bystanders, :] = False
+    mask_ob[input_weight_mask, :] = False
+
+    masks = dict()
+    masks['input_weight_mask'] = input_weight_mask
+    masks['output_weight_mask'] = output_weight_mask
+    masks['bystanders'] = bystanders
+    masks['mask_bu'] = mask_bu
+    masks['mask_td'] = mask_td
+    masks['mask_wb'] = mask_wb
+    masks['mask_ib'] = mask_ib
+    masks['mask_ob'] = mask_ob
+
+    return masks
