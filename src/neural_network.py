@@ -1,4 +1,4 @@
-import os, random, time, sys
+import os, random, time, sys, copy
 from timeit import default_timer as timer
 from datetime import timedelta
 
@@ -47,6 +47,8 @@ class RNN(nn.Module):
             self.regularization_kernel = regularization_kernel
 
         if input_weight_mask is not None:
+            if input_weight_mask.ndim == 1:
+                input_weight_mask = np.repeat(input_weight_mask[:, np.newaxis], repeats=self.input_size, axis=1)
             input_weight_mask = torch.from_numpy(input_weight_mask).type(torch.float)
             input_weight_mask = input_weight_mask.repeat(n_repeats, 1)
             self.register_buffer('input_weight_mask', input_weight_mask)
@@ -54,6 +56,8 @@ class RNN(nn.Module):
             self.input_weight_mask = input_weight_mask
 
         if output_weight_mask is not None:
+            if output_weight_mask.ndim == 1:
+                output_weight_mask = np.repeat(output_weight_mask[np.newaxis, :], repeats=self.num_classes, axis=0)
             output_weight_mask = torch.from_numpy(output_weight_mask).type(torch.float)
             self.register_buffer('output_weight_mask', output_weight_mask)
         else:
@@ -84,7 +88,7 @@ class RNN(nn.Module):
         return x, out
 
 
-def run_training(dataset, model, optimizer, criterion, config, scheduler=None):
+def run_training(dataset, model, optimizer, criterion, config, scheduler=None, return_models=False):
     model.train()
     t_overall = timer()
     if next(model.parameters()).is_cuda:
@@ -105,7 +109,8 @@ def run_training(dataset, model, optimizer, criterion, config, scheduler=None):
     validation_loss = []
     running_loss_val = 0.0
     test_accuracy = []
-    hidden_weights = []
+    if return_models:
+        model_state = dict()
 
     # Train the model
     for epoch in range(n_epochs):
@@ -173,13 +178,15 @@ def run_training(dataset, model, optimizer, criterion, config, scheduler=None):
             model.eval()
             tes_accuracy, activity, info = run_testing(dataset=dataset, model=model, n_trials=n_trials, verbose=False)
             test_accuracy.append(tes_accuracy)
-            hidden_weights.append(model.rnn.weight_hh_l0.detach().cpu().numpy())
+            if return_models:
+                model_state[epoch] = copy.deepcopy(model.state_dict())
             model.train()
         elif epoch % epoch_log == int(epoch_log-1):
             model.eval()
             tes_accuracy, activity, info = run_testing(dataset=dataset, model=model, n_trials=n_trials, verbose=False)
             test_accuracy.append(tes_accuracy)
-            hidden_weights.append(model.rnn.weight_hh_l0.detach().cpu().numpy())
+            if return_models:
+                model_state[epoch] = copy.deepcopy(model.state_dict())
             model.train()
 
             print('epoch {:d} | running training loss: {:0.5f} | running validation loss: {:0.5f} | test accuracy: {:0.2f}%'
@@ -193,10 +200,11 @@ def run_training(dataset, model, optimizer, criterion, config, scheduler=None):
     training_loss = np.asarray(training_loss)
     validation_loss = np.asarray(validation_loss)
     test_accuracy = np.asarray(test_accuracy)
-    hidden_weights = np.asarray(hidden_weights)
-    hidden_weights = np.transpose(hidden_weights, axes=[1, 2, 0])
 
-    return training_loss, validation_loss, test_accuracy, hidden_weights
+    if return_models:
+        return training_loss, validation_loss, test_accuracy, model_state
+    else:
+        return training_loss, validation_loss, test_accuracy
 
 
 def infer_test_timing(env):
