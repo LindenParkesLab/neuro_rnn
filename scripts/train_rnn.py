@@ -71,16 +71,16 @@ def train(config):
         regularization_kernel = normalize_x(distance_matrix)
     elif kernel_type == 'static':
         # dynamic distance matrix for regularization
-        kernel = build_reg_ken(n_epochs=n_epochs, hidden_size=hidden_size, kernel_std_frac=kernel_std_frac,
+        kernel = build_reg_ken(n_epochs=hidden_size, hidden_size=hidden_size, kernel_std_frac=kernel_std_frac,
                                type='additive', comet_buffer_frac=comet_buffer_frac, comet_tail_frac=comet_tail_frac)
         regularization_kernel = 1 - kernel[:, :, -1].copy()
         del kernel
     elif kernel_type == 'constant':
         # dynamic distance matrix for regularization
-        kernel = build_reg_ken(n_epochs=n_epochs, hidden_size=hidden_size, kernel_std_frac=kernel_std_frac,
+        kernel = build_reg_ken(n_epochs=hidden_size, hidden_size=hidden_size, kernel_std_frac=kernel_std_frac,
                                type='additive', comet_buffer_frac=comet_buffer_frac, comet_tail_frac=comet_tail_frac)
         regularization_kernel = 1 - kernel[:, :, -1].copy()
-        min_val = np.min(regularization_kernel[masks['mask_bu']])
+        min_val = np.min(regularization_kernel[masks['input_output']])
         regularization_kernel[:] = min_val
         del kernel
     else:
