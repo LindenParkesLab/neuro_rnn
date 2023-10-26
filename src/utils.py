@@ -167,30 +167,30 @@ def get_weight_masks(hidden_size=200, frac=0.33):
     bystanders = ~(input_weight_mask + output_weight_mask)
 
     # direct bottom-up connections (input to output)
-    input_output = torch.zeros((hidden_size, hidden_size), dtype=torch.bool)
-    input_output[input_weight_mask, :] = True
-    input_output[:, ~output_weight_mask] = False
+    output_input = torch.zeros((hidden_size, hidden_size), dtype=torch.bool)
+    output_input[input_weight_mask, :] = True
+    output_input[:, ~output_weight_mask] = False
 
     # direct top-down connections (output to input)
-    output_input = input_output.T
+    input_output = output_input.T
 
     # input to bystanders
-    input_bystanders = torch.zeros((hidden_size, hidden_size), dtype=torch.bool)
-    input_bystanders[:, bystanders] = True
-    input_bystanders[bystanders, :] = False
-    input_bystanders[output_weight_mask, :] = False
+    bystanders_input = torch.zeros((hidden_size, hidden_size), dtype=torch.bool)
+    bystanders_input[:, bystanders] = True
+    bystanders_input[bystanders, :] = False
+    bystanders_input[output_weight_mask, :] = False
 
     # bystanders to inputs
-    bystanders_input = input_bystanders.T
+    input_bystanders = bystanders_input.T
 
     # output to bystanders
-    output_bystanders = torch.zeros((hidden_size, hidden_size), dtype=torch.bool)
-    output_bystanders[:, bystanders] = True
-    output_bystanders[bystanders, :] = False
-    output_bystanders[input_weight_mask, :] = False
+    bystanders_output = torch.zeros((hidden_size, hidden_size), dtype=torch.bool)
+    bystanders_output[:, bystanders] = True
+    bystanders_output[bystanders, :] = False
+    bystanders_output[input_weight_mask, :] = False
 
     # bystanders to outputs
-    bystanders_output = output_bystanders.T
+    output_bystanders = bystanders_output.T
 
     masks = dict()
     masks['input_weight_mask'] = input_weight_mask
