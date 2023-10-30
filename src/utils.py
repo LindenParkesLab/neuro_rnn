@@ -204,3 +204,57 @@ def get_weight_masks(hidden_size=200, frac=0.33):
     masks['bystanders_output'] = bystanders_output
 
     return masks
+
+
+def get_file_str(config):
+    # task parameters
+    task = config['task']
+    seq_len = config['seq_len']
+    batch_size = config['batch_size']
+    decision = config['env_kwargs']['timing']['decision']
+
+    # RNN model and training parameters
+    rnn_model = config['rnn_model']
+    hidden_size = config['hidden_size']
+    n_runs = config['n_runs']
+    n_epochs = config['n_epochs']
+    lr = config['lr']
+    mask_weights = config['mask_weights']
+
+    # regularization parameters
+    reg_type = config['reg_type']
+    reg_weight = config['reg_weight']
+    kernel_type = config['kernel_type']
+    kernel_std_frac = config['kernel_std_frac']
+    comet_buffer_frac = config['comet_buffer_frac']
+    comet_tail_frac = config['comet_tail_frac']
+
+    if kernel_type is None:
+        file_str = 'task-{:}-{:}-{:}-{:}_' \
+                   'model-{:}-{:}-{:}-{:}-{:}_' \
+                   'wmask-{:}_' \
+                   'reg-{:}-{:}-{:}' \
+            .format(task, seq_len, batch_size, decision,
+                    rnn_model, hidden_size, n_runs, n_epochs, lr,
+                    mask_weights,
+                    reg_type, reg_weight, kernel_type)
+    elif kernel_type == 'comet':
+        file_str = 'task-{:}-{:}-{:}-{:}_' \
+                   'model-{:}-{:}-{:}-{:}-{:}_' \
+                   'wmask-{:}_' \
+                   'reg-{:}-{:}-{:}-{:}-{:}-{:}' \
+            .format(task, seq_len, batch_size, decision,
+                    rnn_model, hidden_size, n_runs, n_epochs, lr,
+                    mask_weights,
+                    reg_type, reg_weight, kernel_type, kernel_std_frac, comet_buffer_frac, comet_tail_frac)
+    else:
+        file_str = 'task-{:}-{:}-{:}-{:}_' \
+                   'model-{:}-{:}-{:}-{:}-{:}_' \
+                   'wmask-{:}_' \
+                   'reg-{:}-{:}-{:}-{:}' \
+            .format(task, seq_len, batch_size, decision,
+                    rnn_model, hidden_size, n_runs, n_epochs, lr,
+                    mask_weights,
+                    reg_type, reg_weight, kernel_type, kernel_std_frac)
+
+    return file_str

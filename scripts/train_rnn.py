@@ -12,7 +12,7 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(device)
 
 from src.neural_network import RNN, run_training, run_testing
-from src.utils import normalize_x, build_reg_ken, get_weight_masks
+from src.utils import normalize_x, build_reg_ken, get_weight_masks, get_file_str
 
 # %%
 def train(config):
@@ -109,33 +109,8 @@ def train(config):
     activity = np.zeros((n_runs, n_trials, dataset.env.gt.shape[0], hidden_size))
     trained_models = dict()
 
-    if kernel_type is None:
-        file_str = 'task-{:}-{:}-{:}-{:}_' \
-                   'model-{:}-{:}-{:}-{:}-{:}_' \
-                   'wmask-{:}_' \
-                   'reg-{:}-{:}-{:}' \
-            .format(task, seq_len, batch_size, decision,
-                    rnn_model, hidden_size, n_runs, n_epochs, lr,
-                    mask_weights,
-                    reg_type, reg_weight, kernel_type)
-    elif kernel_type == 'comet':
-        file_str = 'task-{:}-{:}-{:}-{:}_' \
-                   'model-{:}-{:}-{:}-{:}-{:}_' \
-                   'wmask-{:}_' \
-                   'reg-{:}-{:}-{:}-{:}-{:}-{:}' \
-            .format(task, seq_len, batch_size, decision,
-                    rnn_model, hidden_size, n_runs, n_epochs, lr,
-                    mask_weights,
-                    reg_type, reg_weight, kernel_type, kernel_std_frac, comet_buffer_frac, comet_tail_frac)
-    else:
-        file_str = 'task-{:}-{:}-{:}-{:}_' \
-                   'model-{:}-{:}-{:}-{:}-{:}_' \
-                   'wmask-{:}_' \
-                   'reg-{:}-{:}-{:}-{:}' \
-            .format(task, seq_len, batch_size, decision,
-                    rnn_model, hidden_size, n_runs, n_epochs, lr,
-                    mask_weights,
-                    reg_type, reg_weight, kernel_type, kernel_std_frac)
+    # get file name
+    file_str = get_file_str(config)
     print('\n')
     print(file_str)
 
