@@ -157,14 +157,34 @@ def compute_rlfp(ts, tr, low=None, high=None, num_bands=5, band_of_interest=1):
     return bandpower(y, sample_freq, band_freq_range[0], band_freq_range[1])
 
 
-def get_weight_masks(hidden_size=200, frac=0.33):
-    idx = int(hidden_size * frac)
+def get_weight_masks(hidden_size=200, n_io=30):
+    input_idx = n_io
+    output_idx = int(hidden_size-n_io)
 
     input_weight_mask = np.zeros((hidden_size,)).astype(bool)
-    input_weight_mask[:idx] = True
+    input_weight_mask[:input_idx] = True
     output_weight_mask = np.zeros((hidden_size, )).astype(bool)
-    output_weight_mask[int(hidden_size-idx):] = True
+    output_weight_mask[output_idx:] = True
     bystanders = ~(input_weight_mask + output_weight_mask)
+
+    # diagonal
+    # input-input
+    input_input = torch.zeros((hidden_size, hidden_size), dtype=torch.bool)
+    input_input[input_weight_mask, :] = True
+    input_input[:, bystanders] = False
+    input_input[:, output_weight_mask] = False
+
+    # bystanders-bystanders
+    bystanders_bystanders = torch.zeros((hidden_size, hidden_size), dtype=torch.bool)
+    bystanders_bystanders[bystanders, :] = True
+    bystanders_bystanders[:, input_weight_mask] = False
+    bystanders_bystanders[:, output_weight_mask] = False
+
+    # output-output
+    output_output = torch.zeros((hidden_size, hidden_size), dtype=torch.bool)
+    output_output[output_weight_mask, :] = True
+    output_output[:, input_weight_mask] = False
+    output_output[:, bystanders] = False
 
     # direct bottom-up connections (input to output)
     output_input = torch.zeros((hidden_size, hidden_size), dtype=torch.bool)
@@ -193,9 +213,15 @@ def get_weight_masks(hidden_size=200, frac=0.33):
     output_bystanders = bystanders_output.T
 
     masks = dict()
+    # vector masks
     masks['input_weight_mask'] = input_weight_mask
     masks['output_weight_mask'] = output_weight_mask
     masks['bystanders'] = bystanders
+    # matrix masks
+    masks['input_input'] = input_input
+    masks['bystanders_bystanders'] = bystanders_bystanders
+    masks['output_output'] = output_output
+
     masks['input_output'] = input_output
     masks['output_input'] = output_input
     masks['input_bystanders'] = input_bystanders
