@@ -246,6 +246,7 @@ def get_file_str(config):
     n_epochs = config['n_epochs']
     lr = config['lr']
     mask_weights = config['mask_weights']
+    n_io = config['n_io']
 
     # regularization parameters
     reg_type = config['reg_type']
@@ -257,29 +258,29 @@ def get_file_str(config):
 
     if kernel_type is None:
         file_str = 'task-{:}-{:}-{:}-{:}_' \
-                   'model-{:}-{:}-{:}-{:}-{:}_' \
+                   'model-{:}-{:}-{:}-{:}-{:}-{:}_' \
                    'wmask-{:}_' \
                    'reg-{:}-{:}-{:}' \
             .format(task, seq_len, batch_size, decision,
-                    rnn_model, hidden_size, n_runs, n_epochs, lr,
+                    rnn_model, hidden_size, n_io, n_runs, n_epochs, lr,
                     mask_weights,
                     reg_type, reg_weight, kernel_type)
     elif kernel_type == 'comet':
         file_str = 'task-{:}-{:}-{:}-{:}_' \
-                   'model-{:}-{:}-{:}-{:}-{:}_' \
+                   'model-{:}-{:}-{:}-{:}-{:}-{:}_' \
                    'wmask-{:}_' \
                    'reg-{:}-{:}-{:}-{:}-{:}-{:}' \
             .format(task, seq_len, batch_size, decision,
-                    rnn_model, hidden_size, n_runs, n_epochs, lr,
+                    rnn_model, hidden_size, n_io, n_runs, n_epochs, lr,
                     mask_weights,
                     reg_type, reg_weight, kernel_type, kernel_std_frac, comet_buffer_frac, comet_tail_frac)
     else:
         file_str = 'task-{:}-{:}-{:}-{:}_' \
-                   'model-{:}-{:}-{:}-{:}-{:}_' \
+                   'model-{:}-{:}-{:}-{:}-{:}-{:}_' \
                    'wmask-{:}_' \
                    'reg-{:}-{:}-{:}-{:}' \
             .format(task, seq_len, batch_size, decision,
-                    rnn_model, hidden_size, n_runs, n_epochs, lr,
+                    rnn_model, hidden_size, n_io, n_runs, n_epochs, lr,
                     mask_weights,
                     reg_type, reg_weight, kernel_type, kernel_std_frac)
 
