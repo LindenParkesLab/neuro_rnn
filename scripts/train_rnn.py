@@ -50,8 +50,17 @@ def train(config):
         os.makedirs(outdir)
 
     # weight masks
-    frac = 0.33
-    masks = get_weight_masks(hidden_size=hidden_size, frac=frac)
+    if hidden_size == 100 or hidden_size == 200 or hidden_size == 400:
+        centroids = pd.read_csv(os.path.join(datadir, 'hcp_schaefer{0}_centroids.csv'.format(hidden_size)))
+        my_list = list(centroids['ROI Name'])
+        net = 'Vis'
+        n_io = len([s for s in my_list if net in s])
+        del centroids, my_list, net
+    else:
+        frac = 0.33
+        n_io = int(hidden_size * frac)
+    config['n_io'] = n_io
+    masks = get_weight_masks(hidden_size=hidden_size, n_io=n_io)
 
     # setup regularization kernel
     if kernel_type is None:
@@ -59,13 +68,8 @@ def train(config):
         regularization_kernel = None
     elif kernel_type == 'euclidean':
         # static distance matrix for regularization
-        if hidden_size == 400:
-            centroids = pd.read_csv(os.path.join(datadir, 'hcp_schaefer400_centroids.csv'))
-        else:
-            centroids = pd.read_csv(os.path.join(datadir, 'hcp_schaefer200_centroids.csv'))
-
+        centroids = pd.read_csv(os.path.join(datadir, 'hcp_schaefer{0}_centroids.csv'.format(hidden_size)))
         centroids.set_index("ROI Name", inplace=True)
-        centroids = centroids[:hidden_size]
         distance_matrix = distance.pdist(centroids, "euclidean")  # get euclidean distances between nodes
         distance_matrix = distance.squareform(distance_matrix)  # reshape to square matrix
         regularization_kernel = normalize_x(distance_matrix)
