@@ -1,4 +1,4 @@
-import os, random, argparse
+import os, random, argparse, warnings
 import numpy as np
 from scipy.spatial import distance
 import pandas as pd
@@ -13,6 +13,10 @@ print(device)
 
 from src.neural_network import RNN, run_training, run_testing
 from src.utils import normalize_x, build_reg_ken, get_weight_masks, get_file_str
+
+warnings.simplefilter(action='ignore', category=FutureWarning)
+warnings.simplefilter(action='ignore', category=RuntimeWarning)
+warnings.simplefilter(action='ignore', category=UserWarning)
 
 # %%
 def train(config):
