@@ -248,6 +248,12 @@ dependencies:
       - cloudpickle==3.0.0
       - gym==0.26.2
       - gym-notices==0.0.8
+      - lxml==4.9.3
+      - nctpy==1.0.0.post0
+      - nibabel==5.1.0
+      - nilearn==0.10.2
+      - patsy==0.5.3
       - pip==23.3.1
       - setuptools==68.2.2
+      - statsmodels==0.14.0
 prefix: /home/lindenmp/miniconda3/envs/neuro_rnn
