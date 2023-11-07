@@ -54,26 +54,16 @@ def train(config):
         os.makedirs(outdir)
 
     # weight masks
-    if kernel_type == 'sa_axis':
-        if hidden_size == 100 or hidden_size == 200:
-            centroids = pd.read_csv(os.path.join(datadir, 'schaefer{0}_centroids.csv'.format(hidden_size * 2)))
-            centroids = centroids[:hidden_size]
-            roi_names = list(centroids['ROI Name'])
+    if mask_weights:
+        centroids = pd.read_csv(os.path.join(datadir, 'schaefer{0}_centroids.csv'.format(hidden_size * 2)))
+        centroids = centroids[:hidden_size]
+        roi_names = list(centroids['ROI Name'])
         input_system = 'Vis'
         output_system = 'Default'
         masks = get_weight_masks_schaefer(roi_names=roi_names, input_system=input_system, output_system=output_system)
         n_io = '{0}-{1}'.format(np.sum(masks['input_weight_mask']), np.sum(masks['output_weight_mask']))
     else:
-        if hidden_size == 100 or hidden_size == 200:
-            centroids = pd.read_csv(os.path.join(datadir, 'schaefer{0}_centroids.csv'.format(hidden_size * 2)))
-            centroids = centroids[:hidden_size]
-            roi_names = list(centroids['ROI Name'])
-            input_system = 'Vis'
-            n_io = len([s for s in roi_names if input_system.lower() in s.lower()])
-        else:
-            frac = 0.33
-            n_io = int(hidden_size * frac)
-        masks = get_weight_masks(hidden_size=hidden_size, n_io=n_io)
+        n_io = 'na'
     config['n_io'] = n_io
 
     # setup regularization kernel
@@ -82,17 +72,15 @@ def train(config):
         regularization_kernel = None
     elif kernel_type == 'euclidean':
         # static distance matrix for regularization
-        if hidden_size == 100 or hidden_size == 200:
-            centroids = pd.read_csv(os.path.join(datadir, 'schaefer{0}_centroids.csv'.format(hidden_size * 2)))
-            centroids = centroids[:hidden_size]
+        centroids = pd.read_csv(os.path.join(datadir, 'schaefer{0}_centroids.csv'.format(hidden_size * 2)))
+        centroids = centroids[:hidden_size]
         centroids.set_index("ROI Name", inplace=True)
         distance_matrix = distance.pdist(centroids, "euclidean")  # get euclidean distances between nodes
         distance_matrix = distance.squareform(distance_matrix)  # reshape to square matrix
         regularization_kernel = normalize_x(distance_matrix)
     elif kernel_type == 'sa_axis':
-        if hidden_size == 100 or hidden_size == 200:
-            sa_axis = np.load(os.path.join(datadir, 'schaefer{0}_sa-axis.npy'.format(hidden_size * 2)))
-            sa_axis = sa_axis[:hidden_size]
+        sa_axis = np.load(os.path.join(datadir, 'schaefer{0}_sa-axis.npy'.format(hidden_size * 2)))
+        sa_axis = sa_axis[:hidden_size]
         n = len(sa_axis)
         distance_matrix = np.zeros((n, n))
         for i in np.arange(n):
