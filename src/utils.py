@@ -157,16 +157,8 @@ def compute_rlfp(ts, tr, low=None, high=None, num_bands=5, band_of_interest=1):
     return bandpower(y, sample_freq, band_freq_range[0], band_freq_range[1])
 
 
-def get_weight_masks(hidden_size=200, n_io=30):
-    input_idx = n_io
-    output_idx = int(hidden_size-n_io)
-
-    input_weight_mask = np.zeros((hidden_size,)).astype(bool)
-    input_weight_mask[:input_idx] = True
-    output_weight_mask = np.zeros((hidden_size, )).astype(bool)
-    output_weight_mask[output_idx:] = True
-    bystanders = ~(input_weight_mask + output_weight_mask)
-
+def make_matrix_masks(input_weight_mask, output_weight_mask, bystanders):
+    hidden_size = len(input_weight_mask)
     # diagonal
     # input-input
     input_input = torch.zeros((hidden_size, hidden_size), dtype=torch.bool)
@@ -232,6 +224,37 @@ def get_weight_masks(hidden_size=200, n_io=30):
     return masks
 
 
+def get_weight_masks(hidden_size=200, n_io=30):
+    input_idx = n_io
+    output_idx = int(hidden_size-n_io)
+
+    input_weight_mask = np.zeros((hidden_size,)).astype(bool)
+    input_weight_mask[:input_idx] = True
+    output_weight_mask = np.zeros((hidden_size, )).astype(bool)
+    output_weight_mask[output_idx:] = True
+    bystanders = ~(input_weight_mask + output_weight_mask)
+
+    masks = make_matrix_masks(input_weight_mask, output_weight_mask, bystanders)
+
+    return masks
+
+
+def get_weight_masks_schaefer(roi_names, input_system='Vis', output_system='Default'):
+    hidden_size = len(roi_names)
+    input_weight_mask = np.zeros((hidden_size,)).astype(bool)
+    output_weight_mask = np.zeros((hidden_size,)).astype(bool)
+    for roi in np.arange(hidden_size):
+        if input_system in roi_names[roi]:
+            input_weight_mask[roi] = True
+        if output_system in roi_names[roi]:
+            output_weight_mask[roi] = True
+    bystanders = ~(input_weight_mask + output_weight_mask)
+
+    masks = make_matrix_masks(input_weight_mask, output_weight_mask, bystanders)
+
+    return masks
+
+
 def get_file_str(config):
     # task parameters
     task = config['task']
@@ -256,7 +279,7 @@ def get_file_str(config):
     comet_buffer_frac = config['comet_buffer_frac']
     comet_tail_frac = config['comet_tail_frac']
 
-    if kernel_type is None:
+    if kernel_type is None or kernel_type == 'sa_axis':
         file_str = 'task-{:}-{:}-{:}-{:}_' \
                    'model-{:}-{:}-{:}-{:}-{:}-{:}_' \
                    'wmask-{:}_' \
