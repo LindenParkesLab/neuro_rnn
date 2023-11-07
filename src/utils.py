@@ -308,3 +308,40 @@ def get_file_str(config):
                     reg_type, reg_weight, kernel_type, kernel_std_frac)
 
     return file_str
+
+
+def autocorr(data, max_lag=1000, lag_step=1):
+    """ Calculate the signal autocorrelation (lagged correlation)
+
+    Parameters
+    ----------
+    data : array 1D
+        Time series to compute autocorrelation over.
+    max_lag : int (default=1000)
+        Maximum delay to compute AC, in samples of signal.
+    lag_step : int (default=1)
+        Step size (lag advance) to move by when computing correlation.
+
+    Returns
+    -------
+    AC_timepoints : array, 1D
+        Time points (in samples) at which correlation was computed.
+    AC : array, 1D
+        Time lagged (auto)correlation.
+
+    """
+    ###
+    # have FT implementation
+    ###
+    AC_timepoints = np.arange(0, max_lag, lag_step)
+    AC = np.zeros(len(AC_timepoints))
+    AC[0] = np.sum((data - np.mean(data))**2)
+    for ind, lag in enumerate(AC_timepoints[1:]):
+        AC[ind + 1] = np.sum((data[:-lag] - np.mean(data[:-lag]))
+                             * (data[lag:] - np.mean(data[lag:])))
+
+    return AC_timepoints, AC / AC[0]
+
+# The exponential decay function
+def exp_decay(x, tau, init):
+    return init*np.e**(-x/tau)
