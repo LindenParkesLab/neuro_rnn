@@ -279,7 +279,7 @@ def get_file_str(config):
     comet_buffer_frac = config['comet_buffer_frac']
     comet_tail_frac = config['comet_tail_frac']
 
-    if kernel_type is None or kernel_type == 'sa_axis':
+    if kernel_type is None or kernel_type == 'sa_axis' or kernel_type == 'euclidean':
         file_str = 'task-{:}-{:}-{:}-{:}_' \
                    'model-{:}-{:}-{:}-{:}-{:}-{:}_' \
                    'wmask-{:}_' \
