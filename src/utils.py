@@ -275,9 +275,12 @@ def get_file_str(config):
     reg_type = config['reg_type']
     reg_weight = config['reg_weight']
     kernel_type = config['kernel_type']
-    kernel_std_frac = config['kernel_std_frac']
-    comet_buffer_frac = config['comet_buffer_frac']
-    comet_tail_frac = config['comet_tail_frac']
+    if kernel_type == 'static':
+        kernel_std_frac = config['kernel_std_frac']
+    elif kernel_type == 'comet':
+        kernel_std_frac = config['kernel_std_frac']
+        comet_buffer_frac = config['comet_buffer_frac']
+        comet_tail_frac = config['comet_tail_frac']
 
     if kernel_type is None or kernel_type == 'sa_axis' or kernel_type == 'euclidean':
         file_str = 'task-{:}-{:}-{:}-{:}_' \
@@ -288,6 +291,15 @@ def get_file_str(config):
                     rnn_model, hidden_size, n_io, n_runs, n_epochs, lr,
                     mask_weights,
                     reg_type, reg_weight, kernel_type)
+    elif kernel_type == 'static':
+        file_str = 'task-{:}-{:}-{:}-{:}_' \
+                   'model-{:}-{:}-{:}-{:}-{:}-{:}_' \
+                   'wmask-{:}_' \
+                   'reg-{:}-{:}-{:}-{:}' \
+            .format(task, seq_len, batch_size, decision,
+                    rnn_model, hidden_size, n_io, n_runs, n_epochs, lr,
+                    mask_weights,
+                    reg_type, reg_weight, kernel_type, kernel_std_frac)
     elif kernel_type == 'comet':
         file_str = 'task-{:}-{:}-{:}-{:}_' \
                    'model-{:}-{:}-{:}-{:}-{:}-{:}_' \
@@ -297,15 +309,6 @@ def get_file_str(config):
                     rnn_model, hidden_size, n_io, n_runs, n_epochs, lr,
                     mask_weights,
                     reg_type, reg_weight, kernel_type, kernel_std_frac, comet_buffer_frac, comet_tail_frac)
-    else:
-        file_str = 'task-{:}-{:}-{:}-{:}_' \
-                   'model-{:}-{:}-{:}-{:}-{:}-{:}_' \
-                   'wmask-{:}_' \
-                   'reg-{:}-{:}-{:}-{:}' \
-            .format(task, seq_len, batch_size, decision,
-                    rnn_model, hidden_size, n_io, n_runs, n_epochs, lr,
-                    mask_weights,
-                    reg_type, reg_weight, kernel_type, kernel_std_frac)
 
     return file_str
 
