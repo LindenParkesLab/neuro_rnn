@@ -56,7 +56,7 @@ def train(config):
     # weight masks
     if mask_weights:
         centroids = pd.read_csv(os.path.join(datadir, 'schaefer{0}_centroids.csv'.format(hidden_size * 2)))
-        centroids = centroids[:hidden_size]
+        centroids = centroids[:hidden_size]  # pull out left hemisphere
         roi_names = list(centroids['ROI Name'])
         input_system = 'Vis'
         output_system = 'Default'
@@ -73,14 +73,14 @@ def train(config):
     elif kernel_type == 'euclidean':
         # static distance matrix for regularization
         centroids = pd.read_csv(os.path.join(datadir, 'schaefer{0}_centroids.csv'.format(hidden_size * 2)))
-        centroids = centroids[:hidden_size]
+        centroids = centroids[:hidden_size]  # pull out left hemisphere
         centroids.set_index("ROI Name", inplace=True)
         distance_matrix = distance.pdist(centroids, "euclidean")  # get euclidean distances between nodes
         distance_matrix = distance.squareform(distance_matrix)  # reshape to square matrix
         regularization_kernel = normalize_x(distance_matrix)
     elif kernel_type == 'sa_axis':
         sa_axis = np.load(os.path.join(datadir, 'schaefer{0}_sa-axis.npy'.format(hidden_size * 2)))
-        sa_axis = sa_axis[:hidden_size]
+        sa_axis = sa_axis[:hidden_size]  # pull out left hemisphere
         n = len(sa_axis)
         distance_matrix = np.zeros((n, n))
         for i in np.arange(n):
@@ -139,7 +139,7 @@ def train(config):
         training_loss[run, :], validation_loss[run, :], test_accuracy[run, :], \
         trained_models[run] = run_training(dataset=dataset, model=model, optimizer=optimizer,
                                            criterion=criterion, config=config, scheduler=scheduler, return_models=True)
-        # test model performance
+        # get activity for final model
         _, activity[run], _ = run_testing(dataset=dataset, model=model, n_trials=n_trials)
 
     # save model and outputs
@@ -167,7 +167,7 @@ def get_args():
     parser.add_argument('--task', type=str, default='PerceptualDecisionMaking-v0')
     parser.add_argument('--dt', type=int, default=100)
     parser.add_argument('--seq_len', type=int, default=200)
-    parser.add_argument('--batch_size', type=int, default=256)
+    parser.add_argument('--batch_size', type=int, default=128)
     parser.add_argument('--decision', type=int, default=300)
 
     # RNN model and training parameters
