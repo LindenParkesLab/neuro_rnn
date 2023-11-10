@@ -94,20 +94,6 @@ def train(config):
                                type='additive', comet_buffer_frac=comet_buffer_frac, comet_tail_frac=comet_tail_frac)
         regularization_kernel = 1 - kernel[:, :, -1].copy()
         del kernel
-    elif kernel_type == 'constant':
-        # dynamic distance matrix for regularization
-        kernel = build_reg_ken(n_epochs=hidden_size, hidden_size=hidden_size, kernel_std_frac=kernel_std_frac,
-                               type='additive', comet_buffer_frac=comet_buffer_frac, comet_tail_frac=comet_tail_frac)
-        regularization_kernel = 1 - kernel[:, :, -1].copy()
-        min_val = np.min(regularization_kernel[masks['input_output']])
-        regularization_kernel[:] = min_val
-        del kernel
-    else:
-        # dynamic distance matrix for regularization
-        kernel = build_reg_ken(n_epochs=n_epochs, hidden_size=hidden_size, kernel_std_frac=kernel_std_frac,
-                               type=kernel_type, comet_buffer_frac=comet_buffer_frac, comet_tail_frac=comet_tail_frac)
-        regularization_kernel = 1 - kernel.copy()
-        del kernel
 
     # setup weight masks
     if mask_weights:
@@ -122,7 +108,7 @@ def train(config):
     validation_loss = np.zeros((n_runs, n_epochs))
     epoch_log = 100
     test_accuracy = np.zeros((n_runs, int((n_epochs/epoch_log)+1)))
-    n_trials = 1000
+    n_trials = 100
     dataset.env.reset(seed=0)
     dataset.env.new_trial()
     activity = np.zeros((n_runs, n_trials, dataset.env.gt.shape[0], hidden_size))
@@ -181,16 +167,16 @@ def get_args():
     parser.add_argument('--task', type=str, default='PerceptualDecisionMaking-v0')
     parser.add_argument('--dt', type=int, default=100)
     parser.add_argument('--seq_len', type=int, default=200)
-    parser.add_argument('--batch_size', type=int, default=128)
+    parser.add_argument('--batch_size', type=int, default=256)
     parser.add_argument('--decision', type=int, default=300)
 
     # RNN model and training parameters
     parser.add_argument('--rnn_model', type=str, default='rnn-tanh')
-    parser.add_argument('--hidden_size', type=int, default=200)
+    parser.add_argument('--hidden_size', type=int, default=100)
     parser.add_argument('--n_runs', type=int, default=50)
     parser.add_argument('--n_epochs', type=int, default=5000)
     parser.add_argument('--lr', type=float, default=0.001)
-    parser.add_argument('--mask_weights', type=str, default='False')
+    parser.add_argument('--mask_weights', type=str, default='True')
 
     # regularization parameters
     parser.add_argument('--reg_type', type=str, default='l2')
