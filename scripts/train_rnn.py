@@ -203,7 +203,7 @@ if __name__ == '__main__':
     elif args.mask_weights == 'True':
         args.mask_weights = True
 
-    timing = {'decision': args.decision}
+    timing = {'fixation': 200, 'stimulus': 1000, 'delay': 0, 'decision': args.decision}
     env_kwargs = {'dt': args.dt, 'timing': timing}
 
     config = {
