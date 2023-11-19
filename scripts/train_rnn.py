@@ -169,6 +169,7 @@ def get_args():
     parser.add_argument('--seq_len', type=int, default=200)
     parser.add_argument('--batch_size', type=int, default=128)
     parser.add_argument('--decision', type=int, default=300)
+    parser.add_argument('--standardize_task', type=str, default='False')
 
     # RNN model and training parameters
     parser.add_argument('--rnn_model', type=str, default='rnn-tanh')
@@ -203,7 +204,16 @@ if __name__ == '__main__':
     elif args.mask_weights == 'True':
         args.mask_weights = True
 
-    timing = {'fixation': 200, 'stimulus': 1000, 'delay': 0, 'decision': args.decision}
+    if args.standardize_task == 'True':
+        args.standardize_task = True
+    elif args.standardize_task == 'False':
+        args.standardize_task = False
+
+    if args.standardize_task:
+        timing = {'fixation': 200, 'stimulus': 1000, 'delay': 0, 'decision': args.decision}
+    else:
+        timing = {'decision': args.decision}
+    print(timing)
     env_kwargs = {'dt': args.dt, 'timing': timing}
 
     config = {
