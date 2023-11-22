@@ -348,3 +348,24 @@ def autocorr(data, max_lag=1000, lag_step=1):
 # The exponential decay function
 def exp_decay(x, tau, init):
     return init*np.e**(-x/tau)
+
+
+def compute_fc(ts):
+    """
+    Parameters
+    ----------
+    ts : np.array (n_timepoints,n_parcels)
+        time series
+
+    Returns
+    -------
+    fc : np.array (n_parcels,n_parcels)
+        functional connectivity matrix
+    """
+
+    fc = np.corrcoef(ts, rowvar=False)
+    np.fill_diagonal(fc, np.nan)
+    fc = np.arctanh(fc)
+    np.fill_diagonal(fc, 1)
+
+    return fc
