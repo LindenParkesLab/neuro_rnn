@@ -100,11 +100,20 @@ def train(config):
     validation_loss = np.zeros((n_runs, n_epochs))
     epoch_log = 100
     test_accuracy = np.zeros((n_runs, int((n_epochs/epoch_log)+1)))
-    n_trials = 100
+    trained_models = dict()
+
     dataset.env.reset(seed=0)
     dataset.env.new_trial()
-    activity = np.zeros((n_runs, n_trials, dataset.env.gt.shape[0], hidden_size))
-    trained_models = dict()
+    input_size = dataset.env.observation_space.shape[0]
+    n_timepoints = dataset.env.gt.shape[0]
+    n_classes = dataset.env.action_space.n
+    n_trials = 1000
+
+    inputs = np.zeros((n_runs, n_trials, n_timepoints, input_size))
+    labels = np.zeros((n_runs, n_trials, n_timepoints))
+    hidden_activity = np.zeros((n_runs, n_trials, n_timepoints, hidden_size))
+    output_activity = np.zeros((n_runs, n_trials, n_timepoints, n_classes))
+    info = dict()
 
     # get file name
     file_str = get_file_str(config)
@@ -121,18 +130,22 @@ def train(config):
         torch.cuda.manual_seed_all(int(run))
 
         # initialize the model
-        model = RNN(input_size=input_size, hidden_size=hidden_size, num_classes=num_classes,
+        model = RNN(input_size=input_size, hidden_size=hidden_size, num_classes=n_classes,
                     type=rnn_model, regularization_kernel=regularization_kernel,
                     input_weight_mask=input_weight_mask, output_weight_mask=output_weight_mask).to(device)
         optimizer = torch.optim.Adam(model.parameters(), lr=lr)
         criterion = nn.CrossEntropyLoss()
         scheduler = None
+
         # train the model
         training_loss[run, :], validation_loss[run, :], test_accuracy[run, :], \
         trained_models[run] = run_training(dataset=dataset, model=model, optimizer=optimizer,
-                                           criterion=criterion, config=config, scheduler=scheduler, return_models=True)
-        # get activity for final model
-        _, activity[run], _ = run_testing(dataset=dataset, model=model, n_trials=n_trials)
+                                           criterion=criterion, config=config, scheduler=scheduler,
+                                           return_models=True)
+
+        # get all outputs for final model
+        _, inputs[run], labels[run], hidden_activity[run], output_activity[run], info[run] \
+            = run_testing(dataset=dataset, model=model, n_trials=n_trials)
 
     # save model and outputs
     torch.save(trained_models, os.path.join(outdir, file_str + '.pt'))
@@ -140,7 +153,11 @@ def train(config):
         'training_loss': training_loss,
         'validation_loss': validation_loss,
         'test_accuracy': test_accuracy,
-        'activity': activity,
+        'inputs': inputs,
+        'labels': labels,
+        'hidden_activity': hidden_activity,
+        'output_activity': output_activity,
+        'info': info
     }
     np.save(os.path.join(outdir, file_str), log_args)
 
@@ -165,7 +182,7 @@ def get_args():
     # RNN model and training parameters
     parser.add_argument('--rnn_model', type=str, default='rnn-tanh')
     parser.add_argument('--hidden_size', type=int, default=100)
-    parser.add_argument('--batch_size', type=int, default=128)
+    parser.add_argument('--batch_size', type=int, default=64)
     parser.add_argument('--lr', type=float, default=0.001)
     parser.add_argument('--n_runs', type=int, default=50)
     parser.add_argument('--n_epochs', type=int, default=5000)

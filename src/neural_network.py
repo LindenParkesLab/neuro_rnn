@@ -82,10 +82,10 @@ class RNN(nn.Module):
             if self.output_weight_mask is not None:
                 self.fc.weight.mul_(self.output_weight_mask)
 
-        out, hidden = self.rnn(x)
-        x = self.fc(out)
+        hidden, h_n = self.rnn(x)
+        action_pred = self.fc(hidden)
 
-        return x, out
+        return action_pred, hidden
 
 
 def run_training(dataset, model, optimizer, criterion, config, scheduler=None, return_models=False):
@@ -176,21 +176,21 @@ def run_training(dataset, model, optimizer, criterion, config, scheduler=None, r
         epoch_log = 100
         if epoch == 0:
             model.eval()
-            tes_accuracy, activity, info = run_testing(dataset=dataset, model=model, n_trials=n_trials, verbose=False)
-            test_accuracy.append(tes_accuracy)
+            accuracy, _, _, _, _, _ = run_testing(dataset=dataset, model=model, n_trials=n_trials, verbose=False)
+            test_accuracy.append(accuracy)
             if return_models:
                 model_state[epoch] = copy.deepcopy(model.state_dict())
             model.train()
         elif epoch % epoch_log == int(epoch_log-1):
             model.eval()
-            tes_accuracy, activity, info = run_testing(dataset=dataset, model=model, n_trials=n_trials, verbose=False)
-            test_accuracy.append(tes_accuracy)
+            accuracy, _, _, _, _, _ = run_testing(dataset=dataset, model=model, n_trials=n_trials, verbose=False)
+            test_accuracy.append(accuracy)
             if return_models:
                 model_state[epoch] = copy.deepcopy(model.state_dict())
             model.train()
 
             print('epoch {:d} | running training loss: {:0.5f} | running validation loss: {:0.5f} | test accuracy: {:0.2f}%'
-                  .format(epoch + 1, running_loss / epoch_log, running_loss_val / epoch_log, tes_accuracy * 100))
+                  .format(epoch + 1, running_loss / epoch_log, running_loss_val / epoch_log, accuracy * 100))
             running_loss = 0.0
             running_loss_val = 0.0
 
@@ -227,16 +227,21 @@ def run_testing(dataset, model, n_trials=1000, verbose=True):
     env.timing = infer_test_timing(env)
     env.reset(no_step=True)
 
+    # compute test performance
+    inputs = list()
+    labels = list()
+    hidden_activity = list()
+    output_activity = list()
+    info = pd.DataFrame()
     with torch.no_grad():
-        # compute test performance
-        activity = list()
-        info = pd.DataFrame()
         for trial in range(n_trials):
             env.reset(seed=int(trial))
             env.new_trial()
             ob, gt = env.ob, env.gt
-            inputs = torch.from_numpy(ob[:, np.newaxis, :]).type(torch.float).to(device)
-            action_pred, hidden = model(inputs)
+            inputs.append(ob)
+            labels.append(gt)
+            ob = torch.from_numpy(ob[:, np.newaxis, :]).type(torch.float).to(device)
+            action_pred, hidden = model(ob)
 
             # detach
             try:
@@ -251,16 +256,21 @@ def run_testing(dataset, model, n_trials=1000, verbose=True):
             correct = choice == gt[-1]
 
             # Log stimulus period activity
-            activity.append(np.array(hidden)[:, 0, :])
+            hidden_activity.append(np.array(hidden)[:, 0, :])
+            output_activity.append(np.array(action_pred)[:, 0, :])
 
             # Log trial info
             trial_info = env.trial
             trial_info.update({'correct': correct, 'choice': choice})
             info = pd.concat((info, pd.DataFrame([trial_info])), ignore_index=True)
 
-        activity = np.array(activity)
         accuracy = np.mean(info['correct'])
         if verbose:
             print('Average accuracy across {:} trials: {:.2f}%'.format(n_trials, accuracy*100))
 
-        return accuracy, activity, info
+        inputs = np.array(inputs)
+        labels = np.array(labels)
+        hidden_activity = np.array(hidden_activity)
+        output_activity = np.array(output_activity)
+
+        return accuracy, inputs, labels, hidden_activity, output_activity, info
