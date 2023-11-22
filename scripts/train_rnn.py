@@ -25,25 +25,17 @@ def train(config):
     outdir = config['outdir']
 
     # task parameters
-    task = config['task']
     dataset = config['dataset']
-    input_size = dataset.env.observation_space.shape[0]
-    num_classes = dataset.env.action_space.n
-    seq_len = config['seq_len']
-    batch_size = config['batch_size']
-    decision = config['env_kwargs']['timing']['decision']
 
     # RNN model and training parameters
     rnn_model = config['rnn_model']
     hidden_size = config['hidden_size']
+    lr = config['lr']
     n_runs = config['n_runs']
     n_epochs = config['n_epochs']
-    lr = config['lr']
     mask_weights = config['mask_weights']
 
     # regularization parameters
-    reg_type = config['reg_type']
-    reg_weight = config['reg_weight']
     kernel_type = config['kernel_type']
     kernel_std_frac = config['kernel_std_frac']
     comet_buffer_frac = config['comet_buffer_frac']
@@ -167,16 +159,16 @@ def get_args():
     parser.add_argument('--task', type=str, default='PerceptualDecisionMaking-v0')
     parser.add_argument('--dt', type=int, default=100)
     parser.add_argument('--seq_len', type=int, default=200)
-    parser.add_argument('--batch_size', type=int, default=128)
     parser.add_argument('--decision', type=int, default=300)
     parser.add_argument('--standardize_task', type=str, default='False')
 
     # RNN model and training parameters
     parser.add_argument('--rnn_model', type=str, default='rnn-tanh')
     parser.add_argument('--hidden_size', type=int, default=100)
+    parser.add_argument('--batch_size', type=int, default=128)
+    parser.add_argument('--lr', type=float, default=0.001)
     parser.add_argument('--n_runs', type=int, default=50)
     parser.add_argument('--n_epochs', type=int, default=5000)
-    parser.add_argument('--lr', type=float, default=0.001)
     parser.add_argument('--mask_weights', type=str, default='True')
 
     # regularization parameters
@@ -199,6 +191,7 @@ if __name__ == '__main__':
 
     if args.kernel_type == 'None':
         args.kernel_type = None
+
     if args.mask_weights == 'False':
         args.mask_weights = False
     elif args.mask_weights == 'True':
@@ -224,14 +217,14 @@ if __name__ == '__main__':
         'task': args.task,
         'dt': args.dt,
         'seq_len': args.seq_len,
-        'batch_size': args.batch_size,
 
         # RNN model and training parameters
         'rnn_model': args.rnn_model,
         'hidden_size': args.hidden_size,
+        'batch_size': args.batch_size,
+        'lr': args.lr,
         'n_runs': args.n_runs,
         'n_epochs': args.n_epochs,
-        'lr': args.lr,
         'mask_weights': args.mask_weights,
 
         # regularization parameters
