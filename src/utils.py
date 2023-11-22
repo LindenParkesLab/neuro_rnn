@@ -259,15 +259,15 @@ def get_file_str(config):
     # task parameters
     task = config['task']
     seq_len = config['seq_len']
-    batch_size = config['batch_size']
     decision = config['env_kwargs']['timing']['decision']
 
     # RNN model and training parameters
     rnn_model = config['rnn_model']
     hidden_size = config['hidden_size']
+    batch_size = config['batch_size']
+    lr = config['lr']
     n_runs = config['n_runs']
     n_epochs = config['n_epochs']
-    lr = config['lr']
     mask_weights = config['mask_weights']
     n_io = config['n_io']
 
@@ -282,33 +282,33 @@ def get_file_str(config):
         comet_buffer_frac = config['comet_buffer_frac']
         comet_tail_frac = config['comet_tail_frac']
 
-    if kernel_type is None or kernel_type == 'sa_axis' or kernel_type == 'euclidean':
-        file_str = 'task-{:}-{:}-{:}-{:}_' \
+    if kernel_type == 'static':
+        file_str = 'task-{:}-{:}-{:}_' \
                    'model-{:}-{:}-{:}-{:}-{:}-{:}_' \
-                   'wmask-{:}_' \
-                   'reg-{:}-{:}-{:}' \
-            .format(task, seq_len, batch_size, decision,
-                    rnn_model, hidden_size, n_io, n_runs, n_epochs, lr,
-                    mask_weights,
-                    reg_type, reg_weight, kernel_type)
-    elif kernel_type == 'static':
-        file_str = 'task-{:}-{:}-{:}-{:}_' \
-                   'model-{:}-{:}-{:}-{:}-{:}-{:}_' \
-                   'wmask-{:}_' \
+                   'wmask-{:}-{:}_' \
                    'reg-{:}-{:}-{:}-{:}' \
-            .format(task, seq_len, batch_size, decision,
-                    rnn_model, hidden_size, n_io, n_runs, n_epochs, lr,
-                    mask_weights,
+            .format(task, seq_len, decision,
+                    rnn_model, hidden_size, batch_size, lr, n_runs, n_epochs,
+                    mask_weights, n_io,
                     reg_type, reg_weight, kernel_type, kernel_std_frac)
     elif kernel_type == 'comet':
-        file_str = 'task-{:}-{:}-{:}-{:}_' \
+        file_str = 'task-{:}-{:}-{:}_' \
                    'model-{:}-{:}-{:}-{:}-{:}-{:}_' \
-                   'wmask-{:}_' \
+                   'wmask-{:}-{:}_' \
                    'reg-{:}-{:}-{:}-{:}-{:}-{:}' \
-            .format(task, seq_len, batch_size, decision,
-                    rnn_model, hidden_size, n_io, n_runs, n_epochs, lr,
-                    mask_weights,
+            .format(task, seq_len, decision,
+                    rnn_model, hidden_size, batch_size, lr, n_runs, n_epochs,
+                    mask_weights, n_io,
                     reg_type, reg_weight, kernel_type, kernel_std_frac, comet_buffer_frac, comet_tail_frac)
+    else:
+        file_str = 'task-{:}-{:}-{:}_' \
+                   'model-{:}-{:}-{:}-{:}-{:}-{:}_' \
+                   'wmask-{:}-{:}_' \
+                   'reg-{:}-{:}-{:}' \
+            .format(task, seq_len, decision,
+                    rnn_model, hidden_size, batch_size, lr, n_runs, n_epochs,
+                    mask_weights, n_io,
+                    reg_type, reg_weight, kernel_type)
 
     return file_str
 
