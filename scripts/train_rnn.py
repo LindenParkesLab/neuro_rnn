@@ -119,47 +119,49 @@ def train(config):
     file_str = get_file_str(config)
     print('\n')
     print(file_str)
+    if os.path.isfile(os.path.join(config['outdir'], file_str + '.pt')):
+        print('found outputs! skipping... ')
+    else:
+        for run in np.arange(n_runs):
+            print('Run {:}'.format(run))
+            # seed random seed for reproducibility across runs
+            random.seed(int(run))
+            np.random.seed(int(run))
+            torch.manual_seed(int(run))
+            torch.cuda.manual_seed(int(run))
+            torch.cuda.manual_seed_all(int(run))
 
-    for run in np.arange(n_runs):
-        print('Run {:}'.format(run))
-        # seed random seed for reproducibility across runs
-        random.seed(int(run))
-        np.random.seed(int(run))
-        torch.manual_seed(int(run))
-        torch.cuda.manual_seed(int(run))
-        torch.cuda.manual_seed_all(int(run))
+            # initialize the model
+            model = RNN(input_size=input_size, hidden_size=hidden_size, num_classes=n_classes,
+                        type=rnn_model, regularization_kernel=regularization_kernel,
+                        input_weight_mask=input_weight_mask, output_weight_mask=output_weight_mask).to(device)
+            optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+            criterion = nn.CrossEntropyLoss()
+            scheduler = None
 
-        # initialize the model
-        model = RNN(input_size=input_size, hidden_size=hidden_size, num_classes=n_classes,
-                    type=rnn_model, regularization_kernel=regularization_kernel,
-                    input_weight_mask=input_weight_mask, output_weight_mask=output_weight_mask).to(device)
-        optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-        criterion = nn.CrossEntropyLoss()
-        scheduler = None
+            # train the model
+            training_loss[run, :], validation_loss[run, :], test_accuracy[run, :], \
+            trained_models[run] = run_training(dataset=dataset, model=model, optimizer=optimizer,
+                                               criterion=criterion, config=config, scheduler=scheduler,
+                                               return_models=True)
 
-        # train the model
-        training_loss[run, :], validation_loss[run, :], test_accuracy[run, :], \
-        trained_models[run] = run_training(dataset=dataset, model=model, optimizer=optimizer,
-                                           criterion=criterion, config=config, scheduler=scheduler,
-                                           return_models=True)
+            # get all outputs for final model
+            _, inputs[run], labels[run], hidden_activity[run], output_activity[run], info[run] \
+                = run_testing(dataset=dataset, model=model, n_trials=n_trials)
 
-        # get all outputs for final model
-        _, inputs[run], labels[run], hidden_activity[run], output_activity[run], info[run] \
-            = run_testing(dataset=dataset, model=model, n_trials=n_trials)
-
-    # save model and outputs
-    torch.save(trained_models, os.path.join(outdir, file_str + '.pt'))
-    log_args = {
-        'training_loss': training_loss,
-        'validation_loss': validation_loss,
-        'test_accuracy': test_accuracy,
-        'inputs': inputs,
-        'labels': labels,
-        'hidden_activity': hidden_activity,
-        'output_activity': output_activity,
-        'info': info
-    }
-    np.save(os.path.join(outdir, file_str), log_args)
+        # save model and outputs
+        torch.save(trained_models, os.path.join(outdir, file_str + '.pt'))
+        log_args = {
+            'training_loss': training_loss,
+            'validation_loss': validation_loss,
+            'test_accuracy': test_accuracy,
+            'inputs': inputs,
+            'labels': labels,
+            'hidden_activity': hidden_activity,
+            'output_activity': output_activity,
+            'info': info
+        }
+        np.save(os.path.join(outdir, file_str), log_args)
 
 def get_args():
     '''function to get args from command line and return the args
