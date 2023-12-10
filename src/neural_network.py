@@ -93,6 +93,8 @@ def run_training(dataset, model, optimizer, criterion, config, scheduler=None, r
     t_overall = timer()
     if next(model.parameters()).is_cuda:
         device = torch.device('cuda')
+    elif next(model.parameters()).is_mps:
+        device = torch.device('mps')
     else:
         device = torch.device('cpu')
     dt = config['dt']
@@ -219,6 +221,8 @@ def infer_test_timing(env):
 def run_testing(dataset, model, n_trials=1000, verbose=True):
     if next(model.parameters()).is_cuda:
         device = torch.device('cuda')
+    elif next(model.parameters()).is_mps:
+        device = torch.device('mps')
     else:
         device = torch.device('cpu')
 
