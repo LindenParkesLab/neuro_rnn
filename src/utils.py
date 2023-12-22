@@ -204,6 +204,11 @@ def make_matrix_masks(input_weight_mask, output_weight_mask, bystanders):
     # bystanders to outputs
     output_bystanders = bystanders_output.T
 
+    # bidirectional masks
+    input_output_symmetric = output_input + input_output
+    input_bystanders_symmetric = bystanders_input + input_bystanders
+    output_bystanders_symmetric = bystanders_output + output_bystanders
+
     masks = dict()
     # vector masks
     masks['input_weight_mask'] = input_weight_mask
@@ -220,6 +225,10 @@ def make_matrix_masks(input_weight_mask, output_weight_mask, bystanders):
     masks['bystanders_input'] = bystanders_input
     masks['output_bystanders'] = output_bystanders
     masks['bystanders_output'] = bystanders_output
+
+    masks['input_output_symmetric'] = input_output_symmetric
+    masks['input_bystanders_symmetric'] = input_bystanders_symmetric
+    masks['output_bystanders_symmetric'] = output_bystanders_symmetric
 
     return masks
 
