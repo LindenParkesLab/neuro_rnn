@@ -2,7 +2,7 @@ import numpy as np
 import scipy as sp
 from scipy import signal
 import torch
-
+from sklearn.decomposition import PCA
 
 def normalize_x(x):
     return (x - np.min(x)) / (np.max(x) - np.min(x))
@@ -378,3 +378,79 @@ def compute_fc(ts):
     np.fill_diagonal(fc, 1)
 
     return fc
+
+def compute_pc_var(hidden_activity, n_components=3, normalize=True):
+
+    [n_trials, n_timepoints, n_nodes] = hidden_activity.shape
+    if n_components > 0:
+        pca = PCA(n_components=n_components)
+        [n_trials, n_timepoints, n_nodes] = hidden_activity.shape
+        activity_reshape = np.reshape(hidden_activity, (n_trials*n_timepoints, n_nodes))
+        pca.fit(activity_reshape)
+
+        hidden_activity_pc = np.zeros((n_trials, n_timepoints, n_components))
+        for trial in np.arange(n_trials):
+            hidden_activity_pc[trial] = pca.transform(hidden_activity[trial])
+    else:
+        hidden_activity_pc = np.mean(hidden_activity, axis=-1)
+        hidden_activity_pc = hidden_activity_pc[:, :, np.newaxis]
+
+    hidden_activity_pc_var = np.zeros((n_timepoints, hidden_activity_pc.shape[-1]))
+    for timepoint in np.arange(n_timepoints):
+        pc_var = np.var(hidden_activity_pc[:, timepoint], axis=0)
+        if timepoint > 0 and normalize:
+            hidden_activity_pc_var[timepoint] = pc_var / pc_var_prev
+        else:
+            hidden_activity_pc_var[timepoint] = pc_var
+        pc_var_prev = pc_var.copy()
+    hidden_activity_pc_var[np.isnan(hidden_activity_pc_var)] = 0
+    hidden_activity_pc_var[np.isinf(hidden_activity_pc_var)] = 0
+
+    return hidden_activity_pc_var
+
+def get_my_colors(normalize=True, as_list=False, cat_trio=False):
+    # color palette (RGB / HEX):
+    # raspberry blush: rgba(234,86,81,255) / #ea5651
+    # conch shell: rgba(238,186,169,255) / #eebaa9
+    # cinnamon: rgba(165,74,54,255) / #a54a36
+    # wenge: rgba(63,44,41,255) / #3f2c29
+    # savannah green: rgba(194,158,62,255) / #c29e3e
+    # new age: rgba(217,206,209,255) / #d9ced1
+    # starry night blue: rgba(48,65,121,255) / #304179
+    # north sea green: rgba(0,111,116,255) / #006f74
+    my_colors = dict()
+    my_colors['raspberry_blush'] = [234, 86, 81]
+    my_colors['starry_night_blue'] = [48, 65, 121]
+    my_colors['north_sea_green'] = [0, 111, 116]
+    if not cat_trio:
+        my_colors['conch_shell'] = [238, 186, 169]
+        my_colors['cinnamon'] = [165, 74, 54]
+        my_colors['wenge'] = [63, 44, 41]
+        my_colors['savannah_green'] = [194, 158, 62]
+        my_colors['new_age'] = [217, 206, 209]
+
+    if normalize:
+        for key in my_colors.keys():
+            my_colors[key] = [color / 255 for color in my_colors[key]]
+
+    if as_list:
+        my_colors = list(my_colors.values())
+
+    return my_colors
+
+
+def get_slopes(feature, segment_size=20):
+    n_runs, n_epochs = feature.shape
+    n_epochs_trim = n_epochs - segment_size
+    slopes = np.zeros((n_runs, n_epochs))
+    slopes[:] = np.nan
+
+    x = np.arange(segment_size)
+    y = sp.stats.zscore(feature, axis=1)
+
+    for i in np.arange(n_runs):
+        for j in np.arange(n_epochs_trim):
+            results = sp.stats.linregress(x, y[i, j:(j+segment_size)])
+            slopes[i, j] = results.slope
+
+    return slopes
