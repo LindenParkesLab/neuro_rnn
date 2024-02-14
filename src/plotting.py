@@ -8,12 +8,12 @@ import math
 from scipy import stats
 
 import seaborn as sns
-import pkg_resources
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import matplotlib.patheffects as pe
 from sklearn.decomposition import PCA
 
+from src.utils import get_my_colors
 
 def my_reg_plot(x, y, xlabel, ylabel, ax, c='gray', annotate='pearson', regr_line=True, kde=True, fontsize=8):
     if len(x.shape) > 1 and len(y.shape) > 1:
@@ -55,14 +55,15 @@ def my_reg_plot(x, y, xlabel, ylabel, ax, c='gray', annotate='pearson', regr_lin
 
     # regression line
     if regr_line == True:
-        color_blue = sns.color_palette("Set1")[1]
-        sns.regplot(x=x, y=y, ax=ax, scatter=False, color=color_blue)
+        # color_blue = sns.color_palette("Set1")[1]
+        my_colors = get_my_colors()
+        sns.regplot(x=x, y=y, ax=ax, scatter=False, color=my_colors['north_sea_green'])
 
     # scatter plot
     if type(c) == str:
-        ax.scatter(x=x, y=y, c=c, s=5, alpha=0.5)
+        ax.scatter(x=x, y=y, c=c, s=2.5, alpha=0.5)
     else:
-        ax.scatter(x=x, y=y, c=c, cmap='viridis', s=5, alpha=0.5)
+        ax.scatter(x=x, y=y, c=c, cmap='viridis', s=2.5, alpha=0.5)
 
     # axis options
     ax.set_xlabel(xlabel, labelpad=0)
