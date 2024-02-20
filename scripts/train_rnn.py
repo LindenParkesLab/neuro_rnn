@@ -33,6 +33,7 @@ def train(config):
     lr = config['lr']
     n_runs = config['n_runs']
     n_epochs = config['n_epochs']
+    epoch_log = config['epoch_log']
     mask_weights = config['mask_weights']
 
     # regularization parameters
@@ -98,7 +99,6 @@ def train(config):
     # variable containers
     training_loss = np.zeros((n_runs, n_epochs))
     validation_loss = np.zeros((n_runs, n_epochs))
-    epoch_log = 100
     test_accuracy = np.zeros((n_runs, int((n_epochs/epoch_log)+1)))
     trained_models = dict()
 
@@ -143,7 +143,7 @@ def train(config):
             training_loss[run, :], validation_loss[run, :], test_accuracy[run, :], \
             trained_models[run] = run_training(dataset=dataset, model=model, optimizer=optimizer,
                                                criterion=criterion, config=config, scheduler=scheduler,
-                                               return_models=True)
+                                               return_models=True, epoch_log=epoch_log)
 
             # get all outputs for final model
             _, inputs[run], labels[run], hidden_activity[run], output_activity[run], info[run] \
@@ -188,6 +188,7 @@ def get_args():
     parser.add_argument('--lr', type=float, default=0.001)
     parser.add_argument('--n_runs', type=int, default=50)
     parser.add_argument('--n_epochs', type=int, default=5000)
+    parser.add_argument('--epoch_log', type=int, default=100)
     parser.add_argument('--mask_weights', type=str, default='True')
 
     # regularization parameters
@@ -244,6 +245,7 @@ if __name__ == '__main__':
         'lr': args.lr,
         'n_runs': args.n_runs,
         'n_epochs': args.n_epochs,
+        'epoch_log': args.epoch_log,
         'mask_weights': args.mask_weights,
 
         # regularization parameters

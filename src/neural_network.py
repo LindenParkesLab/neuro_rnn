@@ -88,7 +88,7 @@ class RNN(nn.Module):
         return action_pred, hidden
 
 
-def run_training(dataset, model, optimizer, criterion, config, scheduler=None, return_models=False):
+def run_training(dataset, model, optimizer, criterion, config, scheduler=None, return_models=False, epoch_log=10):
     model.train()
     t_overall = timer()
     if next(model.parameters()).is_cuda:
@@ -175,7 +175,6 @@ def run_training(dataset, model, optimizer, criterion, config, scheduler=None, r
         running_loss += loss.item()
         running_loss_val += loss_val.item()
         n_trials = 100
-        epoch_log = 100
         if epoch == 0:
             model.eval()
             accuracy, _, _, _, _, _ = run_testing(dataset=dataset, model=model, n_trials=n_trials, verbose=False)

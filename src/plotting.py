@@ -1,5 +1,5 @@
 import sys, os, platform
-from src.utils import get_p_val_string
+from src.utils import get_p_val_string, compute_pc_var, get_my_colors
 
 import numpy as np
 import pandas as pd
@@ -8,11 +8,12 @@ import math
 from scipy import stats
 
 import seaborn as sns
-import pkg_resources
 import matplotlib as mpl
 import matplotlib.pyplot as plt
+import matplotlib.patheffects as pe
 from sklearn.decomposition import PCA
 
+from src.utils import get_my_colors
 
 def my_reg_plot(x, y, xlabel, ylabel, ax, c='gray', annotate='pearson', regr_line=True, kde=True, fontsize=8):
     if len(x.shape) > 1 and len(y.shape) > 1:
@@ -54,14 +55,15 @@ def my_reg_plot(x, y, xlabel, ylabel, ax, c='gray', annotate='pearson', regr_lin
 
     # regression line
     if regr_line == True:
-        color_blue = sns.color_palette("Set1")[1]
-        sns.regplot(x=x, y=y, ax=ax, scatter=False, color=color_blue)
+        # color_blue = sns.color_palette("Set1")[1]
+        my_colors = get_my_colors()
+        sns.regplot(x=x, y=y, ax=ax, scatter=False, color=my_colors['north_sea_green'])
 
     # scatter plot
     if type(c) == str:
-        ax.scatter(x=x, y=y, c=c, s=5, alpha=0.5)
+        ax.scatter(x=x, y=y, c=c, s=2.5, alpha=0.5)
     else:
-        ax.scatter(x=x, y=y, c=c, cmap='viridis', s=5, alpha=0.5)
+        ax.scatter(x=x, y=y, c=c, cmap='viridis', s=2.5, alpha=0.5)
 
     # axis options
     ax.set_xlabel(xlabel, labelpad=0)
@@ -114,50 +116,166 @@ def get_conditions(info):
     return new_conditions
 
 
-def plot_activity(activity, info, config, condition='choice', run_pca=False, mask=None):
-    if run_pca:
-        f_width = 4
-        f_height = 4
-    else:
+def plot_activity(hidden_activity, info, config, condition='choice', n_components=0, mask=None):
+    cmap = sns.color_palette("Set2")
+    if mask is not None:
+        hidden_activity = hidden_activity[:, :, mask]
+    [n_trials, n_timepoints, n_nodes] = hidden_activity.shape
+
+    if n_components == 0:
+        hidden_activity = hidden_activity.mean(axis=-1)
         f_width = 5
         f_height = 1.5
-
-    if mask is not None:
-        activity = activity[:, :, mask]
-        if activity.ndim == 3 and run_pca:
-            activity_reshape = np.reshape(activity, (-1, activity.shape[-1]))
-            pca = PCA(n_components=2)
-            pca.fit(activity_reshape)
-        elif activity.ndim == 3 and not run_pca:
-            activity = activity.mean(axis=-1)
-    elif mask is None and run_pca:
-        activity_reshape = np.reshape(activity, (-1, activity.shape[-1]))
-        pca = PCA(n_components=2)
+    elif n_components:
+        pca = PCA(n_components=n_components)
+        activity_reshape = np.reshape(hidden_activity, (n_trials*n_timepoints, n_nodes))
         pca.fit(activity_reshape)
-    elif mask is None and not run_pca:
-        activity = activity.mean(axis=-1)
+        print(pca.explained_variance_ratio_)
+        f_width = 4
+        f_height = 4
 
-    f, ax = plt.subplots(1, 1, figsize=(f_width, f_height))
-    t_plot = np.arange(activity.shape[1]) * config['dt']
-    values = pd.unique(info[condition])
-    for value in values:
-        if run_pca:
-            a = activity[info[condition] == value].mean(axis=0)
-            a = pca.transform(a)  # (N_time, N_PC)
-            plt.plot(a[:, 0], a[:, 1], 'o-', label=str(value))
-        else:
-            a = activity[info[condition] == value]
-            ax.plot(t_plot, a.mean(axis=0), 'o-', label=str(value))
-    ax.legend(title=condition, loc='center left', bbox_to_anchor=(1.0, 0.5))
-    if run_pca:
-        ax.set_xlabel('PC 1')
-        ax.set_ylabel('PC 2')
+    if n_components >= 3:
+        f, ax = plt.subplots(1, 1, figsize=(f_width, f_height), subplot_kw={'projection': '3d'})
     else:
+        f, ax = plt.subplots(1, 1, figsize=(f_width, f_height))
+
+    if n_components == 0:
+        for value in pd.unique(info[condition]):
+            activity_to_plot = hidden_activity[info[condition] == value].mean(axis=0)
+            t_plot = np.arange(hidden_activity.shape[1]) * config['dt']
+            ax.plot(t_plot, activity_to_plot, 'o-', label=str(value), color=cmap[value])
+    else:
+        for trial in np.arange(n_trials):
+            try:
+                trial_size = info['coh'].iloc[trial]/info['coh'].max()
+            except:
+                trial_size = 0.5
+
+            activity_to_plot = hidden_activity[trial]
+            activity_to_plot = pca.transform(activity_to_plot)
+            if n_components == 2:
+                plt.plot(activity_to_plot[:, 0], activity_to_plot[:, 1], 'o-', color=cmap[info[condition].iloc[trial]], linewidth=trial_size, markersize=trial_size)
+            elif n_components == 3:
+                plt.plot(activity_to_plot[:, 0], activity_to_plot[:, 1], activity_to_plot[:, 2], 'o-', color=cmap[info[condition].iloc[trial]], linewidth=trial_size, markersize=trial_size)
+
+            # add mean
+            for value in pd.unique(info[condition]):
+                activity_to_plot = hidden_activity[info[condition] == value].mean(axis=0)
+                activity_to_plot = pca.transform(activity_to_plot)
+                if n_components == 2:
+                    plt.plot(activity_to_plot[:, 0], activity_to_plot[:, 1], 'o-', color=cmap[value], label=str(value), path_effects=[pe.Stroke(linewidth=2, foreground='k'), pe.Normal()])
+                elif n_components == 3:
+                    plt.plot(activity_to_plot[:, 0], activity_to_plot[:, 1], activity_to_plot[:, 2], 'o-', color=cmap[value], label=str(value), path_effects=[pe.Stroke(linewidth=2, foreground='k'), pe.Normal()])
+
+    if n_components == 0:
         ax.set_xlabel('Time (ms)')
         ax.set_ylabel('Activity')
+        ax.legend(title=condition, loc='center left', bbox_to_anchor=(1.0, 0.5))
+    else:
+        ax.set_xlabel('PC 1')
+        ax.set_ylabel('PC 2')
+        if n_components >= 3:
+            ax.set_zlabel('PC 3')
+        # ax.legend(title=condition)
+
     if mask is not None and type(mask) == int:
         ax.set_title('Unit {:d}'.format(mask + 1))
 
+    f.tight_layout()
+    plt.show()
+
+
+def plot_activity_variance(hidden_activity, config, n_components=3, normalize=True, mean=False, mask=None):
+    if mask is not None:
+        hidden_activity = hidden_activity[:, :, mask]
+    hidden_activity_pc_var = compute_pc_var(hidden_activity, n_components=n_components, normalize=normalize)
+
+    cmap = sns.color_palette("Set1")
+    f, ax = plt.subplots(1, 1, figsize=(5, 1.5))
+    t_plot = np.arange(hidden_activity.shape[1]) * config['dt']
+    if mean:
+        ax.plot(t_plot, hidden_activity_pc_var.mean(axis=1), 'o-', label='mean', color=cmap[0])
+    else:
+        if n_components > 0:
+            for pc in np.arange(n_components):
+                ax.plot(t_plot, hidden_activity_pc_var[:, pc], 'o-', label=str(pc+1), color=cmap[pc])
+        else:
+            ax.plot(t_plot, hidden_activity_pc_var[:, 0], 'o-', label='Mean', color=cmap[0])
+
+    ax.set_xlabel('Time (ms)')
+    ax.set_ylabel('PC variance')
+    if n_components > 0:
+        ax.legend(title='PCs', loc='center left', bbox_to_anchor=(1.0, 0.5))
+    else:
+        ax.legend(title='', loc='center left', bbox_to_anchor=(1.0, 0.5))
+    f.tight_layout()
+    plt.show()
+
+
+def plot_accuracy_vs_feature(accuracy, feature, rnn_label='', feature_label='',
+                             fig_width=4, fig_height=2, accuracy_color='r', feature_color='k'):
+    f, ax = plt.subplots(1, 1, figsize=(fig_width, fig_height))
+    ax_twin = ax.twinx()
+
+    # add accuracy to plot
+    n_runs = accuracy.shape[0]
+    accuracy_mean = np.nanmean(accuracy, axis=0)*100
+    accuracy_std = np.nanstd(accuracy, axis=0)*100
+    ci = 1.96 * (accuracy_std / np.sqrt(n_runs))
+    accuracy_ci_lower = accuracy_mean - ci
+    accuracy_ci_upper = accuracy_mean + ci
+
+    n_logged_epochs = accuracy.shape[1]
+    x_step = 100
+    n_epochs = n_logged_epochs * x_step
+    x = np.arange(x_step, n_epochs + x_step, x_step)
+    # print(x)
+
+    ax.plot(x, accuracy_mean, color=accuracy_color, label=rnn_label)
+    ax.fill_between(x, accuracy_ci_lower, accuracy_ci_upper, color=accuracy_color, alpha=0.25)
+    ax.set_ylim([-2.5, 100])
+    ax.set_ylabel('Accuracy (%)')
+    ax.set_xlabel('Epochs')
+
+    # overlay feature
+    y_mean = np.nanmean(feature, axis=0)
+    y_std = np.nanstd(feature, axis=0)
+    ci = 1.96 * (y_std / np.sqrt(n_runs))
+    ci_lower = y_mean - ci
+    ci_upper = y_mean + ci
+
+    x_step2 = int(n_logged_epochs / (feature.shape[1]-1))
+    x2 = x[::x_step2]
+    if len(x2) < len(y_mean):
+        x2 = np.append(x2, n_epochs)
+    # print(x_step2, x2)
+
+    if y_mean.ndim == 1:
+        ax_twin.plot(x2, y_mean, color=feature_color, label=feature_label)
+        ax_twin.fill_between(x2, ci_lower, ci_upper, color=feature_color, alpha=0.25)
+    elif y_mean.ndim == 2:
+        n_loops = y_mean.shape[1]
+        for i in np.arange(n_loops):
+            try:
+                ax_twin.plot(x2, y_mean[:, i], color=feature_color[i], alpha=0.75)
+                ax_twin.fill_between(x2, ci_lower[:, i], ci_upper[:, i], color=feature_color[i], alpha=0.25)
+            except:
+                ax_twin.plot(x2, y_mean[:, i], color=feature_color, alpha=0.75)
+                ax_twin.fill_between(x2, ci_lower[:, i], ci_upper[:, i], color=feature_color, alpha=0.25)
+
+    ax_twin.set_ylabel(feature_label)
+    lines, labels = ax.get_legend_handles_labels()
+    lines2, labels2 = ax_twin.get_legend_handles_labels()
+    ax_twin.legend(lines + lines2, labels + labels2)
+
+    # set axis limits and despine
+    for this_ax in [ax, ax_twin]:
+        sns.despine(offset=3, trim=False, left=False, right=False, top=True, bottom=False, ax=this_ax)
+
+    f.tight_layout()
+    plt.show()
+
+    return f
 
 def plot_iodata(
     x, y, n_trials=7, palette=None,
