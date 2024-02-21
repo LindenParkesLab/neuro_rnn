@@ -277,3 +277,34 @@ def run_testing(dataset, model, n_trials=1000, verbose=True):
         output_activity = np.array(output_activity)
 
         return accuracy, inputs, labels, hidden_activity, output_activity, info
+
+def train_helper(run, dataset, model, optimizer, criterion, \
+    config, scheduler, epoch_log, n_trials):
+    #for run in np.arange(n_runs):
+    # print('Run {:}'.format(run))
+    # seed random seed for reproducibility across runs
+    random.seed(int(run))
+    np.random.seed(int(run))
+    torch.manual_seed(int(run))
+    torch.cuda.manual_seed(int(run))
+    torch.cuda.manual_seed_all(int(run))
+    # train the model
+    training_loss, validation_loss, test_accuracy, trained_models \
+        = run_training(dataset=dataset, model=model, optimizer=optimizer,
+                                    criterion=criterion, config=config, scheduler=scheduler,
+                                    return_models=True, epoch_log=epoch_log)
+    # get all outputs for final model
+    _, inputs, labels, hidden_activity, output_activity, info \
+        = run_testing(dataset=dataset, model=model, n_trials=n_trials)
+    outputs = {
+        'training_loss': training_loss,
+        'validation_loss': validation_loss,
+        'test_accuracy': test_accuracy,
+        'trained_models': trained_models,
+        'inputs': inputs,
+        'labels': labels,
+        'hidden_activity': hidden_activity,
+        'output_activity': output_activity,
+        'info': info
+    }
+    return outputs

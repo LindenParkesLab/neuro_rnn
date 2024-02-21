@@ -1,7 +1,10 @@
 ########################################################################################################################
 # directories
-scriptsdir='/home/lindenmp/research_projects/neuro_rnn/scripts'
-outdir='/media/lindenmp/storage_ssd/research_projects/neuro_rnn/results/pytorch/model'
+#scriptsdir='/home/lindenmp/research_projects/neuro_rnn/scripts'
+#outdir='/media/lindenmp/storage_ssd/research_projects/neuro_rnn/results/pytorch/model'
+scriptsdir='/Users/ahmad/software/snaplab_github/neuro_rnn/scripts'
+datadir='/Users/ahmad/software/snaplab_github/neuro_rnn/data'
+outdir='/Users/ahmad/data/rutgers/neuro_rnn/results/pytorch/model'
 ########################################################################################################################
 
 ########################################################################################################################
@@ -10,8 +13,8 @@ seq_len_multi=5
 rnn_model='rnn-tanh'
 hidden_size=100
 batch_size=32
-n_runs=100
-n_epochs=25000
+n_runs=12 #100
+n_epochs=2500 #25000
 epoch_log=100
 reg_type='l2'
 
@@ -38,11 +41,23 @@ for task in 'PerceptualDecisionMaking-v0' 'MultiSensoryIntegration-v0' 'ContextD
     seq_len=$(( seq_len_base + ((decision-100)/100) ))
     seq_len=$(( seq_len * seq_len_multi ))
 
-    python ${scriptsdir}/train_rnn.py --outdir ${outdir} \
-    --task ${task} --seq_len ${seq_len} --standardize_task ${standardize_task} --decision ${decision} \
-    --mask_weights ${mask_weights} --kernel_type ${kernel_type} --reg_weight ${reg_weight} \
-    --rnn_model ${rnn_model} --hidden_size ${hidden_size} --batch_size ${batch_size} --n_runs ${n_runs} \
-    --n_epochs ${n_epochs} --epoch_log ${epoch_log} --reg_type ${reg_type}
+    python ${scriptsdir}/train_rnn.py \
+    --outdir ${outdir} \
+    --datadir ${datadir} \
+    --task ${task} \
+    --seq_len ${seq_len} \
+    --standardize_task ${standardize_task} \
+    --decision ${decision} \
+    --mask_weights ${mask_weights} \
+    --kernel_type ${kernel_type} \
+    --reg_weight ${reg_weight} \
+    --rnn_model ${rnn_model} \
+    --hidden_size ${hidden_size} \
+    --batch_size ${batch_size} \
+    --n_runs ${n_runs} \
+    --n_epochs ${n_epochs} \
+    --epoch_log ${epoch_log} \
+    --reg_type ${reg_type}
   done
 done
 ########################################################################################################################

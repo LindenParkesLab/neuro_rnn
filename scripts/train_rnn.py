@@ -1,9 +1,11 @@
-import os, random, argparse, warnings
+import os, random, argparse, warnings, sys
 import numpy as np
 from scipy.spatial import distance
 import pandas as pd
 import neurogym as ngym
 from tqdm import tqdm
+import multiprocessing
+from functools import partial
 
 import torch
 import torch.nn as nn
@@ -11,7 +13,8 @@ import torch.nn as nn
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(device)
 
-from src.neural_network import RNN, run_training, run_testing
+sys.path.extend(['/Users/ahmad/software/snaplab_github/neuro_rnn', '/Users/ahmad/software/snaplab_github/neuro_rnn/packages/neurogym'])
+from src.neural_network import RNN, run_training, run_testing, train_helper
 from src.utils import normalize_x, build_reg_ken, get_weight_masks, get_weight_masks_schaefer, get_file_str
 
 warnings.simplefilter(action='ignore', category=FutureWarning)
@@ -122,32 +125,34 @@ def train(config):
     if os.path.isfile(os.path.join(config['outdir'], file_str + '.pt')):
         print('found outputs! skipping... ')
     else:
-        for run in np.arange(n_runs):
-            print('Run {:}'.format(run))
-            # seed random seed for reproducibility across runs
-            random.seed(int(run))
-            np.random.seed(int(run))
-            torch.manual_seed(int(run))
-            torch.cuda.manual_seed(int(run))
-            torch.cuda.manual_seed_all(int(run))
-
-            # initialize the model
-            model = RNN(input_size=input_size, hidden_size=hidden_size, num_classes=n_classes,
-                        type=rnn_model, regularization_kernel=regularization_kernel,
-                        input_weight_mask=input_weight_mask, output_weight_mask=output_weight_mask).to(device)
-            optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-            criterion = nn.CrossEntropyLoss()
-            scheduler = None
-
-            # train the model
-            training_loss[run, :], validation_loss[run, :], test_accuracy[run, :], \
-            trained_models[run] = run_training(dataset=dataset, model=model, optimizer=optimizer,
-                                               criterion=criterion, config=config, scheduler=scheduler,
-                                               return_models=True, epoch_log=epoch_log)
-
-            # get all outputs for final model
-            _, inputs[run], labels[run], hidden_activity[run], output_activity[run], info[run] \
-                = run_testing(dataset=dataset, model=model, n_trials=n_trials)
+        # initialize the model
+        model = RNN(input_size=input_size, hidden_size=hidden_size, num_classes=n_classes,
+                    type=rnn_model, regularization_kernel=regularization_kernel,
+                    input_weight_mask=input_weight_mask, output_weight_mask=output_weight_mask).to(device)
+        optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+        criterion = nn.CrossEntropyLoss()
+        scheduler = None
+        
+        # run training in parallel
+        partial_train_helper = partial(train_helper, dataset=dataset, model=model, optimizer=optimizer, criterion=criterion, \
+            config=config, scheduler=scheduler, epoch_log=epoch_log, n_trials=n_trials)
+        train_helper_outputs = [{}]*n_runs
+        with multiprocessing.Pool() as pool:
+            train_helper_outputs = pool.map(partial_train_helper, np.arange(n_runs))
+        
+        # organize training outputs
+        run = 0
+        for run_outputs in train_helper_outputs:
+            training_loss[run,:] = run_outputs['training_loss']
+            validation_loss[run,:] = run_outputs['validation_loss']
+            test_accuracy[run,:] = run_outputs['test_accuracy']
+            trained_models[run] = run_outputs['trained_models']
+            inputs[run] = run_outputs['inputs']
+            labels[run] = run_outputs['labels']
+            hidden_activity[run] = run_outputs['hidden_activity']
+            output_activity[run] = run_outputs['output_activity']
+            info[run] = run_outputs['info']
+            run = run+1
 
         # save model and outputs
         torch.save(trained_models, os.path.join(outdir, file_str + '.pt'))
