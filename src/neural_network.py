@@ -88,7 +88,7 @@ class RNN(nn.Module):
         return action_pred, hidden
 
 
-def run_training(dataset, model, optimizer, criterion, config, scheduler=None, return_models=False, epoch_log=10):
+def run_training(dataset, model, optimizer, criterion, config, scheduler=None, return_models=False, epoch_log=10, run=None):
     model.train()
     t_overall = timer()
     if next(model.parameters()).is_cuda:
@@ -176,6 +176,7 @@ def run_training(dataset, model, optimizer, criterion, config, scheduler=None, r
         running_loss_val += loss_val.item()
         n_trials = 100
         if epoch == 0:
+            epoch_log_timestamp_last = timer()
             model.eval()
             accuracy, _, _, _, _, _ = run_testing(dataset=dataset, model=model, n_trials=n_trials, verbose=False)
             test_accuracy.append(accuracy)
@@ -183,6 +184,9 @@ def run_training(dataset, model, optimizer, criterion, config, scheduler=None, r
                 model_state[epoch] = copy.deepcopy(model.state_dict())
             model.train()
         elif epoch % epoch_log == int(epoch_log-1):
+            epoch_log_timestamp_current = timer()
+            epoch_log_time_elapsed = epoch_log_timestamp_current - epoch_log_timestamp_last
+            epoch_log_timestamp_last = epoch_log_timestamp_current
             model.eval()
             accuracy, _, _, _, _, _ = run_testing(dataset=dataset, model=model, n_trials=n_trials, verbose=False)
             test_accuracy.append(accuracy)
@@ -190,8 +194,12 @@ def run_training(dataset, model, optimizer, criterion, config, scheduler=None, r
                 model_state[epoch] = copy.deepcopy(model.state_dict())
             model.train()
 
-            print('epoch {:d} | running training loss: {:0.5f} | running validation loss: {:0.5f} | test accuracy: {:0.2f}%'
-                  .format(epoch + 1, running_loss / epoch_log, running_loss_val / epoch_log, accuracy * 100))
+            if run == None:
+                print('epoch {:d} | running training loss: {:0.5f} | running validation loss: {:0.5f} | test accuracy: {:0.2f}% | time since last: {:0.3f} s'
+                    .format(epoch + 1, running_loss / epoch_log, running_loss_val / epoch_log, accuracy * 100, epoch_log_time_elapsed))
+            else:
+                print('run {:d} | epoch {:d} | running training loss: {:0.5f} | running validation loss: {:0.5f} | test accuracy: {:0.2f}% | time since last: {:0.3f} s'
+                    .format(run+1, epoch + 1, running_loss / epoch_log, running_loss_val / epoch_log, accuracy * 100, epoch_log_time_elapsed))
             running_loss = 0.0
             running_loss_val = 0.0
 
@@ -278,21 +286,31 @@ def run_testing(dataset, model, n_trials=1000, verbose=True):
 
         return accuracy, inputs, labels, hidden_activity, output_activity, info
 
-def train_helper(run, dataset, model, optimizer, criterion, \
-    config, scheduler, epoch_log, n_trials):
-    #for run in np.arange(n_runs):
-    # print('Run {:}'.format(run))
+def train_helper(run, dataset, input_size, hidden_size, n_classes, rnn_model, \
+    regularization_kernel, input_weight_mask, output_weight_mask, device, lr, \
+    config, epoch_log, n_trials):
+    
     # seed random seed for reproducibility across runs
     random.seed(int(run))
     np.random.seed(int(run))
     torch.manual_seed(int(run))
     torch.cuda.manual_seed(int(run))
     torch.cuda.manual_seed_all(int(run))
+    
+    # initialize the model
+    model = RNN(input_size=input_size, hidden_size=hidden_size, num_classes=n_classes,
+                type=rnn_model, regularization_kernel=regularization_kernel,
+                input_weight_mask=input_weight_mask, output_weight_mask=output_weight_mask).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    criterion = nn.CrossEntropyLoss()
+    scheduler = None
+    
     # train the model
     training_loss, validation_loss, test_accuracy, trained_models \
         = run_training(dataset=dataset, model=model, optimizer=optimizer,
                                     criterion=criterion, config=config, scheduler=scheduler,
-                                    return_models=True, epoch_log=epoch_log)
+                                    return_models=True, epoch_log=epoch_log, run=run)
+        
     # get all outputs for final model
     _, inputs, labels, hidden_activity, output_activity, info \
         = run_testing(dataset=dataset, model=model, n_trials=n_trials)

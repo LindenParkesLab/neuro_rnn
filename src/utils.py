@@ -454,3 +454,28 @@ def get_slopes(feature, segment_size=20):
             slopes[i, j] = results.slope
 
     return slopes
+
+def get_n_threads(threads_in=None, verbose=0):
+    
+    import os, multiprocessing
+
+    cpu_count = multiprocessing.cpu_count()
+    if verbose: print('CPUs available = ' + str(cpu_count))
+
+    omp_limit = os.environ.get('OMP_NUM_THREADS')
+    if omp_limit:
+        if verbose: print('Openmp limit   = ' + omp_limit)
+        omp_limit = int(omp_limit)
+    else:
+        if verbose: print('Openmp limit   = ' + str(omp_limit))
+        omp_limit = None
+        omp_limit = cpu_count
+
+    if verbose: print('User requested = ' + str(threads_in))
+    if threads_in == None or threads_in < 1:
+        n_threads = min(cpu_count, omp_limit)
+    else:
+        n_threads = min(cpu_count, threads_in)
+    if verbose: print('Will use ' + str(n_threads) + ' thread(s).')
+    
+    return n_threads

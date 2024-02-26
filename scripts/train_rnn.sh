@@ -13,14 +13,16 @@ seq_len_multi=5
 rnn_model='rnn-tanh'
 hidden_size=100
 batch_size=32
-n_runs=12 #100
-n_epochs=2500 #25000
+n_runs=24
+n_epochs=25000
 epoch_log=100
 reg_type='l2'
 
 mask_weights='True'
-reg_weight=0.002
+reg_weight=0 # 0.002
 decision=400
+
+n_threads=12
 ########################################################################################################################
 
 ########################################################################################################################
@@ -37,7 +39,7 @@ for task in 'PerceptualDecisionMaking-v0' 'MultiSensoryIntegration-v0' 'ContextD
     standardize_task='True'
   fi
 
-  for kernel_type in 'sa_axis' 'euclidean' 'None'; do
+  for kernel_type in 'None'; do # 'sa_axis' 'euclidean' 'None'; do
     seq_len=$(( seq_len_base + ((decision-100)/100) ))
     seq_len=$(( seq_len * seq_len_multi ))
 
@@ -57,7 +59,8 @@ for task in 'PerceptualDecisionMaking-v0' 'MultiSensoryIntegration-v0' 'ContextD
     --n_runs ${n_runs} \
     --n_epochs ${n_epochs} \
     --epoch_log ${epoch_log} \
-    --reg_type ${reg_type}
+    --reg_type ${reg_type} \
+    --n_threads ${n_threads} 
   done
 done
 ########################################################################################################################

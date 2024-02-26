@@ -1,4 +1,5 @@
 import os, random, argparse, warnings, sys
+sys.path.extend(['/Users/ahmad/software/snaplab_github/neuro_rnn', '/Users/ahmad/software/snaplab_github/neuro_rnn/packages/neurogym'])
 import numpy as np
 from scipy.spatial import distance
 import pandas as pd
@@ -13,9 +14,8 @@ import torch.nn as nn
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(device)
 
-sys.path.extend(['/Users/ahmad/software/snaplab_github/neuro_rnn', '/Users/ahmad/software/snaplab_github/neuro_rnn/packages/neurogym'])
 from src.neural_network import RNN, run_training, run_testing, train_helper
-from src.utils import normalize_x, build_reg_ken, get_weight_masks, get_weight_masks_schaefer, get_file_str
+from src.utils import normalize_x, build_reg_ken, get_weight_masks, get_weight_masks_schaefer, get_file_str, get_n_threads
 
 warnings.simplefilter(action='ignore', category=FutureWarning)
 warnings.simplefilter(action='ignore', category=RuntimeWarning)
@@ -26,6 +26,7 @@ def train(config):
     # get config params
     datadir = config['datadir']
     outdir = config['outdir']
+    n_threads = config['n_threads']
 
     # task parameters
     dataset = config['dataset']
@@ -125,34 +126,37 @@ def train(config):
     if os.path.isfile(os.path.join(config['outdir'], file_str + '.pt')):
         print('found outputs! skipping... ')
     else:
-        # initialize the model
-        model = RNN(input_size=input_size, hidden_size=hidden_size, num_classes=n_classes,
-                    type=rnn_model, regularization_kernel=regularization_kernel,
-                    input_weight_mask=input_weight_mask, output_weight_mask=output_weight_mask).to(device)
-        optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-        criterion = nn.CrossEntropyLoss()
-        scheduler = None
+        # prepare partial function for multiprocessing
+        partial_train_helper = partial(train_helper, dataset=dataset, input_size=input_size, hidden_size=hidden_size, \
+            n_classes=n_classes, rnn_model=rnn_model, regularization_kernel=regularization_kernel, \
+            input_weight_mask=input_weight_mask, output_weight_mask=output_weight_mask, \
+            device=device, lr=lr, config=config, epoch_log=epoch_log, n_trials=n_trials)
         
-        # run training in parallel
-        partial_train_helper = partial(train_helper, dataset=dataset, model=model, optimizer=optimizer, criterion=criterion, \
-            config=config, scheduler=scheduler, epoch_log=epoch_log, n_trials=n_trials)
-        train_helper_outputs = [{}]*n_runs
-        with multiprocessing.Pool() as pool:
-            train_helper_outputs = pool.map(partial_train_helper, np.arange(n_runs))
+        # initialise outputs list
+        train_helper_output = [{}]*n_runs
         
-        # organize training outputs
+        if device == 'cuda':
+            # train runs in sequence on gpu
+            for run in np.arange(n_runs):
+                train_helper_output[run] = partial_train_helper(run)  
+        else:
+            # train runs in parallel on cpu
+            with multiprocessing.Pool(n_threads) as pool:
+                train_helper_output = pool.map(partial_train_helper, np.arange(n_runs))
+                
+        # re-organize partial_train_helper output
         run = 0
-        for run_outputs in train_helper_outputs:
-            training_loss[run,:] = run_outputs['training_loss']
-            validation_loss[run,:] = run_outputs['validation_loss']
-            test_accuracy[run,:] = run_outputs['test_accuracy']
-            trained_models[run] = run_outputs['trained_models']
-            inputs[run] = run_outputs['inputs']
-            labels[run] = run_outputs['labels']
-            hidden_activity[run] = run_outputs['hidden_activity']
-            output_activity[run] = run_outputs['output_activity']
-            info[run] = run_outputs['info']
-            run = run+1
+        for run_output in train_helper_output:
+            training_loss[run,:] = run_output['training_loss']
+            validation_loss[run,:] = run_output['validation_loss']
+            test_accuracy[run,:] = run_output['test_accuracy']
+            trained_models[run] = run_output['trained_models']
+            inputs[run] = run_output['inputs']
+            labels[run] = run_output['labels']
+            hidden_activity[run] = run_output['hidden_activity']
+            output_activity[run] = run_output['output_activity']
+            info[run] = run_output['info']
+            run += 1
 
         # save model and outputs
         torch.save(trained_models, os.path.join(outdir, file_str + '.pt'))
@@ -167,6 +171,7 @@ def train(config):
             'info': info
         }
         np.save(os.path.join(outdir, file_str), log_args)
+        # np.save(os.path.join(outdir, 'db'), train_helper_outputs)
 
 def get_args():
     '''function to get args from command line and return the args
@@ -178,6 +183,7 @@ def get_args():
 
     parser.add_argument('--datadir', type=str, default='/home/lindenmp/research_projects/neuro_rnn/data')
     parser.add_argument('--outdir', type=str, default='/media/lindenmp/storage_ssd/research_projects/neuro_rnn/results/pytorch/model')
+    parser.add_argument('--n_threads', type=int, default=None)
 
     # data parameters
     parser.add_argument('--task', type=str, default='PerceptualDecisionMaking-v0')
@@ -213,6 +219,10 @@ def get_args():
 
 if __name__ == '__main__':
     args = get_args()
+    
+    if args.n_threads == 0:
+        args.n_threads = None
+    args.n_threads = get_n_threads(args.n_threads,1)
 
     if args.kernel_type == 'None':
         args.kernel_type = None
@@ -261,7 +271,9 @@ if __name__ == '__main__':
         'comet_buffer_frac': args.comet_buffer_frac,
         'comet_tail_frac': args.comet_tail_frac,
 
-        'env_kwargs': env_kwargs
+        'env_kwargs': env_kwargs,
+        
+        'n_threads': args.n_threads
     }
 
     dataset = ngym.Dataset(config['task'], env_kwargs=config['env_kwargs'],
