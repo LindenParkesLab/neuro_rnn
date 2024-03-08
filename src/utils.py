@@ -450,7 +450,21 @@ def get_slopes(feature, segment_size=20):
 
     for i in np.arange(n_runs):
         for j in np.arange(n_epochs_trim):
-            results = sp.stats.linregress(x, y[i, j:(j+segment_size)])
-            slopes[i, j] = results.slope
+            # results = sp.stats.linregress(x, y[i, j:(j+segment_size)])
+            # slopes[i, j] = results.slope
+            results = sp.stats.pearsonr(x, y[i, j:(j+segment_size)])
+            slopes[i, j] = results[0]
 
     return slopes
+
+
+def get_brainmap_distance(brain_map):
+    n = len(brain_map)
+    distance_matrix = np.zeros((n, n))
+    for i in np.arange(n):
+        for j in np.arange(n):
+            distance_matrix[i, j] = brain_map[i] - brain_map[j]
+    distance_matrix = np.abs(distance_matrix)
+
+    return distance_matrix
+

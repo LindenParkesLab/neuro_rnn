@@ -12,7 +12,7 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(device)
 
 from src.neural_network import RNN, run_training, run_testing
-from src.utils import normalize_x, build_reg_ken, get_weight_masks, get_weight_masks_schaefer, get_file_str
+from src.utils import normalize_x, build_reg_ken, get_weight_masks, get_weight_masks_schaefer, get_file_str, get_brainmap_distance
 
 warnings.simplefilter(action='ignore', category=FutureWarning)
 warnings.simplefilter(action='ignore', category=RuntimeWarning)
@@ -72,14 +72,14 @@ def train(config):
         distance_matrix = distance.squareform(distance_matrix)  # reshape to square matrix
         regularization_kernel = normalize_x(distance_matrix)
     elif kernel_type == 'sa_axis':
-        sa_axis = np.load(os.path.join(datadir, 'schaefer{0}_sa-axis.npy'.format(hidden_size * 2)))
-        sa_axis = sa_axis[:hidden_size]  # pull out left hemisphere
-        n = len(sa_axis)
-        distance_matrix = np.zeros((n, n))
-        for i in np.arange(n):
-            for j in np.arange(n):
-                distance_matrix[i, j] = sa_axis[i] - sa_axis[j]
-        distance_matrix = np.abs(distance_matrix)
+        brain_map = np.load(os.path.join(datadir, 'schaefer{0}_sa-axis.npy'.format(hidden_size * 2)))
+        brain_map = brain_map[:hidden_size]  # pull out left hemisphere
+        distance_matrix = get_brainmap_distance(brain_map=brain_map)
+        regularization_kernel = normalize_x(distance_matrix)
+    elif kernel_type == 'sf_axis':
+        brain_map = np.load(os.path.join(datadir, 'schaefer{0}_cyto.npy'.format(hidden_size * 2)))
+        brain_map = brain_map[:hidden_size]  # pull out left hemisphere
+        distance_matrix = get_brainmap_distance(brain_map=brain_map)
         regularization_kernel = normalize_x(distance_matrix)
     elif kernel_type == 'static':
         # dynamic distance matrix for regularization
