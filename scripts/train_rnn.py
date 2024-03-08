@@ -159,7 +159,11 @@ def train(config):
             'labels': labels,
             'hidden_activity': hidden_activity,
             'output_activity': output_activity,
-            'info': info
+            'info': info,
+            'centroids': centroids,
+            'masks': masks,
+            'distance_matrix': distance_matrix,
+            'regularization_kernel': regularization_kernel
         }
         np.save(os.path.join(outdir, file_str), log_args)
 
