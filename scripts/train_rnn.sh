@@ -2,11 +2,12 @@
 
 ########################################################################################################################
 # directories
-#scriptsdir='/home/lindenmp/research_projects/neuro_rnn/scripts'
-#outdir='/media/lindenmp/storage_ssd/research_projects/neuro_rnn/results/pytorch/model'
-scriptsdir='/Users/ahmad/software/snaplab_github/neuro_rnn/scripts'
-datadir='/Users/ahmad/software/snaplab_github/neuro_rnn/data'
-outdir='/Users/ahmad/data/rutgers/neuro_rnn/results/pytorch/model'
+scriptsdir='/home/lindenmp/research_projects/neuro_rnn/scripts'
+datadir='/home/lindenmp/research_projects/neuro_rnn/data'
+outdir='/media/lindenmp/storage_ssd/research_projects/neuro_rnn/results/model_cpu'
+# scriptsdir='/Users/ahmad/software/snaplab_github/neuro_rnn/scripts'
+# datadir='/Users/ahmad/software/snaplab_github/neuro_rnn/data'
+# outdir='/Users/ahmad/data/rutgers/neuro_rnn/results/pytorch/model'
 
 # path to inputs tsv
 params_file="$datadir/model_params.csv"
@@ -21,7 +22,11 @@ epoch_log=100
 
 # device settings
 device='cpu'
-n_threads=6
+n_threads=8
+if [ ${device} == 'cpu' ] && [ ${n_threads} -gt 1 ]; then
+  echo "suspending all cuda devices"
+  export CUDA_VISIBLE_DEVICES=""
+fi
 
 ########################################################################################################################
 

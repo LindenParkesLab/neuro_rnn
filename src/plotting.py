@@ -213,7 +213,7 @@ def plot_activity_variance(hidden_activity, config, n_components=3, normalize=Tr
 
 
 def plot_accuracy_vs_feature(accuracy, feature, rnn_label='', feature_label='',
-                             fig_width=4, fig_height=2, accuracy_color='r', feature_color='k'):
+                             fig_width=4, fig_height=2, accuracy_color='r', feature_color='k', x_step=100):
     f, ax = plt.subplots(1, 1, figsize=(fig_width, fig_height))
     ax_twin = ax.twinx()
 
@@ -226,7 +226,6 @@ def plot_accuracy_vs_feature(accuracy, feature, rnn_label='', feature_label='',
     accuracy_ci_upper = accuracy_mean + ci
 
     n_logged_epochs = accuracy.shape[1]
-    x_step = 100
     n_epochs = n_logged_epochs * x_step
     x = np.arange(x_step, n_epochs + x_step, x_step)
     # print(x)
@@ -271,6 +270,8 @@ def plot_accuracy_vs_feature(accuracy, feature, rnn_label='', feature_label='',
     # set axis limits and despine
     for this_ax in [ax, ax_twin]:
         sns.despine(offset=3, trim=False, left=False, right=False, top=True, bottom=False, ax=this_ax)
+    
+    ax_twin.hlines(y=1, xmin=x2[0], xmax=x2[-1], linestyle='dashed', color='k')
 
     f.tight_layout()
     plt.show()

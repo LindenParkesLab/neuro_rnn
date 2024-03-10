@@ -91,16 +91,15 @@ class RNN(nn.Module):
 
 
 def run_training(dataset, model, optimizer, criterion, config, scheduler=None, return_models=False, epoch_log=10, run=None):
-    model.train()
     t_overall = timer()
-    if next(model.parameters()).is_cuda:
-        device = torch.device('cuda')
-    elif next(model.parameters()).is_mps:
-        device = torch.device('mps')
-    else:
-        device = torch.device('cpu')
+    model.train()
+    device = config['device']
     dt = config['dt']
-    decision = config['env_kwargs']['timing']['decision']
+    try:
+        decision = config['env_kwargs']['timing']['decision']
+        trim = int((decision - 100) / dt)
+    except:
+        pass
     n_epochs = config['n_epochs']
     batch_size = config['batch_size']
     reg_type = config['reg_type']
@@ -121,7 +120,10 @@ def run_training(dataset, model, optimizer, criterion, config, scheduler=None, r
         # get data
         dataset.env.reset(seed=int(n_epochs+epoch))
         inputs, labels = dataset()
-        labels = fix_labels(labels, decision=int(decision / dt), trim=trim)
+        try:
+            labels = fix_labels(labels, decision=int(decision / dt), trim=trim)
+        except:
+            pass
         # split into train and validation
         inputs_tra = inputs[:, :int(batch_size/2), :]
         inputs_val = inputs[:, int(batch_size/2):, :]
@@ -197,10 +199,10 @@ def run_training(dataset, model, optimizer, criterion, config, scheduler=None, r
             model.train()
 
             if run == None:
-                print('epoch {:d} | running training loss: {:0.5f} | running validation loss: {:0.5f} | test accuracy: {:0.2f}% | time since last update: {:0.3f} s'
+                print('epoch {:d} | running training loss: {:0.5f} | running validation loss: {:0.5f} | test accuracy: {:0.2f}% | time since last update: {:0.2f}s'
                     .format(epoch + 1, running_loss / epoch_log, running_loss_val / epoch_log, accuracy * 100, epoch_log_time_elapsed), flush=True)
             else:
-                print('run {:d} | epoch {:d} | running training loss: {:0.5f} | running validation loss: {:0.5f} | test accuracy: {:0.2f}% | time since last update: {:0.3f} s'
+                print('run {:d} | epoch {:d} | running training loss: {:0.5f} | running validation loss: {:0.5f} | test accuracy: {:0.2f}% | time since last update: {:0.2f}s'
                     .format(run+1, epoch + 1, running_loss / epoch_log, running_loss_val / epoch_log, accuracy * 100, epoch_log_time_elapsed), flush=True)
             running_loss = 0.0
             running_loss_val = 0.0
@@ -300,7 +302,6 @@ def train_helper(run, config):
     dataset.env.reset(seed=0)
     dataset.env.new_trial()
     input_size = dataset.env.observation_space.shape[0]
-    n_timepoints = dataset.env.gt.shape[0]
     n_classes = dataset.env.action_space.n
     hidden_size = config['hidden_size']
     n_trials = 1000
@@ -317,8 +318,9 @@ def train_helper(run, config):
     random.seed(int(run))
     np.random.seed(int(run))
     torch.manual_seed(int(run))
-    torch.cuda.manual_seed(int(run))
-    torch.cuda.manual_seed_all(int(run))
+    if config['device'].type == 'cuda':
+        torch.cuda.manual_seed(int(run))
+        torch.cuda.manual_seed_all(int(run))
     
     # initialize the model
     model = RNN(input_size=input_size, 
