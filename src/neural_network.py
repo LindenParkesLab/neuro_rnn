@@ -11,6 +11,8 @@ import pandas as pd
 
 from src.utils import fix_labels
 
+import neurogym as ngym
+
 class RNN(nn.Module):
     def __init__(self, input_size, hidden_size, num_classes,
                  type='rnn-tanh', regularization_kernel=None, input_weight_mask=None, output_weight_mask=None):
@@ -195,16 +197,16 @@ def run_training(dataset, model, optimizer, criterion, config, scheduler=None, r
             model.train()
 
             if run == None:
-                print('epoch {:d} | running training loss: {:0.5f} | running validation loss: {:0.5f} | test accuracy: {:0.2f}% | time since last: {:0.3f} s'
-                    .format(epoch + 1, running_loss / epoch_log, running_loss_val / epoch_log, accuracy * 100, epoch_log_time_elapsed))
+                print('epoch {:d} | running training loss: {:0.5f} | running validation loss: {:0.5f} | test accuracy: {:0.2f}% | time since last update: {:0.3f} s'
+                    .format(epoch + 1, running_loss / epoch_log, running_loss_val / epoch_log, accuracy * 100, epoch_log_time_elapsed), flush=True)
             else:
-                print('run {:d} | epoch {:d} | running training loss: {:0.5f} | running validation loss: {:0.5f} | test accuracy: {:0.2f}% | time since last: {:0.3f} s'
-                    .format(run+1, epoch + 1, running_loss / epoch_log, running_loss_val / epoch_log, accuracy * 100, epoch_log_time_elapsed))
+                print('run {:d} | epoch {:d} | running training loss: {:0.5f} | running validation loss: {:0.5f} | test accuracy: {:0.2f}% | time since last update: {:0.3f} s'
+                    .format(run+1, epoch + 1, running_loss / epoch_log, running_loss_val / epoch_log, accuracy * 100, epoch_log_time_elapsed), flush=True)
             running_loss = 0.0
             running_loss_val = 0.0
 
     t_overall = timer() - t_overall
-    print('Finished training in {0}'.format(timedelta(seconds=t_overall)))
+    print('Finished training in {0}'.format(timedelta(seconds=t_overall)), flush=True)
 
     training_loss = np.asarray(training_loss)
     validation_loss = np.asarray(validation_loss)
@@ -277,7 +279,7 @@ def run_testing(dataset, model, n_trials=1000, verbose=True):
 
         accuracy = np.mean(info['correct'])
         if verbose:
-            print('Average accuracy across {:} trials: {:.2f}%'.format(n_trials, accuracy*100))
+            print('Average accuracy across {:} trials: {:.2f}%'.format(n_trials, accuracy*100), flush=True)
 
         inputs = np.array(inputs)
         labels = np.array(labels)
@@ -286,9 +288,30 @@ def run_testing(dataset, model, n_trials=1000, verbose=True):
 
         return accuracy, inputs, labels, hidden_activity, output_activity, info
 
-def train_helper(run, dataset, input_size, hidden_size, n_classes, rnn_model, \
-    regularization_kernel, input_weight_mask, output_weight_mask, device, lr, \
-    config, epoch_log, n_trials):
+
+def train_helper(run, config):
+    
+    # create dataset
+    dataset = ngym.Dataset(config['task'],
+                           env_kwargs=config['env_kwargs'],
+                           batch_size=config['batch_size'], 
+                           seq_len=config['seq_len'])
+    
+    dataset.env.reset(seed=0)
+    dataset.env.new_trial()
+    input_size = dataset.env.observation_space.shape[0]
+    n_timepoints = dataset.env.gt.shape[0]
+    n_classes = dataset.env.action_space.n
+    hidden_size = config['hidden_size']
+    n_trials = 1000
+    
+    # setup weight masks
+    if config['mask_weights']:
+        input_weight_mask = config['masks']['input_weight_mask']
+        output_weight_mask = config['masks']['output_weight_mask']
+    else:
+        input_weight_mask = None
+        output_weight_mask = None
     
     # seed random seed for reproducibility across runs
     random.seed(int(run))
@@ -298,31 +321,47 @@ def train_helper(run, dataset, input_size, hidden_size, n_classes, rnn_model, \
     torch.cuda.manual_seed_all(int(run))
     
     # initialize the model
-    model = RNN(input_size=input_size, hidden_size=hidden_size, num_classes=n_classes,
-                type=rnn_model, regularization_kernel=regularization_kernel,
-                input_weight_mask=input_weight_mask, output_weight_mask=output_weight_mask).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    model = RNN(input_size=input_size, 
+                hidden_size=hidden_size, 
+                num_classes=n_classes, 
+                type=config['rnn_model'], 
+                regularization_kernel=config['regularization_kernel'], 
+                input_weight_mask=input_weight_mask, 
+                output_weight_mask=output_weight_mask).to(config['device'])
+    optimizer = torch.optim.Adam(model.parameters(), lr=config['learning_rate'])
     criterion = nn.CrossEntropyLoss()
     scheduler = None
     
     # train the model
     training_loss, validation_loss, test_accuracy, trained_models \
-        = run_training(dataset=dataset, model=model, optimizer=optimizer,
-                                    criterion=criterion, config=config, scheduler=scheduler,
-                                    return_models=True, epoch_log=epoch_log, run=run)
+        = run_training(dataset=dataset, 
+                       model=model, 
+                       optimizer=optimizer,
+                       criterion=criterion, 
+                       config=config, 
+                       scheduler=scheduler,
+                       return_models=True, 
+                       epoch_log=config['epoch_log'], 
+                       run=run)
         
     # get all outputs for final model
     _, inputs, labels, hidden_activity, output_activity, info \
-        = run_testing(dataset=dataset, model=model, n_trials=n_trials)
+        = run_testing(dataset=dataset, 
+                      model=model, 
+                      n_trials=n_trials)
+    
+    # package all outputs into a dict
     outputs = {
-        'training_loss': training_loss,
-        'validation_loss': validation_loss,
-        'test_accuracy': test_accuracy,
-        'trained_models': trained_models,
-        'inputs': inputs,
-        'labels': labels,
-        'hidden_activity': hidden_activity,
-        'output_activity': output_activity,
-        'info': info
-    }
-    return outputs
+                'training_loss': training_loss,
+                'validation_loss': validation_loss,
+                'test_accuracy': test_accuracy,
+                'inputs': inputs,
+                'labels': labels,
+                'hidden_activity': hidden_activity,
+                'output_activity': output_activity,
+                'info': info,
+                'run': run,
+                'device': config['device']
+                }
+    
+    return outputs, trained_models

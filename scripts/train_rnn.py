@@ -3,19 +3,13 @@ sys.path.extend(['/Users/ahmad/software/snaplab_github/neuro_rnn', '/Users/ahmad
 import numpy as np
 from scipy.spatial import distance
 import pandas as pd
-import neurogym as ngym
-from tqdm import tqdm
-import multiprocessing
 from functools import partial
 
 import torch
-import torch.nn as nn
-# Device configuration
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-print(device)
+torch.multiprocessing.set_sharing_strategy('file_system')
 
-from src.neural_network import RNN, run_training, run_testing, train_helper
-from src.utils import normalize_x, build_reg_ken, get_weight_masks, get_weight_masks_schaefer, get_file_str, get_n_threads
+from src.neural_network import train_helper
+from src.utils import normalize_x, get_weight_masks_schaefer, get_file_str, get_device, get_n_threads, get_brainmap_distance, get_seq_len
 
 warnings.simplefilter(action='ignore', category=FutureWarning)
 warnings.simplefilter(action='ignore', category=RuntimeWarning)
@@ -26,25 +20,16 @@ def train(config):
     # get config params
     datadir = config['datadir']
     outdir = config['outdir']
+    device = config['device']
     n_threads = config['n_threads']
 
-    # task parameters
-    dataset = config['dataset']
-
     # RNN model and training parameters
-    rnn_model = config['rnn_model']
     hidden_size = config['hidden_size']
-    lr = config['lr']
     n_runs = config['n_runs']
-    n_epochs = config['n_epochs']
-    epoch_log = config['epoch_log']
     mask_weights = config['mask_weights']
 
     # regularization parameters
     kernel_type = config['kernel_type']
-    kernel_std_frac = config['kernel_std_frac']
-    comet_buffer_frac = config['comet_buffer_frac']
-    comet_tail_frac = config['comet_tail_frac']
 
     # setup output dir
     if not os.path.exists(outdir):
@@ -59,6 +44,8 @@ def train(config):
         output_system = 'Default'
         masks = get_weight_masks_schaefer(roi_names=roi_names, input_system=input_system, output_system=output_system)
         n_io = '{0}-{1}'.format(np.sum(masks['input_weight_mask']), np.sum(masks['output_weight_mask']))
+        config['masks'] = masks
+        config['centroids'] = centroids
     else:
         n_io = 'na'
     config['n_io'] = n_io
@@ -67,6 +54,7 @@ def train(config):
     if kernel_type is None:
         # no distance penalty
         regularization_kernel = None
+        distance_matrix = None
     elif kernel_type == 'euclidean':
         # static distance matrix for regularization
         centroids = pd.read_csv(os.path.join(datadir, 'schaefer{0}_centroids.csv'.format(hidden_size * 2)))
@@ -76,102 +64,70 @@ def train(config):
         distance_matrix = distance.squareform(distance_matrix)  # reshape to square matrix
         regularization_kernel = normalize_x(distance_matrix)
     elif kernel_type == 'sa_axis':
-        sa_axis = np.load(os.path.join(datadir, 'schaefer{0}_sa-axis.npy'.format(hidden_size * 2)))
-        sa_axis = sa_axis[:hidden_size]  # pull out left hemisphere
-        n = len(sa_axis)
-        distance_matrix = np.zeros((n, n))
-        for i in np.arange(n):
-            for j in np.arange(n):
-                distance_matrix[i, j] = sa_axis[i] - sa_axis[j]
-        distance_matrix = np.abs(distance_matrix)
+        brain_map = np.load(os.path.join(datadir, 'schaefer{0}_sa-axis.npy'.format(hidden_size * 2)))
+        brain_map = brain_map[:hidden_size]  # pull out left hemisphere
+        distance_matrix = get_brainmap_distance(brain_map=brain_map)
         regularization_kernel = normalize_x(distance_matrix)
-    elif kernel_type == 'static':
-        # dynamic distance matrix for regularization
-        kernel = build_reg_ken(n_epochs=hidden_size, hidden_size=hidden_size, kernel_std_frac=kernel_std_frac,
-                               type='additive', comet_buffer_frac=comet_buffer_frac, comet_tail_frac=comet_tail_frac)
-        regularization_kernel = 1 - kernel[:, :, -1].copy()
-        del kernel
-
-    # setup weight masks
-    if mask_weights:
-        input_weight_mask = masks['input_weight_mask']
-        output_weight_mask = masks['output_weight_mask']
-    else:
-        input_weight_mask = None
-        output_weight_mask = None
-
-    # variable containers
-    training_loss = np.zeros((n_runs, n_epochs))
-    validation_loss = np.zeros((n_runs, n_epochs))
-    test_accuracy = np.zeros((n_runs, int((n_epochs/epoch_log)+1)))
-    trained_models = dict()
-
-    dataset.env.reset(seed=0)
-    dataset.env.new_trial()
-    input_size = dataset.env.observation_space.shape[0]
-    n_timepoints = dataset.env.gt.shape[0]
-    n_classes = dataset.env.action_space.n
-    n_trials = 1000
-
-    inputs = np.zeros((n_runs, n_trials, n_timepoints, input_size))
-    labels = np.zeros((n_runs, n_trials, n_timepoints))
-    hidden_activity = np.zeros((n_runs, n_trials, n_timepoints, hidden_size))
-    output_activity = np.zeros((n_runs, n_trials, n_timepoints, n_classes))
-    info = dict()
+    elif kernel_type == 'sf_axis':
+        brain_map = np.load(os.path.join(datadir, 'schaefer{0}_cyto.npy'.format(hidden_size * 2)))
+        brain_map = brain_map[:hidden_size]  # pull out left hemisphere
+        distance_matrix = get_brainmap_distance(brain_map=brain_map)
+        regularization_kernel = normalize_x(distance_matrix)
+    elif kernel_type == 'struct_conn':
+        conn_reg_mat = np.load(os.path.join(datadir, 'schaefer{0}_structural_conn_kernel.npy'.format(hidden_size * 2)))
+        distance_matrix = conn_reg_mat[:hidden_size, :][:, :hidden_size]  # pull out left hemisphere
+        regularization_kernel = normalize_x(distance_matrix)
+    config['distance_matrix'] = distance_matrix
+    config['regularization_kernel'] = regularization_kernel
 
     # get file name
     file_str = get_file_str(config)
     print('\n')
     print(file_str)
+    
+    # skip if outputs exist
     if os.path.isfile(os.path.join(config['outdir'], file_str + '.pt')):
         print('found outputs! skipping... ')
     else:
         # prepare partial function for multiprocessing
-        partial_train_helper = partial(train_helper, dataset=dataset, input_size=input_size, hidden_size=hidden_size, \
-            n_classes=n_classes, rnn_model=rnn_model, regularization_kernel=regularization_kernel, \
-            input_weight_mask=input_weight_mask, output_weight_mask=output_weight_mask, \
-            device=device, lr=lr, config=config, epoch_log=epoch_log, n_trials=n_trials)
-        
-        # initialise outputs list
-        train_helper_output = [{}]*n_runs
-        
-        if device == 'cuda':
-            # train runs in sequence on gpu
+        partial_train_helper = partial(train_helper, config=config)
+        if str(device) == 'cuda' or n_threads == 1:
+            print('running in serial...')
+            # initialise outputs list
+            training_outputs = []
+            trained_models = []
+            # train runs in sequence
             for run in np.arange(n_runs):
-                train_helper_output[run] = partial_train_helper(run)  
+                outputs, models = partial_train_helper(run)
+                training_outputs.append(outputs)
+                trained_models.append(models)
         else:
+            print('running in parallel...')
             # train runs in parallel on cpu
-            with multiprocessing.Pool(n_threads) as pool:
-                train_helper_output = pool.map(partial_train_helper, np.arange(n_runs))
-                
-        # re-organize partial_train_helper output
-        run = 0
-        for run_output in train_helper_output:
-            training_loss[run,:] = run_output['training_loss']
-            validation_loss[run,:] = run_output['validation_loss']
-            test_accuracy[run,:] = run_output['test_accuracy']
-            trained_models[run] = run_output['trained_models']
-            inputs[run] = run_output['inputs']
-            labels[run] = run_output['labels']
-            hidden_activity[run] = run_output['hidden_activity']
-            output_activity[run] = run_output['output_activity']
-            info[run] = run_output['info']
-            run += 1
+            with torch.multiprocessing.Pool(processes=n_threads, maxtasksperchild=1) as pool:
+                training_outputs, trained_models = zip(*pool.map(partial_train_helper, np.arange(n_runs)))
 
-        # save model and outputs
+        # save models
         torch.save(trained_models, os.path.join(outdir, file_str + '.pt'))
-        log_args = {
-            'training_loss': training_loss,
-            'validation_loss': validation_loss,
-            'test_accuracy': test_accuracy,
-            'inputs': inputs,
-            'labels': labels,
-            'hidden_activity': hidden_activity,
-            'output_activity': output_activity,
-            'info': info
-        }
-        np.save(os.path.join(outdir, file_str), log_args)
-        # np.save(os.path.join(outdir, 'db'), train_helper_outputs)
+        
+        # save outputs
+        np.save(os.path.join(outdir, file_str), training_outputs)
+        
+        # save config
+        np.save(os.path.join(outdir, file_str + '_config'), config)
+        
+        # log_args = {
+        #     'training_loss': training_loss,
+        #     'validation_loss': validation_loss,
+        #     'test_accuracy': test_accuracy,
+        #     'inputs': inputs,
+        #     'labels': labels,
+        #     'hidden_activity': hidden_activity,
+        #     'output_activity': output_activity,
+        #     'info': info
+        # }
+        # np.save(os.path.join(outdir, file_str), log_args)
+        
 
 def get_args():
     '''function to get args from command line and return the args
@@ -181,14 +137,18 @@ def get_args():
     '''
     parser = argparse.ArgumentParser()
 
+    # file locations
     parser.add_argument('--datadir', type=str, default='/home/lindenmp/research_projects/neuro_rnn/data')
     parser.add_argument('--outdir', type=str, default='/media/lindenmp/storage_ssd/research_projects/neuro_rnn/results/pytorch/model')
+    
+    # device settings
+    parser.add_argument('--device', type=str, default='None')
     parser.add_argument('--n_threads', type=int, default=None)
 
     # data parameters
     parser.add_argument('--task', type=str, default='PerceptualDecisionMaking-v0')
     parser.add_argument('--dt', type=int, default=100)
-    parser.add_argument('--seq_len', type=int, default=200)
+    parser.add_argument('--seq_len_multi', type=int, default=5)
     parser.add_argument('--decision', type=int, default=300)
     parser.add_argument('--standardize_task', type=str, default='False')
 
@@ -196,19 +156,16 @@ def get_args():
     parser.add_argument('--rnn_model', type=str, default='rnn-tanh')
     parser.add_argument('--hidden_size', type=int, default=100)
     parser.add_argument('--batch_size', type=int, default=64)
-    parser.add_argument('--lr', type=float, default=0.001)
+    parser.add_argument('--learning_rate', type=float, default=0.001)
     parser.add_argument('--n_runs', type=int, default=50)
     parser.add_argument('--n_epochs', type=int, default=5000)
     parser.add_argument('--epoch_log', type=int, default=100)
     parser.add_argument('--mask_weights', type=str, default='True')
-
+ 
     # regularization parameters
     parser.add_argument('--reg_type', type=str, default='l2')
     parser.add_argument('--reg_weight', type=float, default=0.001)
     parser.add_argument('--kernel_type', type=str, default='None')
-    parser.add_argument('--kernel_std_frac', type=float, default=0.25)
-    parser.add_argument('--comet_buffer_frac', type=float, default=0.1)
-    parser.add_argument('--comet_tail_frac', type=float, default=0.25)
 
     args = parser.parse_args()
     args.datadir = os.path.expanduser(args.datadir)
@@ -218,11 +175,13 @@ def get_args():
 
 
 if __name__ == '__main__':
+    
     args = get_args()
     
-    if args.n_threads == 0:
-        args.n_threads = None
-    args.n_threads = get_n_threads(args.n_threads,1)
+    # Device configuration
+    device = get_device(args.device)
+    if str(args.device) == 'cpu':
+        args.n_threads = get_n_threads(args.n_threads,1)
 
     if args.kernel_type == 'None':
         args.kernel_type = None
@@ -245,19 +204,22 @@ if __name__ == '__main__':
     env_kwargs = {'dt': args.dt, 'timing': timing}
 
     config = {
+        
+        # file locations
         'datadir': args.datadir,
         'outdir': args.outdir,
 
         # task parameters
         'task': args.task,
         'dt': args.dt,
-        'seq_len': args.seq_len,
+        'seq_len_multi': args.seq_len_multi,
+        'seq_len': get_seq_len(args.task, args.decision, args.seq_len_multi),
 
         # RNN model and training parameters
         'rnn_model': args.rnn_model,
         'hidden_size': args.hidden_size,
         'batch_size': args.batch_size,
-        'lr': args.lr,
+        'learning_rate': args.learning_rate,
         'n_runs': args.n_runs,
         'n_epochs': args.n_epochs,
         'epoch_log': args.epoch_log,
@@ -267,16 +229,13 @@ if __name__ == '__main__':
         'reg_type': args.reg_type,
         'reg_weight': args.reg_weight,
         'kernel_type': args.kernel_type,
-        'kernel_std_frac': args.kernel_std_frac,
-        'comet_buffer_frac': args.comet_buffer_frac,
-        'comet_tail_frac': args.comet_tail_frac,
 
         'env_kwargs': env_kwargs,
         
+        # device settings
+        'device': args.device,
         'n_threads': args.n_threads
+        
     }
 
-    dataset = ngym.Dataset(config['task'], env_kwargs=config['env_kwargs'],
-                           batch_size=config['batch_size'], seq_len=config['seq_len'])
-    config['dataset'] = dataset
     train(config=config)
