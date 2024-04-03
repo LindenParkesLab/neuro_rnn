@@ -127,7 +127,7 @@ def train(config):
         #     'info': info
         # }
         # np.save(os.path.join(outdir, file_str), log_args)
-        
+
 
 def get_args():
     '''function to get args from command line and return the args

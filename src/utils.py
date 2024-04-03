@@ -450,8 +450,10 @@ def get_slopes(feature, segment_size=20):
 
     for i in np.arange(n_runs):
         for j in np.arange(n_epochs_trim):
-            results = sp.stats.linregress(x, y[i, j:(j+segment_size)])
-            slopes[i, j] = results.slope
+            # results = sp.stats.linregress(x, y[i, j:(j+segment_size)])
+            # slopes[i, j] = results.slope
+            results = sp.stats.pearsonr(x, y[i, j:(j+segment_size)])
+            slopes[i, j] = results[0]
 
     return slopes
 
@@ -584,4 +586,3 @@ def load_params_csv(model_params_csv):
                                                 reg_weight=model_params.reg_weight.iloc[row]))
     model_params['kernel_label'] = kernel_labels
     return model_params
-
