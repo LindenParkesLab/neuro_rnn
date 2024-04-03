@@ -274,7 +274,7 @@ def get_file_str(config):
     rnn_model = config['rnn_model']
     hidden_size = config['hidden_size']
     batch_size = config['batch_size']
-    lr = config['lr']
+    lr = config['learning_rate']
     n_runs = config['n_runs']
     n_epochs = config['n_epochs']
     mask_weights = config['mask_weights']
@@ -458,6 +458,55 @@ def get_slopes(feature, segment_size=20):
     return slopes
 
 
+def get_n_threads(threads_in=None, verbose=0):
+    
+    import os, multiprocessing
+    
+    if verbose: print(' ')
+
+    cpu_count = multiprocessing.cpu_count()
+    if verbose: print('CPUs available = ' + str(cpu_count))
+
+    omp_limit = os.environ.get('OMP_NUM_THREADS')
+    if omp_limit:
+        if verbose: print('Openmp limit   = ' + omp_limit)
+        omp_limit = int(omp_limit)
+    else:
+        if verbose: print('Openmp limit   = ' + str(omp_limit))
+        omp_limit = cpu_count
+
+    if verbose: print('User requested = ' + str(threads_in))
+    if threads_in == None or threads_in < 1:
+        n_threads = min(cpu_count, omp_limit)
+    else:
+        n_threads = min(cpu_count, threads_in)
+    if verbose: print('Will use ' + str(n_threads) + ' thread(s).')
+    
+    if verbose: print(' ')
+    
+    return n_threads
+
+
+def get_device(device_opt):
+    cuda_avail = torch.cuda.is_available()
+    if device_opt == 'None':
+        device = torch.device('cuda' if cuda_avail else 'cpu')
+    else:
+        if device_opt == 'cuda':
+            if cuda_avail:
+                device = torch.device('cuda')
+            else:
+                print('CUDA not availble!')
+                device = torch.device('cpu')
+        elif device_opt == 'cpu':
+            device = torch.device('cpu')
+        else:
+            print('Device choice not recognized!')
+            device = torch.device('cpu')
+    print('\nDevice: ' + device.type + '.\n')
+    return device
+
+
 def get_brainmap_distance(brain_map):
     n = len(brain_map)
     distance_matrix = np.zeros((n, n))
@@ -468,3 +517,72 @@ def get_brainmap_distance(brain_map):
 
     return distance_matrix
 
+
+def get_n_io(mask_weights=True, hidden_size=100):
+    if mask_weights and hidden_size == 50:
+        n_io = '9-13' # Default
+        # n_io = '9-4' # Cont
+    elif mask_weights and hidden_size == 100:
+        n_io = '14-27' # Default
+        # n_io = '14-13' # Cont
+    elif mask_weights and hidden_size == 200:
+        n_io = '31-52' # Default
+        # n_io = '31-22' # Cont
+    else:
+        n_io = 'na'
+    return n_io
+
+
+def get_seq_len(task, decision=400, seq_len_multi=5):
+    if task == 'PerceptualDecisionMaking-v0':
+        seq_len_base = 22
+    elif task == 'MultiSensoryIntegration-v0':
+        seq_len_base = 11
+    elif task == 'ContextDecisionMaking-v0':
+        seq_len_base = 13
+    seq_len = int( ( seq_len_base + ((decision-100)/100) ) * seq_len_multi )
+    return seq_len
+
+
+def get_kernel_label(kernel_type='None', mask_weights=False, reg_weight=0.0):
+    if kernel_type == 'sa_axis':
+        kernel_label = 'S-A RNN'
+    elif kernel_type == 'sf_axis':
+        kernel_label = 'S-F RNN'
+    elif kernel_type == 'euclidean':
+        kernel_label = 'Eucl. RNN'
+    elif kernel_type == 'None':
+        if reg_weight == 0:
+            r = 'n'
+        else:
+            r = 'r'
+        if mask_weights:
+            m = 'm'
+        else:
+            m = ''
+        kernel_label = m + 'RNN' + r
+    else:
+        kernel_label = 'unknown'
+    return kernel_label
+
+
+def get_task_label(task):
+    if task == 'PerceptualDecisionMaking-v0':
+        task_label = 'Perceptual Decision Making (DM)'
+    elif task == 'MultiSensoryIntegration-v0':
+        task_label = 'Multi Sensory Integration (MultSen DM)'
+    elif task == 'ContextDecisionMaking-v0':
+        task_label = 'Context Decision Making (Ctx DM)'
+    return task_label
+    
+
+def load_params_csv(model_params_csv):
+    import pandas as pd
+    model_params = pd.read_csv(model_params_csv, keep_default_na=False, na_values=['NaN'])
+    kernel_labels = []
+    for row in np.arange(len(model_params)):
+        kernel_labels.append(get_kernel_label(kernel_type=model_params.kernel_type.iloc[row], \
+                                                mask_weights=model_params.mask_weights.iloc[row], \
+                                                reg_weight=model_params.reg_weight.iloc[row]))
+    model_params['kernel_label'] = kernel_labels
+    return model_params

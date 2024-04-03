@@ -23,7 +23,7 @@ conda env export > environment.yml --no-builds
 python setup.py install
 
 # install packages: macbook
-project_dir='/Users/lindenmp/Google-Drive-Rutgers/work/research_projects/neuro_rnn'
+project_dir='/Users/ahmad/software/snaplab_github/neuro_rnn'
 pip install --upgrade pip
 pip install --upgrade setuptools
 
