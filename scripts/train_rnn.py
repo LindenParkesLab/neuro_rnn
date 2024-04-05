@@ -9,7 +9,7 @@ import torch
 torch.multiprocessing.set_sharing_strategy('file_system')
 
 from src.neural_network import train_helper
-from src.utils import normalize_x, get_weight_masks_schaefer, get_file_str, get_device, get_n_threads, get_brainmap_distance, get_seq_len
+from src.utils import normalize_x, get_weight_masks_schaefer, get_file_str, get_device, get_n_threads, get_brainmap_distance, get_seq_len, standardize_task
 
 warnings.simplefilter(action='ignore', category=FutureWarning)
 warnings.simplefilter(action='ignore', category=RuntimeWarning)
@@ -196,10 +196,11 @@ if __name__ == '__main__':
     elif args.standardize_task == 'False':
         args.standardize_task = False
 
-    if args.standardize_task:
-        timing = {'fixation': 200, 'stimulus': 1000, 'delay': 0, 'decision': args.decision}
-    else:
-        timing = {'decision': args.decision}
+    # if args.standardize_task:
+    #     timing = {'fixation': 200, 'stimulus': 1000, 'delay': 0, 'decision': args.decision}
+    # else:
+    #     timing = {'decision': args.decision}
+    timing = standardize_task(task=args.task, decision=args.decision)
     print(timing)
     env_kwargs = {'dt': args.dt, 'timing': timing}
 

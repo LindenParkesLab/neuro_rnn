@@ -538,8 +538,42 @@ def get_seq_len(task, decision=400, seq_len_multi=5):
         seq_len_base = 11
     elif task == 'ContextDecisionMaking-v0':
         seq_len_base = 13
+    elif task == 'DelayMatchCategory-v0':
+        seq_len_base = 22
+    elif task == 'DelayMatchSampleDistractor1D-v0':
+        seq_len_base = 49
+    elif task == 'DelayComparison-v0':
+        seq_len_base = 63
+    elif task == 'DelayMatchSample-v0':
+        seq_len_base = 24
+    elif task == 'GoNogo-v0':
+        seq_len_base = 28
+    elif task == 'DelayPairedAssociation-v0':
+        seq_len_base = 31
     seq_len = int( ( seq_len_base + ((decision-100)/100) ) * seq_len_multi )
     return seq_len
+
+
+def standardize_task(task, decision):
+    if task == 'PerceptualDecisionMaking-v0':
+        timing = {'decision': decision}
+    elif task == 'MultiSensoryIntegration-v0':
+        timing = {'decision': decision}
+    elif task == 'ContextDecisionMaking-v0':
+        timing = {'fixation': 200, 'stimulus': 1000, 'delay': 0, 'decision': decision}
+    elif task == 'DelayMatchCategory-v0':
+        timing = {'fixation': 400,  'decision': decision}
+    elif task == 'DelayMatchSampleDistractor1D-v0':
+        timing = {'fixation': 200, 'decision': decision}
+    elif task == 'DelayComparison-v0':
+        timing = {'fixation': 200, 'delay': 5000, 'decision': decision}
+    elif task == 'DelayMatchSample-v0':
+        timing = {'decision': decision}
+    elif task == 'GoNogo-v0':
+        timing = {'fixation': 200, 'stimulus': 500, 'delay': 2000, 'decision': decision}
+    elif task == 'DelayPairedAssociation-v0':
+        timing = {'stim1': 500, 'stim2': 500, 'decision': decision}
+    return timing
 
 
 def get_kernel_label(kernel_type='None', mask_weights=False, reg_weight=0.0):
@@ -571,6 +605,8 @@ def get_task_label(task):
         task_label = 'Multi Sensory Integration (MultSen DM)'
     elif task == 'ContextDecisionMaking-v0':
         task_label = 'Context Decision Making (Ctx DM)'
+    elif task == 'DelayMatchCategory-v0':
+        task_label = 'Delayed Match to Category (DMC)'
     return task_label
     
 

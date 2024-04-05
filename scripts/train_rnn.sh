@@ -9,7 +9,7 @@ datadir='/Users/ahmad/software/snaplab_github/neuro_rnn/data'
 outdir='/Users/ahmad/data/rutgers/neuro_rnn/results/pytorch/model'
 
 # path to inputs tsv
-params_file="$datadir/model_params.csv"
+params_file="$datadir/model_params_2.csv"
 
 # path to log file
 log_file="$outdir/run_training_$(date '+%Y-%m-%d-%H-%M-%S').log"
@@ -21,7 +21,7 @@ epoch_log=100
 
 # device settings
 device='cpu'
-n_threads=6
+n_threads=8
 
 ########################################################################################################################
 
