@@ -1,5 +1,5 @@
 import os, random, argparse, warnings, sys
-sys.path.extend(['/Users/ahmad/software/snaplab_github/neuro_rnn', '/Users/ahmad/software/snaplab_github/neuro_rnn/packages/neurogym'])
+# sys.path.extend(['/Users/ahmad/software/snaplab_github/neuro_rnn', '/Users/ahmad/software/snaplab_github/neuro_rnn/packages/neurogym'])
 import numpy as np
 from scipy.spatial import distance
 import pandas as pd
@@ -91,7 +91,7 @@ def train(config):
     else:
         # prepare partial function for multiprocessing
         partial_train_helper = partial(train_helper, config=config)
-        if str(device) == 'cuda' or n_threads == 1:
+        if device.type == 'cuda' or n_threads == 1:
             print('running in serial...')
             # initialise outputs list
             training_outputs = []
@@ -104,7 +104,7 @@ def train(config):
         else:
             print('running in parallel...')
             # train runs in parallel on cpu
-            with torch.multiprocessing.Pool(processes=n_threads, maxtasksperchild=1) as pool:
+            with torch.multiprocessing.get_context('spawn').Pool(processes=n_threads, maxtasksperchild=1) as pool:
                 training_outputs, trained_models = zip(*pool.map(partial_train_helper, np.arange(n_runs)))
 
         # save models
@@ -127,7 +127,7 @@ def train(config):
         #     'info': info
         # }
         # np.save(os.path.join(outdir, file_str), log_args)
-        
+
 
 def get_args():
     '''function to get args from command line and return the args
@@ -180,21 +180,25 @@ if __name__ == '__main__':
     
     # Device configuration
     device = get_device(args.device)
-    if str(args.device) == 'cpu':
-        args.n_threads = get_n_threads(args.n_threads,1)
+    if device.type == 'cpu':
+        n_threads = get_n_threads(args.n_threads, 1)
+    else:
+        n_threads = None
 
     if args.kernel_type == 'None':
-        args.kernel_type = None
+        kernel_type = None
+    else:
+        kernel_type = args.kernel_type
 
     if args.mask_weights == 'False':
-        args.mask_weights = False
+        mask_weights = False
     elif args.mask_weights == 'True':
-        args.mask_weights = True
+        mask_weights = True
 
     if args.standardize_task == 'True':
-        args.standardize_task = True
+        standardize_task = True
     elif args.standardize_task == 'False':
-        args.standardize_task = False
+        standardize_task = False
 
     # if args.standardize_task:
     #     timing = {'fixation': 200, 'stimulus': 1000, 'delay': 0, 'decision': args.decision}
@@ -224,18 +228,18 @@ if __name__ == '__main__':
         'n_runs': args.n_runs,
         'n_epochs': args.n_epochs,
         'epoch_log': args.epoch_log,
-        'mask_weights': args.mask_weights,
+        'mask_weights': mask_weights,
 
         # regularization parameters
         'reg_type': args.reg_type,
         'reg_weight': args.reg_weight,
-        'kernel_type': args.kernel_type,
+        'kernel_type': kernel_type,
 
         'env_kwargs': env_kwargs,
         
         # device settings
-        'device': args.device,
-        'n_threads': args.n_threads
+        'device': device,
+        'n_threads': n_threads
         
     }
 

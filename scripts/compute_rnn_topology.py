@@ -22,7 +22,7 @@ def run(config):
     # setup output dir
     if not os.path.exists(outdir):
         os.makedirs(outdir)
-
+        
     # load data
     log_args = np.load(os.path.join(indir, file_prefix + '.npy'), allow_pickle=True).item()
     n_runs, n_epochs = log_args['training_loss'].shape
@@ -37,7 +37,7 @@ def run(config):
         for j, epoch in enumerate(checkpoint[run].keys()):
             hidden_weights[i, j] = checkpoint[run][epoch]['rnn.weight_hh_l0']
     del checkpoint
-
+    
     # reduce number of epochs
     trim_epochs = config['trim_epochs']
     if trim_epochs > 0:
@@ -51,6 +51,11 @@ def run(config):
         hidden_weights = hidden_weights[:, 1:]
         n_logged_epochs = test_accuracy.shape[-1]
         n_epochs = n_logged_epochs * 100
+
+    # retain internal nodes
+    masks = log_args['masks']
+    hidden_weights = hidden_weights[:, :, masks['bystanders'], :][:, :, :, masks['bystanders']]    
+    hidden_size = hidden_weights.shape[-1]
 
     print(test_accuracy.shape)
     print(hidden_weights.shape)
@@ -173,10 +178,10 @@ def get_args():
 
     parser.add_argument('--indir', type=str, default='/media/lindenmp/storage_ssd/research_projects/neuro_rnn/results/pytorch/model')
     parser.add_argument('--outdir', type=str, default='/media/lindenmp/storage_ssd/research_projects/neuro_rnn/results/topology')
-    parser.add_argument('--file_prefix', type=str, default='task-PerceptualDecisionMaking-v0-125-400_model-rnn-tanh-100-32-0.001-100-25000_wmask-True-14-27_reg-l2-0.002-sa_axis')
+    parser.add_argument('--file_prefix', type=str, default='task-PerceptualDecisionMaking-v0-125-400_model-rnn-tanh-100-32-0.001-50-25000_wmask-True-14-27_reg-l2-0.002-sa_axis')
 
     # settings
-    parser.add_argument('--trim_epochs', type=int, default=76)
+    parser.add_argument('--trim_epochs', type=int, default=0)
 
     # topological features
     parser.add_argument('--degree', type=bool, default=True)
