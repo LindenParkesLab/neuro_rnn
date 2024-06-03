@@ -1,0 +1,4 @@
+task,seq_len_multi,rnn_model,hidden_size,batch_size,learning_rate,n_runs,n_epochs,mask_weights,reg_type,reg_weight,kernel_type
+PerceptualDecisionMaking-v0-LD,5,rnn-tanh,100,32,0.001,12,15000,True,l2,0.002,sa_axis
+PerceptualDecisionMaking-v0-LD,5,rnn-tanh,100,32,0.001,12,15000,True,l2,0.002,ut_axis
+PerceptualDecisionMaking-v0-LD,5,rnn-tanh,100,32,0.001,12,15000,True,l2,0.002,euclidean

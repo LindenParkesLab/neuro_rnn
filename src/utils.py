@@ -1,6 +1,7 @@
 import numpy as np
 import scipy as sp
 from scipy import signal
+from scipy.spatial import distance
 import torch
 from sklearn.decomposition import PCA
 
@@ -69,6 +70,7 @@ def build_reg_ken(n_epochs=1000, hidden_size=200, kernel_std_frac=0.2, type='spo
     elif type == 'comet':
         return kernel - (kernel_lagged * comet_tail_frac)
 
+
 def get_p_val_string(p_val):
     if p_val == 0.0:
         p_str = "-log10($\mathit{:}$)>25".format('{p}')
@@ -126,6 +128,7 @@ def bandpower(ts, fs, fmin, fmax):
     ind_max = np.argmax(f > fmax) - 1
 
     return np.trapz(Pxx[ind_min: ind_max], f[ind_min: ind_max])
+
 
 def compute_rlfp(ts, tr, low=None, high=None, num_bands=5, band_of_interest=1):
     """
@@ -266,9 +269,8 @@ def get_weight_masks_schaefer(roi_names, input_system='Vis', output_system='Defa
 
 def get_file_str(config):
     # task parameters
-    task = config['task']
+    task = config['task_with_modifier']
     seq_len = config['seq_len']
-    decision = config['env_kwargs']['timing']['decision']
 
     # RNN model and training parameters
     rnn_model = config['rnn_model']
@@ -284,40 +286,16 @@ def get_file_str(config):
     reg_type = config['reg_type']
     reg_weight = config['reg_weight']
     kernel_type = config['kernel_type']
-    if kernel_type == 'static':
-        kernel_std_frac = config['kernel_std_frac']
-    elif kernel_type == 'comet':
-        kernel_std_frac = config['kernel_std_frac']
-        comet_buffer_frac = config['comet_buffer_frac']
-        comet_tail_frac = config['comet_tail_frac']
-
-    if kernel_type == 'static':
-        file_str = 'task-{:}-{:}-{:}_' \
-                   'model-{:}-{:}-{:}-{:}-{:}-{:}_' \
-                   'wmask-{:}-{:}_' \
-                   'reg-{:}-{:}-{:}-{:}' \
-            .format(task, seq_len, decision,
-                    rnn_model, hidden_size, batch_size, lr, n_runs, n_epochs,
-                    mask_weights, n_io,
-                    reg_type, reg_weight, kernel_type, kernel_std_frac)
-    elif kernel_type == 'comet':
-        file_str = 'task-{:}-{:}-{:}_' \
-                   'model-{:}-{:}-{:}-{:}-{:}-{:}_' \
-                   'wmask-{:}-{:}_' \
-                   'reg-{:}-{:}-{:}-{:}-{:}-{:}' \
-            .format(task, seq_len, decision,
-                    rnn_model, hidden_size, batch_size, lr, n_runs, n_epochs,
-                    mask_weights, n_io,
-                    reg_type, reg_weight, kernel_type, kernel_std_frac, comet_buffer_frac, comet_tail_frac)
-    else:
-        file_str = 'task-{:}-{:}-{:}_' \
-                   'model-{:}-{:}-{:}-{:}-{:}-{:}_' \
-                   'wmask-{:}-{:}_' \
-                   'reg-{:}-{:}-{:}' \
-            .format(task, seq_len, decision,
-                    rnn_model, hidden_size, batch_size, lr, n_runs, n_epochs,
-                    mask_weights, n_io,
-                    reg_type, reg_weight, kernel_type)
+    
+    # create name string
+    file_str = 'task-{:}-{:}_' \
+                'model-{:}-{:}-{:}-{:}-{:}-{:}_' \
+                'wmask-{:}-{:}_' \
+                'reg-{:}-{:}-{:}' \
+        .format(task, seq_len,
+                rnn_model, hidden_size, batch_size, lr, n_runs, n_epochs,
+                mask_weights, n_io,
+                reg_type, reg_weight, kernel_type)
 
     return file_str
 
@@ -508,12 +486,9 @@ def get_device(device_opt):
 
 
 def get_brainmap_distance(brain_map):
-    n = len(brain_map)
-    distance_matrix = np.zeros((n, n))
-    for i in np.arange(n):
-        for j in np.arange(n):
-            distance_matrix[i, j] = brain_map[i] - brain_map[j]
-    distance_matrix = np.abs(distance_matrix)
+    if brain_map.ndim == 1 or brain_map.shape[1] == 1:
+        brain_map = brain_map.reshape(-1,1)
+    distance_matrix = distance.squareform(distance.pdist(brain_map, 'euclidean'))
 
     return distance_matrix
 
@@ -533,83 +508,260 @@ def get_n_io(mask_weights=True, hidden_size=100):
     return n_io
 
 
-def get_seq_len(task, decision=400, seq_len_multi=5):
-    if task == 'PerceptualDecisionMaking-v0':
-        seq_len_base = 22
-    elif task == 'MultiSensoryIntegration-v0':
-        seq_len_base = 11
-    elif task == 'ContextDecisionMaking-v0':
-        seq_len_base = 13
-    elif task == 'DelayMatchCategory-v0':
-        seq_len_base = 22
-    elif task == 'DelayMatchSampleDistractor1D-v0':
-        seq_len_base = 49
-    elif task == 'DelayComparison-v0':
-        seq_len_base = 63
-    elif task == 'DelayMatchSample-v0':
-        seq_len_base = 24
-    elif task == 'GoNogo-v0':
-        seq_len_base = 28
-    elif task == 'DelayPairedAssociation-v0':
-        seq_len_base = 31
-    seq_len = int( ( seq_len_base + ((decision-100)/100) ) * seq_len_multi )
-    return seq_len
+def get_task_modifier(task):
+    delimiter = '-'
+    supported_modifiers = [
+        'ND', 'MD', 'LD',
+        'Del00_Dec1', 'Del00_Dec3', 'Del00_Dec5',
+        'Del05_Dec1', 'Del05_Dec3', 'Del05_Dec5', 
+        'Del10_Dec1', 'Del10_Dec3', 'Del10_Dec5',
+        'Dec1', 'Dec3'
+        ]
+    task_subs = task.split(delimiter)
+    if str(task_subs[-1]) in supported_modifiers:
+        modifier = str(task_subs[-1])
+        task = delimiter.join(task_subs[:-1])
+    else:
+        task = task
+        modifier = ''
+    return task, modifier
 
 
-def standardize_task(task, decision):
-    if task == 'PerceptualDecisionMaking-v0':
-        timing = {'decision': decision}
-    elif task == 'MultiSensoryIntegration-v0':
-        timing = {'decision': decision}
-    elif task == 'ContextDecisionMaking-v0':
-        timing = {'fixation': 200, 'stimulus': 1000, 'delay': 0, 'decision': decision}
-    elif task == 'DelayMatchCategory-v0':
-        timing = {'fixation': 400,  'decision': decision}
-    elif task == 'DelayMatchSampleDistractor1D-v0':
-        timing = {'fixation': 200, 'decision': decision}
+def check_if_supported(task, modifier):
+    supported_tasks = [
+        'ContextDecisionMaking-v0-ND',
+        'ContextDecisionMaking-v0-MD',
+        'ContextDecisionMaking-v0-LD',
+        
+        'DelayComparison-v0',
+        
+        'DelayMatchCategory-v0',
+        
+        'DelayMatchSample-v0',
+        
+        'DelayMatchSampleDistractor1D-v0',
+        
+        'DelayPairedAssociation-v0',
+        
+        'DualDelayMatchSample-v0',
+        
+        'GoNogo-v0-Del00_Dec1',
+        'GoNogo-v0-Del00_Dec3',
+        'GoNogo-v0-Del00_Dec5',
+        'GoNogo-v0-Del05_Dec1',
+        'GoNogo-v0-Del05_Dec3',
+        'GoNogo-v0-Del05_Dec5',
+        'GoNogo-v0-Del10_Dec1',
+        'GoNogo-v0-Del10_Dec3',
+        'GoNogo-v0-Del10_Dec5',
+        
+        'GoNogoVD-v0-Dec1',
+        'GoNogoVD-v0-Dec3',
+        
+        'MultiSensoryIntegration-v0',
+        
+        'PerceptualDecisionMaking-v0-ND',
+        'PerceptualDecisionMaking-v0-MD',
+        'PerceptualDecisionMaking-v0-LD',
+        
+        'PerceptualDecisionMakingDelayResponse-v0',
+    ]
+    if modifier != '' and task + '-' + modifier not in supported_tasks:
+        raise ValueError("The combination of task '{:}' and modifier '{:}' is not supported.\n\nSupported tasks: \n{:}\n"\
+            .format(task, modifier, '\n'.join(supported_tasks)))
+    if modifier == '' and task not in supported_tasks:
+        raise ValueError("The task '{:}' is not supported.\n\nSupported tasks: \n{:}\n"\
+            .format(task, '\n'.join(supported_tasks)))
+
+
+def get_seq_len_and_timing(task, modifier='', seq_len_multi=5):
+    
+    other = {} # other timing arguments used in seq_len calculation, not passed to ngym
+    
+    if task == 'ContextDecisionMaking-v0':
+        if modifier == '':
+            timing = {'fixation': 300, 'stimulus': 1000, 'decision': 300}
+        else:
+            if modifier == 'ND':
+                delay = 0
+            elif modifier == 'MD':
+                delay = 1500
+            elif modifier == 'LD':
+                delay = 3000
+            timing = {'fixation': 300, 'stimulus': 1000, 'delay': delay, 'decision': 300}
+    
     elif task == 'DelayComparison-v0':
-        timing = {'fixation': 200, 'delay': 5000, 'decision': decision}
+        timing = {'fixation': 300, 'stimulus1': 500, 'delay': 1000, 'stimulus2': 500, 'decision': 300}
+    
+    elif task == 'DelayMatchCategory-v0':
+        timing = {'fixation': 300, 'sample': 700, 'first_delay': 1000,  'test': 700}
+    
     elif task == 'DelayMatchSample-v0':
-        timing = {'decision': decision}
-    elif task == 'GoNogo-v0':
-        timing = {'fixation': 200, 'stimulus': 500, 'delay': 2000, 'decision': decision}
+        timing = {'fixation': 300, 'sample': 500, 'delay': 1000, 'test': 500, 'decision': 300}
+    
+    elif task == 'DelayMatchSampleDistractor1D-v0':
+        timing = {'fixation': 300, 'sample': 500, 'delay1': 1000, 'test1': 500, 'delay2': 1000, 'test2': 500, 'delay3': 1000, 'test3': 500 }
+    
     elif task == 'DelayPairedAssociation-v0':
-        timing = {'stim1': 500, 'stim2': 500, 'decision': decision}
-    return timing
+        timing = {'fixation': 300, 'stim1': 1000, 'delay_btw_stim': 1000, 'stim2': 1000, 'delay_aft_stim': 1000, 'decision': 300}
+    
+    elif task == 'DualDelayMatchSample-v0':
+        timing = {'fixation': 300, 'sample': 500, 'delay1': 500, 'cue1': 500, 'test1': 500, 'delay2': 500, 'cue2': 500, 'test2': 500}
+    
+    elif task == 'GoNogo-v0':
+        if modifier == 'Del00_Dec1':
+            delay = 0
+            decision = 100
+        elif modifier == 'Del00_Dec3':
+            delay = 0
+            decision = 300
+        elif modifier == 'Del00_Dec5':
+            delay = 0
+            decision = 500
+        elif modifier == 'Del05_Dec1':
+            delay = 500
+            decision = 100
+        elif modifier == 'Del05_Dec3':
+            delay = 500
+            decision = 300
+        elif modifier == 'Del05_Dec5':
+            delay = 500
+            decision = 500
+        elif modifier == 'Del10_Dec1':
+            delay = 1000
+            decision = 100
+        elif modifier == 'Del10_Dec3':
+            delay = 1000
+            decision = 300
+        elif modifier == 'Del10_Dec5':
+            delay = 1000
+            decision = 500
+        timing = {'fixation': 300, 'stimulus': 500, 'delay': delay, 'decision': decision}
+        
+    elif task == 'GoNogoVD-v0':
+        if modifier == 'Dec1':
+            decision = 100
+        elif modifier == 'Dec3':
+            decision = 300
+        timing = {'fixation': 300, 'stimulus': 500, 'decision': decision}
+        other = {'delay': 600}
+    
+    elif task == 'MultiSensoryIntegration-v0':
+        timing = {'fixation': 300, 'stimulus': 1000, 'decision': 300}
+    
+    elif task == 'PerceptualDecisionMaking-v0':
+        if modifier == 'ND':
+            delay = 0
+        elif modifier == 'MD':
+            delay = 500
+        elif modifier == 'LD':
+            delay = 1000
+        timing = {'fixation': 300, 'stimulus': 2000, 'delay': delay, 'decision': 300}
+    
+    elif task == 'PerceptualDecisionMakingDelayResponse-v0':
+        timing = {'fixation': 300, 'stimulus': 1200, 'decision': 300}
+        other = {'delay': 1600}
+    
+    else:
+        raise ValueError("Task '{:}' is not supported.".format(task))
+    
+    seq_len_base = ( sum(timing.values()) + sum(other.values()) ) / 100
+    seq_len = int( seq_len_base * seq_len_multi )
+    
+    return seq_len, timing
+
+
+def get_task_label(task):
+    if task == 'ContextDecisionMaking-v0':
+        task_label = 'Context Decision Making (Ctx DM) - Var. Del.'
+    elif task == 'ContextDecisionMaking-v0-ND':
+        task_label = 'Context Decision Making (Ctx DM) - ND'
+    elif task == 'ContextDecisionMaking-v0-MD':
+        task_label = 'Context Decision Making (Ctx DM) - MD'
+    elif task == 'ContextDecisionMaking-v0-LD':
+        task_label = 'Context Decision Making (Ctx DM) - LD'
+    elif task == 'DelayComparison-v0':
+        task_label = 'Delayed Comparison (DC)'
+    elif task == 'DelayMatchCategory-v0':
+        task_label = 'Delayed Match to Category (DMC)'
+    elif task == 'DelayMatchSample-v0':
+        task_label = 'Delayed Match to Sample (DMS)'
+    elif task == 'DelayMatchSampleDistractor1D-v0':
+        task_label = 'Delayed Match to Sample with Distractors (DMS-D)'
+    elif task == 'DelayPairedAssociation-v0':
+        task_label = 'Delayed Paired Association (DPA)'
+    elif task == 'DualDelayMatchSample-v0':
+        task_label = 'Dual Delayed Match to Sample (DDMS)'
+    elif task == 'GoNogo-v0-ND':
+        task_label = 'Go/No-Go (GNG) - ND'
+    elif task == 'GoNogo-v0-MD':
+        task_label = 'Go/No-Go (GNG) - MD'
+    elif task == 'GoNogo-v0-LD':
+        task_label = 'Go/No-Go (GNG) - LD'
+    elif task == 'GoNogo-v0-Del00_Dec1':
+        task_label = 'Go/No-Go (GNG) - Del. 00 - Dec. 1'
+    elif task == 'GoNogo-v0-Del00_Dec3':
+        task_label = 'Go/No-Go (GNG) - Del. 00 - Dec. 3'
+    elif task == 'GoNogo-v0-Del00_Dec5':
+        task_label = 'Go/No-Go (GNG) - Del. 00 - Dec. 5'
+    elif task == 'GoNogo-v0-Del05_Dec1':
+        task_label = 'Go/No-Go (GNG) - Del. 05 - Dec. 1'
+    elif task == 'GoNogo-v0-Del05_Dec3':
+        task_label = 'Go/No-Go (GNG) - Del. 05 - Dec. 3'
+    elif task == 'GoNogo-v0-Del05_Dec5':
+        task_label = 'Go/No-Go (GNG) - Del. 05 - Dec. 5'
+    elif task == 'GoNogo-v0-Del10_Dec1':
+        task_label = 'Go/No-Go (GNG) - Del. 10 - Dec. 1'
+    elif task == 'GoNogo-v0-Del10_Dec3':
+        task_label = 'Go/No-Go (GNG) - Del. 10 - Dec. 3'
+    elif task == 'GoNogo-v0-Del10_Dec5':
+        task_label = 'Go/No-Go (GNG) - Del. 10 - Dec. 5'
+    elif task == 'GoNogoVD-v0-Dec1':
+        task_label = 'Go/No-Go (GNG) - Var. Del. - Dec. 1'
+    elif task == 'GoNogoVD-v0-Dec3':
+        task_label = 'Go/No-Go (GNG) - Var. Del. - Dec. 3'
+    elif task == 'MultiSensoryIntegration-v0-ND':
+        task_label = 'Multi Sensory Integration (MultSen DM) - ND'
+    elif task == 'MultiSensoryIntegration-v0-MD':
+        task_label = 'Multi Sensory Integration (MultSen DM) - MD'
+    elif task == 'MultiSensoryIntegration-v0-LD':
+        task_label = 'Multi Sensory Integration (MultSen DM) - LD'
+    elif task == 'PerceptualDecisionMaking-v0-ND':
+        task_label = 'Perceptual Decision Making (DM) - ND'
+    elif task == 'PerceptualDecisionMaking-v0-MD':
+        task_label = 'Perceptual Decision Making (DM) - MD'
+    elif task == 'PerceptualDecisionMaking-v0-LD':
+        task_label = 'Perceptual Decision Making (DM) - LD'
+    elif task == 'PerceptualDecisionMakingDelayResponse-v0':
+        task_label = 'Perceptual Decision Making (DM) - Var. Del.'
+        
+    return task_label
 
 
 def get_kernel_label(kernel_type='None', mask_weights=False, reg_weight=0.0):
+    if mask_weights:
+        m = 'Masked '
+    else:
+        m = 'Unmasked '
     if kernel_type == 'sa_axis':
-        kernel_label = 'S-A RNN'
+        kernel_label = m + 'S-A RNN'
+    elif kernel_type == 'ut_axis':
+        kernel_label = m + 'U-T RNN'
     elif kernel_type == 'sf_axis':
-        kernel_label = 'S-F RNN'
+        kernel_label = m + 'S-F RNN'
     elif kernel_type == 'euclidean':
-        kernel_label = 'Eucl. RNN'
+        kernel_label = m + 'Eucl. RNN'
+    elif kernel_type == 'struct_conn':
+        kernel_label = m + 'SC RNN'
     elif kernel_type == 'None':
         if reg_weight == 0:
-            r = 'n'
+            r = ' non-reg.'
         else:
-            r = 'r'
-        if mask_weights:
-            m = 'm'
-        else:
-            m = ''
+            r = ' reg.'
         kernel_label = m + 'RNN' + r
     else:
         kernel_label = 'unknown'
     return kernel_label
-
-
-def get_task_label(task):
-    if task == 'PerceptualDecisionMaking-v0':
-        task_label = 'Perceptual Decision Making (DM)'
-    elif task == 'MultiSensoryIntegration-v0':
-        task_label = 'Multi Sensory Integration (MultSen DM)'
-    elif task == 'ContextDecisionMaking-v0':
-        task_label = 'Context Decision Making (Ctx DM)'
-    elif task == 'DelayMatchCategory-v0':
-        task_label = 'Delayed Match to Category (DMC)'
-    return task_label
     
 
 def load_params_csv(model_params_csv):

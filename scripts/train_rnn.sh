@@ -1,16 +1,24 @@
 #!/bin/bash -e
 
 ########################################################################################################################
+
 # directories
-scriptsdir='/home/lindenmp/research_projects/neuro_rnn/scripts'
-datadir='/home/lindenmp/research_projects/neuro_rnn/data'
-outdir='/media/lindenmp/storage_ssd/research_projects/neuro_rnn/results/model_cpu'
-# scriptsdir='/Users/ahmad/software/snaplab_github/neuro_rnn/scripts'
-# datadir='/Users/ahmad/software/snaplab_github/neuro_rnn/data'
-# outdir='/Users/ahmad/data/rutgers/neuro_rnn/results/pytorch/model'
+if [ $(uname -s) == "Darwin" ]; then
+  if [ $USER == "ahmad" ]; then
+    scriptsdir='/Users/ahmad/software/snaplab_github/neuro_rnn/scripts'
+    datadir='/Users/ahmad/software/snaplab_github/neuro_rnn/data'
+    outdir='/Users/ahmad/data/rutgers/neuro_rnn/results/pytorch/model'
+  fi
+else
+  if [ $USER == "lindenmp" ]; then
+    scriptsdir='/home/lindenmp/research_projects/neuro_rnn/scripts'
+    datadir='/home/lindenmp/research_projects/neuro_rnn/data'
+    outdir='/media/lindenmp/storage_ssd/research_projects/neuro_rnn/results/model_cpu'
+  fi
+fi
 
 # path to inputs tsv
-params_file="$datadir/model_params_2.csv"
+params_file="$datadir/model_params_gng_vd_vs_fd.csv" # < < < < < < < < < < < < < < < < SELECT MODELS FILE HERE
 
 # path to log file
 log_file="$outdir/run_training_$(date '+%Y-%m-%d-%H-%M-%S').log"
@@ -22,10 +30,19 @@ epoch_log=100
 
 # device settings
 device='cpu'
-n_threads=8
+n_threads=12
 if [ ${device} == 'cpu' ] && [ ${n_threads} -gt 1 ]; then
   echo "suspending all cuda devices"
   export CUDA_VISIBLE_DEVICES=""
+  export OMP_NUM_THREADS=${n_threads}
+  export MKL_NUM_THREADS=${n_threads}
+fi
+
+# are we running all models?
+if [ "$1" != "" ]; then
+  selected_lines="$1"
+else
+  selected_lines=""
 fi
 
 ########################################################################################################################
@@ -57,8 +74,6 @@ get_col_num() {
 line=$(head -1 "$params_file")
 col_task=$(get_col_num "$line" 'task')
 col_seq_len_multi=$(get_col_num "$line" 'seq_len_multi')
-col_standardize_task=$(get_col_num "$line" 'standardize_task')
-col_decision=$(get_col_num "$line" 'decision')
 col_rnn_model=$(get_col_num "$line" 'rnn_model')
 col_hidden_size=$(get_col_num "$line" 'hidden_size')
 col_batch_size=$(get_col_num "$line" 'batch_size')
@@ -83,12 +98,14 @@ col_kernel_type=$(get_col_num "$line" 'kernel_type')
     
     line_index=$((line_index+1))
 
-    [ $line_index -eq 1 ] && continue
+    [ $line_index -eq 1 ] && continue # skip header
+
+    if [ "$selected_lines" != "" -a "$(echo $selected_lines | grep -w $line_index)" == "" ]; then
+      continue
+    fi
 
     task="$(echo $line | awk -v c=${col_task} -F ',' '{print $c}')"
     seq_len_multi=$(echo $line | awk -v c=${col_seq_len_multi} -F ',' '{print $c}')
-    standardize_task=$(echo $line | awk -v c=${col_standardize_task} -F ',' '{print $c}')
-    decision=$(echo $line | awk -v c=${col_decision} -F ',' '{print $c}')
     rnn_model="$(echo $line | awk -v c=${col_rnn_model} -F ',' '{print $c}')"
     hidden_size=$(echo $line | awk -v c=${col_hidden_size} -F ',' '{print $c}')
     batch_size=$(echo $line | awk -v c=${col_batch_size} -F ',' '{print $c}')
@@ -113,14 +130,12 @@ col_kernel_type=$(get_col_num "$line" 'kernel_type')
     echo "Epochs ..... $n_epochs"
     echo "Runs ....... $n_runs"
     echo "Started .... $(date '+%Y-%m-%d-%H-%M-%S')"
-    
+
     python ${scriptsdir}/train_rnn.py \
       --outdir ${outdir} \
       --datadir ${datadir} \
       --task ${task} \
       --seq_len_multi ${seq_len_multi} \
-      --standardize_task ${standardize_task} \
-      --decision ${decision} \
       --mask_weights ${mask_weights} \
       --kernel_type ${kernel_type} \
       --reg_weight ${reg_weight} \
@@ -134,7 +149,7 @@ col_kernel_type=$(get_col_num "$line" 'kernel_type')
       --reg_type ${reg_type} \
       --device ${device} \
       --n_threads ${n_threads}  2>&1 # capture stdout and stderr 
-    
+
     echo 
     echo "Finished ... $(date '+%Y-%m-%d-%H-%M-%S')"
 

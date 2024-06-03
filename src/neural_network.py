@@ -253,6 +253,7 @@ def run_testing(dataset, model, n_trials=1000, verbose=True):
             env.reset(seed=int(trial))
             env.new_trial()
             ob, gt = env.ob, env.gt
+            # print(ob.shape, gt.shape)
             inputs.append(ob)
             labels.append(gt)
             ob = torch.from_numpy(ob[:, np.newaxis, :]).type(torch.float).to(device)
@@ -283,10 +284,10 @@ def run_testing(dataset, model, n_trials=1000, verbose=True):
         if verbose:
             print('Average accuracy across {:} trials: {:.2f}%'.format(n_trials, accuracy*100), flush=True)
 
-        inputs = np.array(inputs)
-        labels = np.array(labels)
-        hidden_activity = np.array(hidden_activity)
-        output_activity = np.array(output_activity)
+        # inputs = np.array(inputs)
+        # labels = np.array(labels)
+        # hidden_activity = np.array(hidden_activity)
+        # output_activity = np.array(output_activity)
 
         return accuracy, inputs, labels, hidden_activity, output_activity, info
 
@@ -294,7 +295,7 @@ def run_testing(dataset, model, n_trials=1000, verbose=True):
 def train_helper(run, config):
     
     # create dataset
-    dataset = ngym.Dataset(config['task'],
+    dataset = ngym.Dataset(config['task_no_modifier'],
                            env_kwargs=config['env_kwargs'],
                            batch_size=config['batch_size'], 
                            seq_len=config['seq_len'])
