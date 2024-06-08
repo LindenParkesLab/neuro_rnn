@@ -104,7 +104,7 @@ def run_training(dataset, model, optimizer, criterion, config, scheduler=None, r
     batch_size = config['batch_size']
     reg_type = config['reg_type']
     reg_weight = config['reg_weight']
-    trim = int((decision - 100) / dt)
+    # trim = int((decision - 100) / dt)
 
     # output container
     training_loss = []

@@ -4,6 +4,7 @@ from scipy import signal
 from scipy.spatial import distance
 import torch
 from sklearn.decomposition import PCA
+import pandas as pd
 
 def normalize_x(x):
     return (x - np.min(x)) / (np.max(x) - np.min(x))
@@ -509,231 +510,260 @@ def get_n_io(mask_weights=True, hidden_size=100):
 
 
 def get_task_modifier(task):
+    import fnmatch
     delimiter = '-'
-    supported_modifiers = [
-        'ND', 'MD', 'LD',
-        'Del00_Dec1', 'Del00_Dec3', 'Del00_Dec5',
-        'Del05_Dec1', 'Del05_Dec3', 'Del05_Dec5', 
-        'Del10_Dec1', 'Del10_Dec3', 'Del10_Dec5',
-        'Dec1', 'Dec3'
-        ]
     task_subs = task.split(delimiter)
-    if str(task_subs[-1]) in supported_modifiers:
-        modifier = str(task_subs[-1])
+    str_last = str(task_subs[-1])
+    if fnmatch.fnmatch(str_last.lower(),'del_*') or fnmatch.fnmatch(str_last.lower(),'dec_*'):
         task = delimiter.join(task_subs[:-1])
+        modifier = str_last
     else:
         task = task
         modifier = ''
     return task, modifier
 
 
+def parse_task_modifier(modifier):
+    modifier = modifier.lower()
+    delimiter = '_'
+    modifier_subs = modifier.split(delimiter)
+    
+    try:
+        del_flag = modifier_subs.index('del')
+        delay = ( int(modifier_subs[del_flag+1]), int(modifier_subs[del_flag+2]) )
+    except:
+        try:
+            del_flag = modifier_subs.index('del')
+            delay = ( int(modifier_subs[del_flag+1]) )
+        except:
+            delay = ()
+        
+    try:
+        dec_flag = modifier_subs.index('dec')
+        decision = int(modifier_subs[dec_flag+1])
+    except:
+        decision = ()
+    
+    return delay, decision
+
+
 def check_if_supported(task, modifier):
+    
+    delay, decision = parse_task_modifier(modifier)
+        
     supported_tasks = [
-        'ContextDecisionMaking-v0-ND',
-        'ContextDecisionMaking-v0-MD',
-        'ContextDecisionMaking-v0-LD',
-        
-        'DelayComparison-v0',
-        
-        'DelayMatchCategory-v0',
-        
-        'DelayMatchSample-v0',
-        
-        'DelayMatchSampleDistractor1D-v0',
-        
-        'DelayPairedAssociation-v0',
-        
-        'DualDelayMatchSample-v0',
-        
-        'GoNogo-v0-Del00_Dec1',
-        'GoNogo-v0-Del00_Dec3',
-        'GoNogo-v0-Del00_Dec5',
-        'GoNogo-v0-Del05_Dec1',
-        'GoNogo-v0-Del05_Dec3',
-        'GoNogo-v0-Del05_Dec5',
-        'GoNogo-v0-Del10_Dec1',
-        'GoNogo-v0-Del10_Dec3',
-        'GoNogo-v0-Del10_Dec5',
-        
-        'GoNogoVD-v0-Dec1',
-        'GoNogoVD-v0-Dec3',
-        
-        'MultiSensoryIntegration-v0',
-        
-        'PerceptualDecisionMaking-v0-ND',
-        'PerceptualDecisionMaking-v0-MD',
-        'PerceptualDecisionMaking-v0-LD',
-        
-        'PerceptualDecisionMakingDelayResponse-v0',
+        #  task_name                                |   can modify?    |
+        #                                           | delay | decision |
+        [ 'ContextDecisionMaking-v0',                  True,    True,  ],
+        [ 'DelayComparison-v0',                        True,    True,  ],
+        [ 'DelayMatchCategory-v0',                     True,    False, ],
+        [ 'DelayMatchSample-v0',                       True,    True,  ],
+        [ 'DelayMatchSampleDistractor1D-v0',           True,    False, ],
+        [ 'DelayPairedAssociation-v0',                 True,    True,  ],
+        [ 'DualDelayMatchSample-v0',                   True,    False, ],
+        [ 'GoNogo-v0',                                 True,    True,  ],
+        [ 'MultiSensoryIntegration-v0',                False,   True,  ],
+        [ 'PerceptualDecisionMaking-v0-ND',            True,    True,  ],
+        [ 'PerceptualDecisionMakingDelayResponse-v0',  True,    True,  ],
     ]
-    if modifier != '' and task + '-' + modifier not in supported_tasks:
-        raise ValueError("The combination of task '{:}' and modifier '{:}' is not supported.\n\nSupported tasks: \n{:}\n"\
-            .format(task, modifier, '\n'.join(supported_tasks)))
-    if modifier == '' and task not in supported_tasks:
-        raise ValueError("The task '{:}' is not supported.\n\nSupported tasks: \n{:}\n"\
-            .format(task, '\n'.join(supported_tasks)))
+
+    supported_tasks = pd.DataFrame(supported_tasks, columns=['Task','Delay_Modifiable','Decision_Modifiable'])
+    this_task = supported_tasks[supported_tasks['Task']==task]
+    if this_task.empty:
+        raise ValueError(f"The task '{task}' is not supported.\n\nSupported tasks: \n{supported_tasks.to_string()}\n")
+    if (delay and not this_task['Delay_Modifiable'].iloc[0]) or (decision and not this_task['Decision_Modifiable'].iloc[0]):
+        raise ValueError(f"The combination of task '{task}' and modifier '{modifier}' is not supported.\n\nSupported tasks: \n{supported_tasks.to_string()}\n")
+        
+    return True
+
+
+def delay_dist(delay_opt=(400,200)):
+    
+    if isinstance(delay_opt,int):
+        delay = delay_opt
+        plus_minus = 0
+    elif len(delay_opt) == 1:
+        delay = delay_opt[0]
+        plus_minus = 0
+    elif len(delay_opt) == 2:
+        delay = delay_opt[0]
+        plus_minus = delay_opt[1]
+    else:
+        ValueError('The requested delay is invalid. Must be an integer or a two-element tuple.')
+        
+    if plus_minus > delay:
+        ValueError('The requested delay contains negative values and is thus invalid.')
+        a = 0
+    else:
+        a = delay-plus_minus
+    b = delay+plus_minus+1
+    c = np.arange(a, b, 100)
+    d = tuple(c.tolist())
+    # if len(c) == 1:
+    #     d = c[0]
+    # else:
+    #     d = tuple(c.tolist())
+    
+    return d
 
 
 def get_seq_len_and_timing(task, modifier='', seq_len_multi=5):
     
-    other = {} # other timing arguments used in seq_len calculation, not passed to ngym
+    delay = ()
+    decision = 300
+    delay_opt, decision_opt = parse_task_modifier(modifier)
+    if decision_opt:
+        decision = decision_opt
+    if delay_opt:
+        delay = delay_dist(delay_opt)
+    
+    timing_other = {} # other timing arguments used in seq_len calculation, not passed to ngym
     
     if task == 'ContextDecisionMaking-v0':
-        if modifier == '':
-            timing = {'fixation': 300, 'stimulus': 1000, 'decision': 300}
+        timing = {'fixation': 300, 'stimulus': 1000, 'decision': decision}
+        if delay:
+            timing['delay'] = delay
         else:
-            if modifier == 'ND':
-                delay = 0
-            elif modifier == 'MD':
-                delay = 1500
-            elif modifier == 'LD':
-                delay = 3000
-            timing = {'fixation': 300, 'stimulus': 1000, 'delay': delay, 'decision': 300}
+            timing_other['delay'] = 600
     
     elif task == 'DelayComparison-v0':
-        timing = {'fixation': 300, 'stimulus1': 500, 'delay': 1000, 'stimulus2': 500, 'decision': 300}
+        timing = {'fixation': 300, 'stimulus1': 500, 'stimulus2': 500, 'decision': decision}
+        if delay:
+            timing['delay'] = delay
+        else:
+            timing_other['delay'] = 1000
     
     elif task == 'DelayMatchCategory-v0':
-        timing = {'fixation': 300, 'sample': 700, 'first_delay': 1000,  'test': 700}
+        timing = {'fixation': 300, 'sample': 700, 'test': 700}
+        if delay:
+            timing['first_delay'] = delay
+        else:
+            timing_other['first_delay'] = 1000
     
     elif task == 'DelayMatchSample-v0':
-        timing = {'fixation': 300, 'sample': 500, 'delay': 1000, 'test': 500, 'decision': 300}
+        timing = {'fixation': 300, 'sample': 500, 'test': 500, 'decision': decision}
+        if delay:
+            timing['delay'] = delay
+        else:
+            timing_other['delay'] = 1000
     
     elif task == 'DelayMatchSampleDistractor1D-v0':
-        timing = {'fixation': 300, 'sample': 500, 'delay1': 1000, 'test1': 500, 'delay2': 1000, 'test2': 500, 'delay3': 1000, 'test3': 500 }
+        timing = {'fixation': 300, 'sample': 500, 'test1': 500, 'test2': 500, 'test3': 500 }
+        if delay:
+            timing['delay1'] = delay
+            timing['delay2'] = delay
+            timing['delay3'] = delay
+        else:
+            timing_other['delay1'] = 1000
+            timing_other['delay2'] = 1000
+            timing_other['delay3'] = 1000
     
     elif task == 'DelayPairedAssociation-v0':
-        timing = {'fixation': 300, 'stim1': 1000, 'delay_btw_stim': 1000, 'stim2': 1000, 'delay_aft_stim': 1000, 'decision': 300}
+        timing = {'fixation': 300, 'stim1': 1000, 'stim2': 1000, 'decision': decision}
+        if delay:
+            timing['delay_btw_stim'] = delay
+            timing['delay_aft_stim'] = delay
+        else:
+            timing_other['delay_btw_stim'] = 1000
+            timing_other['delay_aft_stim'] = 1000
     
     elif task == 'DualDelayMatchSample-v0':
-        timing = {'fixation': 300, 'sample': 500, 'delay1': 500, 'cue1': 500, 'test1': 500, 'delay2': 500, 'cue2': 500, 'test2': 500}
+        timing = {'fixation': 300, 'sample': 500, 'cue1': 500, 'test1': 500, 'cue2': 500, 'test2': 500}
+        if delay:
+            timing['delay1'] = delay
+            timing['delay2'] = delay
+        else:
+            timing_other['delay1'] = 500
+            timing_other['delay2'] = 500
     
     elif task == 'GoNogo-v0':
-        if modifier == 'Del00_Dec1':
-            delay = 0
-            decision = 100
-        elif modifier == 'Del00_Dec3':
-            delay = 0
-            decision = 300
-        elif modifier == 'Del00_Dec5':
-            delay = 0
-            decision = 500
-        elif modifier == 'Del05_Dec1':
-            delay = 500
-            decision = 100
-        elif modifier == 'Del05_Dec3':
-            delay = 500
-            decision = 300
-        elif modifier == 'Del05_Dec5':
-            delay = 500
-            decision = 500
-        elif modifier == 'Del10_Dec1':
-            delay = 1000
-            decision = 100
-        elif modifier == 'Del10_Dec3':
-            delay = 1000
-            decision = 300
-        elif modifier == 'Del10_Dec5':
-            delay = 1000
-            decision = 500
-        timing = {'fixation': 300, 'stimulus': 500, 'delay': delay, 'decision': decision}
-        
-    elif task == 'GoNogoVD-v0':
-        if modifier == 'Dec1':
-            decision = 100
-        elif modifier == 'Dec3':
-            decision = 300
         timing = {'fixation': 300, 'stimulus': 500, 'decision': decision}
-        other = {'delay': 600}
+        if delay:
+            timing['delay'] = delay
+        else:
+            timing_other['delay'] = 500
     
     elif task == 'MultiSensoryIntegration-v0':
-        timing = {'fixation': 300, 'stimulus': 1000, 'decision': 300}
+        timing = {'fixation': 300, 'stimulus': 800, 'decision': decision}
     
     elif task == 'PerceptualDecisionMaking-v0':
-        if modifier == 'ND':
-            delay = 0
-        elif modifier == 'MD':
-            delay = 500
-        elif modifier == 'LD':
-            delay = 1000
-        timing = {'fixation': 300, 'stimulus': 2000, 'delay': delay, 'decision': 300}
+        timing = {'fixation': 300, 'stimulus': 2000, 'decision': decision}
+        if delay:
+            timing['delay'] = delay
+        else:
+            timing_other['delay'] = 0
     
     elif task == 'PerceptualDecisionMakingDelayResponse-v0':
-        timing = {'fixation': 300, 'stimulus': 1200, 'decision': 300}
-        other = {'delay': 1600}
+        timing = {'fixation': 300, 'stimulus': 1200, 'decision': decision}
+        if delay:
+            timing['delay'] = delay
+        else:
+            timing_other['delay'] = 1600
     
     else:
         raise ValueError("Task '{:}' is not supported.".format(task))
     
-    seq_len_base = ( sum(timing.values()) + sum(other.values()) ) / 100
+    timing_all = {**timing, **timing_other}
+    seq_len_base = sum({k: round(np.mean(v)) for k, v in timing_all.items()}.values()) / 100
     seq_len = int( seq_len_base * seq_len_multi )
     
     return seq_len, timing
 
 
 def get_task_label(task):
+    
+    task, modifier = get_task_modifier(task)
+    check_if_supported(task,modifier)
+    delay, decision = parse_task_modifier(modifier)
+    
+    del_str = ''
+    dec_str = ''
+    
+    if delay:
+        if isinstance(delay,int):
+            del_str = f', Dly. {delay}'
+        else:
+            del_str = f', Dly. {delay[0]} ± {delay[1]}'
+    
+    if decision:
+        dec_str = f', Dec. {decision}'
+        
+    suff = del_str + dec_str
+    
     if task == 'ContextDecisionMaking-v0':
-        task_label = 'Context Decision Making (Ctx DM) - Var. Del.'
-    elif task == 'ContextDecisionMaking-v0-ND':
-        task_label = 'Context Decision Making (Ctx DM) - ND'
-    elif task == 'ContextDecisionMaking-v0-MD':
-        task_label = 'Context Decision Making (Ctx DM) - MD'
-    elif task == 'ContextDecisionMaking-v0-LD':
-        task_label = 'Context Decision Making (Ctx DM) - LD'
+        task_label = 'Context Decision Making (Ctx DM)'
+        
     elif task == 'DelayComparison-v0':
         task_label = 'Delayed Comparison (DC)'
+        
     elif task == 'DelayMatchCategory-v0':
         task_label = 'Delayed Match to Category (DMC)'
+        
     elif task == 'DelayMatchSample-v0':
         task_label = 'Delayed Match to Sample (DMS)'
+        
     elif task == 'DelayMatchSampleDistractor1D-v0':
         task_label = 'Delayed Match to Sample with Distractors (DMS-D)'
+        
     elif task == 'DelayPairedAssociation-v0':
         task_label = 'Delayed Paired Association (DPA)'
+        
     elif task == 'DualDelayMatchSample-v0':
         task_label = 'Dual Delayed Match to Sample (DDMS)'
-    elif task == 'GoNogo-v0-ND':
-        task_label = 'Go/No-Go (GNG) - ND'
-    elif task == 'GoNogo-v0-MD':
-        task_label = 'Go/No-Go (GNG) - MD'
-    elif task == 'GoNogo-v0-LD':
-        task_label = 'Go/No-Go (GNG) - LD'
-    elif task == 'GoNogo-v0-Del00_Dec1':
-        task_label = 'Go/No-Go (GNG) - Del. 00 - Dec. 1'
-    elif task == 'GoNogo-v0-Del00_Dec3':
-        task_label = 'Go/No-Go (GNG) - Del. 00 - Dec. 3'
-    elif task == 'GoNogo-v0-Del00_Dec5':
-        task_label = 'Go/No-Go (GNG) - Del. 00 - Dec. 5'
-    elif task == 'GoNogo-v0-Del05_Dec1':
-        task_label = 'Go/No-Go (GNG) - Del. 05 - Dec. 1'
-    elif task == 'GoNogo-v0-Del05_Dec3':
-        task_label = 'Go/No-Go (GNG) - Del. 05 - Dec. 3'
-    elif task == 'GoNogo-v0-Del05_Dec5':
-        task_label = 'Go/No-Go (GNG) - Del. 05 - Dec. 5'
-    elif task == 'GoNogo-v0-Del10_Dec1':
-        task_label = 'Go/No-Go (GNG) - Del. 10 - Dec. 1'
-    elif task == 'GoNogo-v0-Del10_Dec3':
-        task_label = 'Go/No-Go (GNG) - Del. 10 - Dec. 3'
-    elif task == 'GoNogo-v0-Del10_Dec5':
-        task_label = 'Go/No-Go (GNG) - Del. 10 - Dec. 5'
-    elif task == 'GoNogoVD-v0-Dec1':
-        task_label = 'Go/No-Go (GNG) - Var. Del. - Dec. 1'
-    elif task == 'GoNogoVD-v0-Dec3':
-        task_label = 'Go/No-Go (GNG) - Var. Del. - Dec. 3'
-    elif task == 'MultiSensoryIntegration-v0-ND':
-        task_label = 'Multi Sensory Integration (MultSen DM) - ND'
-    elif task == 'MultiSensoryIntegration-v0-MD':
-        task_label = 'Multi Sensory Integration (MultSen DM) - MD'
-    elif task == 'MultiSensoryIntegration-v0-LD':
-        task_label = 'Multi Sensory Integration (MultSen DM) - LD'
-    elif task == 'PerceptualDecisionMaking-v0-ND':
-        task_label = 'Perceptual Decision Making (DM) - ND'
-    elif task == 'PerceptualDecisionMaking-v0-MD':
-        task_label = 'Perceptual Decision Making (DM) - MD'
-    elif task == 'PerceptualDecisionMaking-v0-LD':
-        task_label = 'Perceptual Decision Making (DM) - LD'
+        
+    elif task == 'GoNogo-v0':
+        task_label = 'Go/No-Go (GNG)'
+        
+    elif task == 'MultiSensoryIntegration-v0':
+        task_label = 'Multi Sensory Integration (MultSen DM)'
+        
+    elif task == 'PerceptualDecisionMaking-v0':
+        task_label = 'Perceptual Decision Making (DM)'
+        
     elif task == 'PerceptualDecisionMakingDelayResponse-v0':
-        task_label = 'Perceptual Decision Making (DM) - Var. Del.'
+        task_label = 'Perceptual Decision Making (DM)'
+    
+    task_label = task_label + suff
         
     return task_label
 
