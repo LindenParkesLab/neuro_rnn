@@ -18,7 +18,7 @@ else
 fi
 
 # path to inputs tsv
-params_file="$datadir/model_params.csv" # < < < < < < < < < < < < < < < < SELECT MODELS FILE HERE
+params_file="$datadir/model_params_gng_4x4_adj_lambda.csv" # < < < < < < < < < < < < < < < < SELECT MODELS FILE HERE
 
 # path to log file
 log_file="$outdir/run_training_$(date '+%Y-%m-%d-%H-%M-%S').log"

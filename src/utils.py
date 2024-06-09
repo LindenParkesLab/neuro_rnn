@@ -773,22 +773,24 @@ def get_kernel_label(kernel_type='None', mask_weights=False, reg_weight=0.0):
         m = 'Masked '
     else:
         m = 'Unmasked '
+    rnn_str = ''
     if kernel_type == 'sa_axis':
-        kernel_label = m + 'S-A RNN'
+        kernel_label = m + 'S-A'
     elif kernel_type == 'ut_axis':
-        kernel_label = m + 'U-T RNN'
+        kernel_label = m + 'U-T'
     elif kernel_type == 'sf_axis':
-        kernel_label = m + 'S-F RNN'
+        kernel_label = m + 'S-F'
     elif kernel_type == 'euclidean':
-        kernel_label = m + 'Eucl. RNN'
+        kernel_label = m + 'Eucl.'
     elif kernel_type == 'struct_conn':
-        kernel_label = m + 'SC RNN'
+        kernel_label = m + 'SC'
     elif kernel_type == 'None':
         if reg_weight == 0:
-            r = ' non-reg.'
+            r = 'Unreg. '
         else:
-            r = ' reg.'
-        kernel_label = m + 'RNN' + r
+            r = 'Reg. '
+        # r = f''
+        kernel_label = m + rnn_str + r
     else:
         kernel_label = 'unknown'
     return kernel_label
