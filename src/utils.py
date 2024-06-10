@@ -1,8 +1,10 @@
 import numpy as np
 import scipy as sp
 from scipy import signal
+from scipy.spatial import distance
 import torch
 from sklearn.decomposition import PCA
+import pandas as pd
 
 def normalize_x(x):
     return (x - np.min(x)) / (np.max(x) - np.min(x))
@@ -69,6 +71,7 @@ def build_reg_ken(n_epochs=1000, hidden_size=200, kernel_std_frac=0.2, type='spo
     elif type == 'comet':
         return kernel - (kernel_lagged * comet_tail_frac)
 
+
 def get_p_val_string(p_val):
     if p_val == 0.0:
         p_str = "-log10($\mathit{:}$)>25".format('{p}')
@@ -126,6 +129,7 @@ def bandpower(ts, fs, fmin, fmax):
     ind_max = np.argmax(f > fmax) - 1
 
     return np.trapz(Pxx[ind_min: ind_max], f[ind_min: ind_max])
+
 
 def compute_rlfp(ts, tr, low=None, high=None, num_bands=5, band_of_interest=1):
     """
@@ -266,9 +270,8 @@ def get_weight_masks_schaefer(roi_names, input_system='Vis', output_system='Defa
 
 def get_file_str(config):
     # task parameters
-    task = config['task']
+    task = config['task_with_modifier']
     seq_len = config['seq_len']
-    decision = config['env_kwargs']['timing']['decision']
 
     # RNN model and training parameters
     rnn_model = config['rnn_model']
@@ -284,40 +287,16 @@ def get_file_str(config):
     reg_type = config['reg_type']
     reg_weight = config['reg_weight']
     kernel_type = config['kernel_type']
-    if kernel_type == 'static':
-        kernel_std_frac = config['kernel_std_frac']
-    elif kernel_type == 'comet':
-        kernel_std_frac = config['kernel_std_frac']
-        comet_buffer_frac = config['comet_buffer_frac']
-        comet_tail_frac = config['comet_tail_frac']
-
-    if kernel_type == 'static':
-        file_str = 'task-{:}-{:}-{:}_' \
-                   'model-{:}-{:}-{:}-{:}-{:}-{:}_' \
-                   'wmask-{:}-{:}_' \
-                   'reg-{:}-{:}-{:}-{:}' \
-            .format(task, seq_len, decision,
-                    rnn_model, hidden_size, batch_size, lr, n_runs, n_epochs,
-                    mask_weights, n_io,
-                    reg_type, reg_weight, kernel_type, kernel_std_frac)
-    elif kernel_type == 'comet':
-        file_str = 'task-{:}-{:}-{:}_' \
-                   'model-{:}-{:}-{:}-{:}-{:}-{:}_' \
-                   'wmask-{:}-{:}_' \
-                   'reg-{:}-{:}-{:}-{:}-{:}-{:}' \
-            .format(task, seq_len, decision,
-                    rnn_model, hidden_size, batch_size, lr, n_runs, n_epochs,
-                    mask_weights, n_io,
-                    reg_type, reg_weight, kernel_type, kernel_std_frac, comet_buffer_frac, comet_tail_frac)
-    else:
-        file_str = 'task-{:}-{:}-{:}_' \
-                   'model-{:}-{:}-{:}-{:}-{:}-{:}_' \
-                   'wmask-{:}-{:}_' \
-                   'reg-{:}-{:}-{:}' \
-            .format(task, seq_len, decision,
-                    rnn_model, hidden_size, batch_size, lr, n_runs, n_epochs,
-                    mask_weights, n_io,
-                    reg_type, reg_weight, kernel_type)
+    
+    # create name string
+    file_str = 'task-{:}-{:}_' \
+                'model-{:}-{:}-{:}-{:}-{:}-{:}_' \
+                'wmask-{:}-{:}_' \
+                'reg-{:}-{:}-{:}' \
+        .format(task, seq_len,
+                rnn_model, hidden_size, batch_size, lr, n_runs, n_epochs,
+                mask_weights, n_io,
+                reg_type, reg_weight, kernel_type)
 
     return file_str
 
@@ -508,12 +487,9 @@ def get_device(device_opt):
 
 
 def get_brainmap_distance(brain_map):
-    n = len(brain_map)
-    distance_matrix = np.zeros((n, n))
-    for i in np.arange(n):
-        for j in np.arange(n):
-            distance_matrix[i, j] = brain_map[i] - brain_map[j]
-    distance_matrix = np.abs(distance_matrix)
+    if brain_map.ndim == 1 or brain_map.shape[1] == 1:
+        brain_map = brain_map.reshape(-1,1)
+    distance_matrix = distance.squareform(distance.pdist(brain_map, 'euclidean'))
 
     return distance_matrix
 
@@ -533,47 +509,291 @@ def get_n_io(mask_weights=True, hidden_size=100):
     return n_io
 
 
-def get_seq_len(task, decision=400, seq_len_multi=5):
-    if task == 'PerceptualDecisionMaking-v0':
-        seq_len_base = 22
-    elif task == 'MultiSensoryIntegration-v0':
-        seq_len_base = 11
-    elif task == 'ContextDecisionMaking-v0':
-        seq_len_base = 13
-    seq_len = int( ( seq_len_base + ((decision-100)/100) ) * seq_len_multi )
-    return seq_len
-
-
-def get_kernel_label(kernel_type='None', mask_weights=False, reg_weight=0.0):
-    if kernel_type == 'sa_axis':
-        kernel_label = 'S-A RNN'
-    elif kernel_type == 'sf_axis':
-        kernel_label = 'S-F RNN'
-    elif kernel_type == 'euclidean':
-        kernel_label = 'Eucl. RNN'
-    elif kernel_type == 'None':
-        if reg_weight == 0:
-            r = 'n'
-        else:
-            r = 'r'
-        if mask_weights:
-            m = 'm'
-        else:
-            m = ''
-        kernel_label = m + 'RNN' + r
+def get_task_modifier(task):
+    import fnmatch
+    delimiter = '-'
+    task_subs = task.split(delimiter)
+    str_last = str(task_subs[-1])
+    if fnmatch.fnmatch(str_last.lower(),'del_*') or fnmatch.fnmatch(str_last.lower(),'dec_*'):
+        task = delimiter.join(task_subs[:-1])
+        modifier = str_last
     else:
-        kernel_label = 'unknown'
-    return kernel_label
+        task = task
+        modifier = ''
+    return task, modifier
+
+
+def parse_task_modifier(modifier):
+    modifier = modifier.lower()
+    delimiter = '_'
+    modifier_subs = modifier.split(delimiter)
+    
+    try:
+        del_flag = modifier_subs.index('del')
+        delay = ( int(modifier_subs[del_flag+1]), int(modifier_subs[del_flag+2]) )
+    except:
+        try:
+            del_flag = modifier_subs.index('del')
+            delay = ( int(modifier_subs[del_flag+1]) )
+        except:
+            delay = ()
+        
+    try:
+        dec_flag = modifier_subs.index('dec')
+        decision = int(modifier_subs[dec_flag+1])
+    except:
+        decision = ()
+    
+    return delay, decision
+
+
+def check_if_supported(task, modifier):
+    
+    delay, decision = parse_task_modifier(modifier)
+        
+    supported_tasks = [
+        #  task_name                                |   can modify?    |
+        #                                           | delay | decision |
+        [ 'ContextDecisionMaking-v0',                  True,    True,  ],
+        [ 'DelayComparison-v0',                        True,    True,  ],
+        [ 'DelayMatchCategory-v0',                     True,    False, ],
+        [ 'DelayMatchSample-v0',                       True,    True,  ],
+        [ 'DelayMatchSampleDistractor1D-v0',           True,    False, ],
+        [ 'DelayPairedAssociation-v0',                 True,    True,  ],
+        [ 'DualDelayMatchSample-v0',                   True,    False, ],
+        [ 'GoNogo-v0',                                 True,    True,  ],
+        [ 'MultiSensoryIntegration-v0',                False,   True,  ],
+        [ 'PerceptualDecisionMaking-v0-ND',            True,    True,  ],
+        [ 'PerceptualDecisionMakingDelayResponse-v0',  True,    True,  ],
+    ]
+
+    supported_tasks = pd.DataFrame(supported_tasks, columns=['Task','Delay_Modifiable','Decision_Modifiable'])
+    this_task = supported_tasks[supported_tasks['Task']==task]
+    if this_task.empty:
+        raise ValueError(f"The task '{task}' is not supported.\n\nSupported tasks: \n{supported_tasks.to_string()}\n")
+    if (delay and not this_task['Delay_Modifiable'].iloc[0]) or (decision and not this_task['Decision_Modifiable'].iloc[0]):
+        raise ValueError(f"The combination of task '{task}' and modifier '{modifier}' is not supported.\n\nSupported tasks: \n{supported_tasks.to_string()}\n")
+        
+    return True
+
+
+def delay_dist(delay_opt=(400,200)):
+    
+    if isinstance(delay_opt,int):
+        delay = delay_opt
+        plus_minus = 0
+    elif len(delay_opt) == 1:
+        delay = delay_opt[0]
+        plus_minus = 0
+    elif len(delay_opt) == 2:
+        delay = delay_opt[0]
+        plus_minus = delay_opt[1]
+    else:
+        ValueError('The requested delay is invalid. Must be an integer or a two-element tuple.')
+        
+    if plus_minus > delay:
+        ValueError('The requested delay contains negative values and is thus invalid.')
+        a = 0
+    else:
+        a = delay-plus_minus
+    b = delay+plus_minus+1
+    c = np.arange(a, b, 100)
+    d = tuple(c.tolist())
+    # if len(c) == 1:
+    #     d = c[0]
+    # else:
+    #     d = tuple(c.tolist())
+    
+    return d
+
+
+def get_seq_len_and_timing(task, modifier='', seq_len_multi=5):
+    
+    delay = ()
+    decision = 300
+    delay_opt, decision_opt = parse_task_modifier(modifier)
+    if decision_opt:
+        decision = decision_opt
+    if delay_opt:
+        delay = delay_dist(delay_opt)
+    
+    timing_other = {} # other timing arguments used in seq_len calculation, not passed to ngym
+    
+    if task == 'ContextDecisionMaking-v0':
+        timing = {'fixation': 300, 'stimulus': 1000, 'decision': decision}
+        if delay:
+            timing['delay'] = delay
+        else:
+            timing_other['delay'] = 600
+    
+    elif task == 'DelayComparison-v0':
+        timing = {'fixation': 300, 'stimulus1': 500, 'stimulus2': 500, 'decision': decision}
+        if delay:
+            timing['delay'] = delay
+        else:
+            timing_other['delay'] = 1000
+    
+    elif task == 'DelayMatchCategory-v0':
+        timing = {'fixation': 300, 'sample': 700, 'test': 700}
+        if delay:
+            timing['first_delay'] = delay
+        else:
+            timing_other['first_delay'] = 1000
+    
+    elif task == 'DelayMatchSample-v0':
+        timing = {'fixation': 300, 'sample': 500, 'test': 500, 'decision': decision}
+        if delay:
+            timing['delay'] = delay
+        else:
+            timing_other['delay'] = 1000
+    
+    elif task == 'DelayMatchSampleDistractor1D-v0':
+        timing = {'fixation': 300, 'sample': 500, 'test1': 500, 'test2': 500, 'test3': 500 }
+        if delay:
+            timing['delay1'] = delay
+            timing['delay2'] = delay
+            timing['delay3'] = delay
+        else:
+            timing_other['delay1'] = 1000
+            timing_other['delay2'] = 1000
+            timing_other['delay3'] = 1000
+    
+    elif task == 'DelayPairedAssociation-v0':
+        timing = {'fixation': 300, 'stim1': 1000, 'stim2': 1000, 'decision': decision}
+        if delay:
+            timing['delay_btw_stim'] = delay
+            timing['delay_aft_stim'] = delay
+        else:
+            timing_other['delay_btw_stim'] = 1000
+            timing_other['delay_aft_stim'] = 1000
+    
+    elif task == 'DualDelayMatchSample-v0':
+        timing = {'fixation': 300, 'sample': 500, 'cue1': 500, 'test1': 500, 'cue2': 500, 'test2': 500}
+        if delay:
+            timing['delay1'] = delay
+            timing['delay2'] = delay
+        else:
+            timing_other['delay1'] = 500
+            timing_other['delay2'] = 500
+    
+    elif task == 'GoNogo-v0':
+        timing = {'fixation': 300, 'stimulus': 500, 'decision': decision}
+        if delay:
+            timing['delay'] = delay
+        else:
+            timing_other['delay'] = 500
+    
+    elif task == 'MultiSensoryIntegration-v0':
+        timing = {'fixation': 300, 'stimulus': 800, 'decision': decision}
+    
+    elif task == 'PerceptualDecisionMaking-v0':
+        timing = {'fixation': 300, 'stimulus': 2000, 'decision': decision}
+        if delay:
+            timing['delay'] = delay
+        else:
+            timing_other['delay'] = 0
+    
+    elif task == 'PerceptualDecisionMakingDelayResponse-v0':
+        timing = {'fixation': 300, 'stimulus': 1200, 'decision': decision}
+        if delay:
+            timing['delay'] = delay
+        else:
+            timing_other['delay'] = 1600
+    
+    else:
+        raise ValueError("Task '{:}' is not supported.".format(task))
+    
+    timing_all = {**timing, **timing_other}
+    seq_len_base = sum({k: round(np.mean(v)) for k, v in timing_all.items()}.values()) / 100
+    seq_len = int( seq_len_base * seq_len_multi )
+    
+    return seq_len, timing
 
 
 def get_task_label(task):
-    if task == 'PerceptualDecisionMaking-v0':
-        task_label = 'Perceptual Decision Making (DM)'
+    
+    task, modifier = get_task_modifier(task)
+    check_if_supported(task,modifier)
+    delay, decision = parse_task_modifier(modifier)
+    
+    del_str = ''
+    dec_str = ''
+    
+    if delay:
+        if isinstance(delay,int):
+            del_str = f', Dly. {delay}'
+        else:
+            del_str = f', Dly. {delay[0]} ± {delay[1]}'
+    
+    if decision:
+        dec_str = f', Dec. {decision}'
+        
+    suff = del_str + dec_str
+    
+    if task == 'ContextDecisionMaking-v0':
+        task_label = 'Context Decision Making (Ctx DM)'
+        
+    elif task == 'DelayComparison-v0':
+        task_label = 'Delayed Comparison (DC)'
+        
+    elif task == 'DelayMatchCategory-v0':
+        task_label = 'Delayed Match to Category (DMC)'
+        
+    elif task == 'DelayMatchSample-v0':
+        task_label = 'Delayed Match to Sample (DMS)'
+        
+    elif task == 'DelayMatchSampleDistractor1D-v0':
+        task_label = 'Delayed Match to Sample with Distractors (DMS-D)'
+        
+    elif task == 'DelayPairedAssociation-v0':
+        task_label = 'Delayed Paired Association (DPA)'
+        
+    elif task == 'DualDelayMatchSample-v0':
+        task_label = 'Dual Delayed Match to Sample (DDMS)'
+        
+    elif task == 'GoNogo-v0':
+        task_label = 'Go/No-Go (GNG)'
+        
     elif task == 'MultiSensoryIntegration-v0':
         task_label = 'Multi Sensory Integration (MultSen DM)'
-    elif task == 'ContextDecisionMaking-v0':
-        task_label = 'Context Decision Making (Ctx DM)'
+        
+    elif task == 'PerceptualDecisionMaking-v0':
+        task_label = 'Perceptual Decision Making (DM)'
+        
+    elif task == 'PerceptualDecisionMakingDelayResponse-v0':
+        task_label = 'Perceptual Decision Making (DM)'
+    
+    task_label = task_label + suff
+        
     return task_label
+
+
+def get_kernel_label(kernel_type='None', mask_weights=False, reg_weight=0.0):
+    if mask_weights:
+        m = 'Masked '
+    else:
+        m = 'Unmasked '
+    rnn_str = ''
+    if kernel_type == 'sa_axis':
+        kernel_label = m + 'S-A'
+    elif kernel_type == 'ut_axis':
+        kernel_label = m + 'U-T'
+    elif kernel_type == 'sf_axis':
+        kernel_label = m + 'S-F'
+    elif kernel_type == 'euclidean':
+        kernel_label = m + 'Eucl.'
+    elif kernel_type == 'struct_conn':
+        kernel_label = m + 'SC'
+    elif kernel_type == 'None':
+        if reg_weight == 0:
+            r = 'Unreg. '
+        else:
+            r = 'Reg. '
+        # r = f''
+        kernel_label = m + rnn_str + r
+    else:
+        kernel_label = 'unknown'
+    return kernel_label
     
 
 def load_params_csv(model_params_csv):
