@@ -29,6 +29,7 @@ def train(config):
 
     # regularization parameters
     kernel_type = config['kernel_type']
+    kernel_normalization = config['kernel_normalization']
 
     # setup output dir
     if not os.path.exists(outdir):
@@ -61,26 +62,26 @@ def train(config):
         centroids.set_index("ROI Name", inplace=True)
         distance_matrix = distance.pdist(centroids, "euclidean")  # get euclidean distances between nodes
         distance_matrix = distance.squareform(distance_matrix)  # reshape to square matrix
-        regularization_kernel = utils.normalize_x(distance_matrix)
+        regularization_kernel = utils.normalize_x(distance_matrix, kernel_normalization)
     elif kernel_type == 'sa_axis':
         brain_map = np.load(os.path.join(datadir, 'schaefer{0}_sa-axis.npy'.format(hidden_size * 2)))
         brain_map = brain_map[:hidden_size]  # pull out left hemisphere
         distance_matrix = utils.get_brainmap_distance(brain_map=brain_map)
-        regularization_kernel = utils.normalize_x(distance_matrix)
+        regularization_kernel = utils.normalize_x(distance_matrix, kernel_normalization)
     elif kernel_type == 'ut_axis':
         brain_map = np.load(os.path.join(datadir, 'schaefer{0}_ut-axis.npy'.format(hidden_size * 2)))
         brain_map = brain_map[:hidden_size]  # pull out left hemisphere
         distance_matrix = utils.get_brainmap_distance(brain_map=brain_map)
-        regularization_kernel = utils.normalize_x(distance_matrix)
+        regularization_kernel = utils.normalize_x(distance_matrix, kernel_normalization)
     elif kernel_type == 'sf_axis':
         brain_map = np.load(os.path.join(datadir, 'schaefer{0}_cyto.npy'.format(hidden_size * 2)))
         brain_map = brain_map[:hidden_size]  # pull out left hemisphere
         distance_matrix = utils.get_brainmap_distance(brain_map=brain_map)
-        regularization_kernel = utils.normalize_x(distance_matrix)
+        regularization_kernel = utils.normalize_x(distance_matrix, kernel_normalization)
     elif kernel_type == 'struct_conn':
         conn_reg_mat = np.load(os.path.join(datadir, 'schaefer{0}_structural_conn_kernel.npy'.format(hidden_size * 2)))
         distance_matrix = conn_reg_mat[:hidden_size, :][:, :hidden_size]  # pull out left hemisphere
-        regularization_kernel = utils.normalize_x(distance_matrix)
+        regularization_kernel = utils.normalize_x(distance_matrix, kernel_normalization)
     config['distance_matrix'] = distance_matrix
     config['regularization_kernel'] = regularization_kernel
 
@@ -119,18 +120,6 @@ def train(config):
         
         # save config
         np.save(os.path.join(outdir, file_str + '_config'), config)
-        
-        # log_args = {
-        #     'training_loss': training_loss,
-        #     'validation_loss': validation_loss,
-        #     'test_accuracy': test_accuracy,
-        #     'inputs': inputs,
-        #     'labels': labels,
-        #     'hidden_activity': hidden_activity,
-        #     'output_activity': output_activity,
-        #     'info': info
-        # }
-        # np.save(os.path.join(outdir, file_str), log_args)
 
 
 def get_args():
@@ -153,8 +142,6 @@ def get_args():
     parser.add_argument('--task', type=str, default='PerceptualDecisionMaking-v0')
     parser.add_argument('--dt', type=int, default=100)
     parser.add_argument('--seq_len_multi', type=int, default=5)
-    # parser.add_argument('--decision', type=int, default=300)
-    # parser.add_argument('--standardize_task', type=str, default='False')
 
     # RNN model and training parameters
     parser.add_argument('--rnn_model', type=str, default='rnn-tanh')
@@ -170,6 +157,7 @@ def get_args():
     parser.add_argument('--reg_type', type=str, default='l2')
     parser.add_argument('--reg_weight', type=float, default=0.001)
     parser.add_argument('--kernel_type', type=str, default='None')
+    parser.add_argument('--kernel_normalization', type=str, default='mean')
 
     args = parser.parse_args()
     args.datadir = os.path.expanduser(args.datadir)
@@ -188,6 +176,7 @@ if __name__ == '__main__':
         n_threads = utils.get_n_threads(args.n_threads, 1)
     else:
         n_threads = None
+        print(torch.cuda.get_device_name(0))
 
     # kernel and mask
     if args.kernel_type == 'None':
@@ -241,6 +230,7 @@ if __name__ == '__main__':
         'reg_type': args.reg_type,
         'reg_weight': args.reg_weight,
         'kernel_type': kernel_type,
+        'kernel_normalization': args.kernel_normalization,
 
         'env_kwargs': env_kwargs,
         

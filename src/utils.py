@@ -5,9 +5,23 @@ from scipy.spatial import distance
 import torch
 from sklearn.decomposition import PCA
 import pandas as pd
+import scipy.stats as stats
 
-def normalize_x(x):
-    return (x - np.min(x)) / (np.max(x) - np.min(x))
+def normalize_x(x, method='rescale'):
+    if method == 'rescale':
+        y = (x - np.min(x)) / (np.max(x) - np.min(x))
+    elif method == 'mean':
+        # x = distance.squareform( normalize_x(x) )
+        # y = distance.squareform( x + 1 - np.mean(x) )
+        x = distance.squareform(x)
+        y = distance.squareform( x / np.mean(x) )
+    elif method == 'uniform':
+        x = distance.squareform(x)
+        y = normalize_x( distance.squareform( (stats.rankdata(x)-1) / (len(x)-1) ) ) * 2
+        for j in np.arange(y.shape[0]):
+            y[j,j] = 0
+    
+    return y
 
 
 def get_kernel(hidden_size=200, location=0, kernel_std_frac=0.2):
@@ -287,16 +301,17 @@ def get_file_str(config):
     reg_type = config['reg_type']
     reg_weight = config['reg_weight']
     kernel_type = config['kernel_type']
+    kernel_normalization = config['kernel_normalization']
     
     # create name string
     file_str = 'task-{:}-{:}_' \
                 'model-{:}-{:}-{:}-{:}-{:}-{:}_' \
                 'wmask-{:}-{:}_' \
-                'reg-{:}-{:}-{:}' \
+                'reg-{:}-{:}-{:}-{:}' \
         .format(task, seq_len,
                 rnn_model, hidden_size, batch_size, lr, n_runs, n_epochs,
                 mask_weights, n_io,
-                reg_type, reg_weight, kernel_type)
+                reg_type, reg_weight, kernel_type, kernel_normalization)
 
     return file_str
 
@@ -563,7 +578,7 @@ def check_if_supported(task, modifier):
         [ 'DualDelayMatchSample-v0',                   True,    False, ],
         [ 'GoNogo-v0',                                 True,    True,  ],
         [ 'MultiSensoryIntegration-v0',                False,   True,  ],
-        [ 'PerceptualDecisionMaking-v0-ND',            True,    True,  ],
+        [ 'PerceptualDecisionMaking-v0',               True,    True,  ],
         [ 'PerceptualDecisionMakingDelayResponse-v0',  True,    True,  ],
     ]
 
@@ -687,7 +702,7 @@ def get_seq_len_and_timing(task, modifier='', seq_len_multi=5):
         timing = {'fixation': 300, 'stimulus': 800, 'decision': decision}
     
     elif task == 'PerceptualDecisionMaking-v0':
-        timing = {'fixation': 300, 'stimulus': 2000, 'decision': decision}
+        timing = {'fixation': 300, 'stimulus': 1000, 'decision': decision}
         if delay:
             timing['delay'] = delay
         else:

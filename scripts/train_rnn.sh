@@ -18,7 +18,7 @@ else
 fi
 
 # path to inputs tsv
-params_file="$datadir/model_params_gng_4x4_adj_lambda.csv" # < < < < < < < < < < < < < < < < SELECT MODELS FILE HERE
+params_file="$datadir/model_params_dm_1x1_m_u_lambda.csv" # < < < < < < < < < < < < < < < < SELECT MODELS FILE HERE
 
 # path to log file
 log_file="$outdir/run_training_$(date '+%Y-%m-%d-%H-%M-%S').log"
@@ -84,6 +84,7 @@ col_mask_weights=$(get_col_num "$line" 'mask_weights')
 col_reg_type=$(get_col_num "$line" 'reg_type')
 col_reg_weight=$(get_col_num "$line" 'reg_weight')
 col_kernel_type=$(get_col_num "$line" 'kernel_type')
+col_kernel_normalization=$(get_col_num "$line" 'kernel_normalization')
 
 
 ########################################################################################################################
@@ -116,6 +117,7 @@ col_kernel_type=$(get_col_num "$line" 'kernel_type')
     reg_type=$(echo $line | awk -v c=${col_reg_type} -F ',' '{print $c}')
     reg_weight=$(echo $line | awk -v c=${col_reg_weight} -F ',' '{print $c}')
     kernel_type="$(echo $line | awk -v c=${col_kernel_type} -F ',' '{print $c}')"
+    kernel_normalization="$(echo $line | awk -v c=${col_kernel_normalization} -F ',' '{print $c}')"
     
     echo
     echo "================================================================================================================"
@@ -147,6 +149,7 @@ col_kernel_type=$(get_col_num "$line" 'kernel_type')
       --n_epochs ${n_epochs} \
       --epoch_log ${epoch_log} \
       --reg_type ${reg_type} \
+      --kernel_normalization ${kernel_normalization} \
       --device ${device} \
       --n_threads ${n_threads}  2>&1 # capture stdout and stderr 
 
