@@ -14,6 +14,10 @@ else
     scriptsdir='/home/lindenmp/research_projects/neuro_rnn/scripts'
     datadir='/home/lindenmp/research_projects/neuro_rnn/data'
     outdir='/media/lindenmp/storage_ssd/research_projects/neuro_rnn/results/model_cpu'
+  elif [ $USER == "ab2792" ]; then
+    scriptsdir='/home/ab2792/software/snaplab_github/neuro_rnn/scripts'
+    datadir='/home/ab2792/software/snaplab_github/neuro_rnn/data'
+    outdir='/home/ab2792/data/neuro_rnn/results/pytorch/model'
   fi
 fi
 
