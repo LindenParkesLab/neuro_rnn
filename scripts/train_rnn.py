@@ -3,11 +3,12 @@ import numpy as np
 from scipy.spatial import distance
 import pandas as pd
 from functools import partial
+import pickle
 
 import torch
 torch.multiprocessing.set_sharing_strategy('file_system')
 
-from src.neural_network import train_helper
+from src.neural_network import train_helper, ModelStateManager, ModelDataManager
 from src import utils
 
 warnings.simplefilter(action='ignore', category=FutureWarning)
@@ -89,37 +90,41 @@ def train(config):
     file_str = utils.get_file_str(config)
     print('\n')
     print(file_str)
+
+    # set file paths
+    outputs_path = os.path.join(outdir, file_str + '_outputs.h5')
+    models_path = os.path.join(config['outdir'], file_str + '_models.h5')
+    config_path = os.path.join(outdir, file_str + '_config.npy')
+
+    output_manager = ModelDataManager(outputs_path)
+    model_manager = ModelStateManager(models_path)
     
     # skip if outputs exist
-    if os.path.isfile(os.path.join(config['outdir'], file_str + '.pt')):
+    if os.path.isfile(models_path):
         print('found outputs! skipping... ')
     else:
         # prepare partial function for multiprocessing
         partial_train_helper = partial(train_helper, config=config)
         if device.type == 'cuda' or n_threads == 1:
             print('running in serial...')
-            # initialise outputs list
-            training_outputs = []
-            trained_models = []
             # train runs in sequence
             for run in np.arange(n_runs):
                 outputs, models = partial_train_helper(run)
-                training_outputs.append(outputs)
-                trained_models.append(models)
+                # save outputs and models
+                print(f'saving outputs and models for run {run}')
+                output_manager.save_model_data(outputs, run)
+                model_manager.save_model_states(models, run)
         else:
             print('running in parallel...')
             # train runs in parallel on cpu
             with torch.multiprocessing.get_context('spawn').Pool(processes=n_threads, maxtasksperchild=1) as pool:
-                training_outputs, trained_models = zip(*pool.map(partial_train_helper, np.arange(n_runs)))
-
-        # save models
-        torch.save(trained_models, os.path.join(outdir, file_str + '.pt'))
-        
-        # save outputs
-        np.save(os.path.join(outdir, file_str), training_outputs)
-        
+                outputs, models = zip(*pool.map(partial_train_helper, np.arange(n_runs)))
+            # save outputs and models
+            print('saving outputs and models')
+            output_manager.save_model_data(outputs)
+            model_manager.save_model_states(models)
         # save config
-        np.save(os.path.join(outdir, file_str + '_config'), config)
+        np.save(config_path, config)
 
 
 def get_args():

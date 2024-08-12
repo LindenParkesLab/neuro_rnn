@@ -9,6 +9,9 @@ import torch.nn.init as init
 import numpy as np
 import pandas as pd
 
+import pickle
+import h5py
+
 from src.utils import fix_labels
 
 import neurogym as ngym
@@ -368,3 +371,298 @@ def train_helper(run, config):
                 }
     
     return outputs, trained_models
+
+
+class ModelStateManager:
+    """
+    Description
+    -
+    A class to handle writing model states to, and reading them from, a file.
+    
+    It allows the user to access specific model states by specifying the run and/or epoch.
+    
+    First initialize a new manager for the file you'd like to interact with:
+    >>> manager = ModelStateManager('path/to/file.h5')
+    
+    Then, use one of the methods below to write to or read from that file.
+    
+    Methods
+    -
+    >>> manager.get_info()
+    >>> manager.save_model_states(data, run, epoch)
+    >>> manager.load_model_states(run, epoch)
+    >>> manager.load_key_across_runs(epoch, key)
+    """
+    
+    def __init__(self, filename: str):
+        self.filename = filename
+    
+    def get_info(self):
+        """
+        Returns the number of runs and the indices of epochs for which data exists.
+
+        >>> num_runs, logged_epochs, keys_per_epoch = manager.get_info()
+        """
+        with h5py.File(self.filename, 'r') as models_file:
+            runs = list(models_file.keys())
+            num_runs = len(runs)
+            logged_epochs = list(int(v.replace('epoch_','')) for v in models_file[runs[0]].keys())
+            logged_epochs.sort()
+            keys_per_epoch = list(models_file[runs[0]][f'epoch_{logged_epochs[0]}'].keys())
+        return num_runs, logged_epochs, keys_per_epoch
+
+    def save_model_states(self, data, run=None, epoch=None):
+        """
+        Save model states to an HDF5 file.
+        
+        * To save the state from a specific run and epoch, pass that data as a dictionary: 
+        
+        >>> manager.save_model_states(rnn.model_state(), run=my_run, epoch=my_epoch)
+        
+        * To save model state dicts for all runs and epochs after training, pass that data as a list where each item is a dictionary. 
+        Each dictionary should have epochs as keys, and each key should have the corresponding model state as a value.
+        
+        >>> manager.save_model_states(list_of_states)
+        """
+        
+        # Function that saves the model state of a specific run and epoch.
+        def save_state_for_run_and_epoch(file_path, state, run, epoch):
+            with h5py.File(file_path, 'a') as models_file:
+                run_group = models_file.require_group(f'run_{run}')
+                epoch_group = run_group.require_group(f'epoch_{epoch}')
+                for key, value in state.items():
+                    if key in epoch_group:
+                        del epoch_group[key]  # Remove existing dataset to avoid conflicts
+                    if torch.is_tensor(value):
+                        value = value.cpu().numpy()
+                    epoch_group.create_dataset(key, data=value)
+
+        # Check that run and epoch are args are compatible.
+        if (run == None and (not epoch == None)):
+            raise TypeError('If argument ''run'' is None, then argument ''epoch'' must also be None.')
+        
+        # List input is only valid if run/epoch are not defined.
+        if isinstance(data,list) and (not run == None):
+            raise TypeError('To save data for all runs/epochs, data must be a list.')
+        
+        # Save a model state from a specific run and epoch.
+        if epoch is not None:
+            save_state_for_run_and_epoch(self.filename, data, run, epoch)
+        # Save all model states from a specific run.
+        elif run is not None:
+            for epoch, epoch_data in data.items():
+                save_state_for_run_and_epoch(self.filename, epoch_data, run, epoch)
+        # Save all model states from all runs and epochs.
+        else:
+            run = 0
+            for run_data in data:
+                for epoch, epoch_data in run_data.items():
+                    save_state_for_run_and_epoch(self.filename, epoch_data, run, epoch)
+                run += 1
+
+    def load_model_states(self, run=None, epoch=None):
+        """
+        Load model states from an HDF5 file.
+        
+        * To load the model state dict from a specific run and epoch:
+        
+        >>> state_dict = manager.load_model_states(run, epoch)
+        
+        * To load model state dicts from all logged epochs of a specific run:
+        
+        >>> states_dicts_from_run = manager.load_model_states(run)
+        
+        * To load model state dicts from all runs and epochs as a list, where each list item is a dict of states from one run: 
+        
+        >>> state_dicts_all = manager.load_model_states()
+        """
+        
+        # Function that loads the model state of a specific run and epoch.
+        def load_state_for_run_and_epoch(file_path, run, epoch):
+            with h5py.File(file_path, 'r') as models_file:
+                try:
+                    epoch_group = models_file[f'run_{run}/epoch_{epoch}']
+                    state_dict = {key: torch.tensor(value[()]) for key, value in epoch_group.items()}
+                    return state_dict
+                except KeyError as e:
+                    raise ValueError(f"Specified run/epoch not found: {e}")
+        
+        # Check that run and epoch are args are compatible.
+        if (run == None and (not epoch == None)):
+            raise TypeError('If argument ''run'' is None, then argument ''epoch'' must also be None.')
+        
+        # Load the model state of a specific run and epoch.
+        if epoch is not None:
+            loaded_states = load_state_for_run_and_epoch(self.filename, run, epoch)
+        else:
+            n_runs, logged_epochs = self.get_info()
+            # Load the model states of all logged epochs from a specific run.
+            if run is not None:
+                loaded_states = {}
+                for epoch in logged_epochs:
+                    loaded_states[epoch] = load_state_for_run_and_epoch(self.filename, run, epoch)
+            # Load all model states for all runs and epochs.
+            else:
+                loaded_states = []
+                for run in range(n_runs):
+                    run_states = {}
+                    for epoch in logged_epochs:
+                        run_states[epoch] = load_state_for_run_and_epoch(self.filename, run, epoch)
+                    loaded_states.append(run_states)
+        
+        return loaded_states
+
+    def load_key_across_runs(self, epoch, key):
+        """
+        Load a specific model state key from a specific epoch across all runs.
+        Returns a list (one entry per run).
+        
+        E.g., to load the hidden weights from all runs at epoch 99:
+        >>> hidden_weights_epoch99 = manager.load_key_across_runs(epoch=99, key='weight_hh_l0')
+        """        
+        
+        data = []
+        with h5py.File(self.filename, 'r') as models_file:
+            runs = [run for run in models_file.keys() if run.startswith('run_')]
+            for run in runs:
+                try:
+                    value = models_file[f'{run}/epoch_{epoch}/{key}'][()]
+                    data.append(value)
+                except KeyError:
+                    continue  # Skip if the epoch or key is not found in this run
+        if not data:
+            raise ValueError(f"No data found for epoch {epoch} and key {key}")
+        return data
+
+
+class ModelDataManager:
+    """
+    Description
+    -
+    A class to handle writing model performance data to, and reading them from, a file.
+    
+    It allows the user to access the data from a specific model by specifying the training run.
+    
+    First initialize a new manager for the file you'd like to interact with:
+    >>> manager = ModelDataManager('path/to/file.h5')
+    
+    Then, use one of the methods below to write to or read from that file.
+    
+    Methods
+    -
+    >>> manager.get_info()
+    >>> manager.save_model_data(run)
+    >>> manager.load_model_data(run)
+    >>> manager.load_key_across_runs(key)
+    """
+    
+    def __init__(self, filename: str):
+        self.filename = filename
+    
+    def get_info(self):
+        """
+        Returns the number of runs and the keys of the data items stored per run.
+
+        >>> num_runs, data_keys = manager.get_info()
+        """
+        with h5py.File(self.filename, 'r') as models_file:
+            runs = list(models_file.keys())
+            num_runs = len(runs)
+            data_keys = list(models_file[runs[0]].keys())
+        return num_runs, data_keys
+
+    def save_model_data(self, data, run=None):
+        """
+        Save model performance data to an HDF5 file.
+        
+        * To save the data from a specific run, pass that data as a dictionary: 
+        
+        >>> manager.save_model_data(run_data_dict, run=my_run)
+        
+        * To save model data for all runs after training, pass that data as a list where each item is a dictionary. 
+        
+        >>> manager.save_model_data(list_of_dicts)
+        """
+        
+        # Function that saves the model state of a specific run.
+        def save_data_for_run(file_path, data, run):
+            with h5py.File(file_path, 'a') as models_file:
+                run_group = models_file.require_group(f'run_{run}')
+                for key, value in data.items():
+                    if key in run_group:
+                        del run_group[key]  # Remove existing dataset to avoid conflicts
+                    # Pickle the object and store as bytes
+                    pickled_data = pickle.dumps(value)
+                    run_group.create_dataset(key, data=np.void(pickled_data))
+                    
+                    # # Store the original type as an attribute
+                    # run_group[key].attrs['original_type'] = str(type(value))
+        
+        # List input is only valid if run is not defined.
+        if isinstance(data,list) and (not run == None):
+            raise TypeError('To save data for all runs, data must be a list.')
+        
+        # Save model data from a specific run.
+        if run is not None:
+            save_data_for_run(self.filename, data, run)
+        # Save model data from all run.
+        else:
+            run = 0
+            for run, run_data in enumerate(data):
+                save_data_for_run(self.filename, run_data, run)
+
+    def load_model_data(self, run=None):
+        """
+        Load model performance data from an HDF5 file.
+        
+        * To load the model data dict from a specific run:
+        
+        >>> data_dict = manager.load_model_data(run)
+        
+        * To load model data from all runs as a list where each item is a dict of data from one run: 
+        
+        >>> data_dicts_all = manager.load_model_data()
+        """
+        
+        # Function that loads the model data of a specific run.
+        def load_data_for_run(file_path, run):
+            with h5py.File(file_path, 'r') as models_file:
+                try:
+                    run_group = models_file[f'run_{run}']
+                    return {key: pickle.loads(value[()].tobytes()) for key, value in run_group.items()}
+                except KeyError as e:
+                    raise ValueError(f"Specified run not found: {e}")
+        
+        n_runs, _ = self.get_info()
+        # Load model data for a specific run.
+        if run is not None:
+            loaded_data = load_data_for_run(self.filename, run)
+        # Load model data for all runs.
+        else:
+            loaded_data = []
+            for run in range(n_runs):
+                loaded_data.append(load_data_for_run(self.filename, run))
+        
+        return loaded_data
+
+    def load_key_across_runs(self, key):
+        """
+        Load a specific model performance key across all runs.
+        Returns a list (one entry per run).
+        
+        E.g., to load the test accuracy from all runs:
+        >>> test_accuracy_all = manager.load_key_across_runs('test_accuracy')
+        """        
+        
+        data = []
+        with h5py.File(self.filename, 'r') as models_file:
+            runs = [run for run in models_file.keys() if run.startswith('run_')]
+            for run in runs:
+                try:
+                    value = pickle.loads(models_file[f'{run}/{key}'][()].tobytes())
+                    data.append(value)
+                except KeyError:
+                    continue  # Skip if the run or key is not found 
+        if not data:
+            raise ValueError(f"No data found for run {run} and key {key}")
+        return data
