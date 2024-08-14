@@ -495,7 +495,7 @@ class ModelStateManager:
         if epoch is not None:
             loaded_states = load_state_for_run_and_epoch(self.filename, run, epoch)
         else:
-            n_runs, logged_epochs = self.get_info()
+            n_runs, logged_epochs, _ = self.get_info()
             # Load the model states of all logged epochs from a specific run.
             if run is not None:
                 loaded_states = {}
@@ -551,7 +551,7 @@ class ModelDataManager:
     Methods
     -
     >>> manager.get_info()
-    >>> manager.save_model_data(run)
+    >>> manager.save_model_data(data, run)
     >>> manager.load_model_data(run)
     >>> manager.load_key_across_runs(key)
     """

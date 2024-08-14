@@ -111,7 +111,7 @@ def train(config):
             for run in np.arange(n_runs):
                 outputs, models = partial_train_helper(run)
                 # save outputs and models
-                print(f'saving outputs and models for run {run}')
+                print(f'saving outputs and models for run {run+1}')
                 output_manager.save_model_data(outputs, run)
                 model_manager.save_model_states(models, run)
         else:
