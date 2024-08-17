@@ -821,3 +821,145 @@ def load_params_csv(model_params_csv):
                                                 reg_weight=model_params.reg_weight.iloc[row]))
     model_params['kernel_label'] = kernel_labels
     return model_params
+
+
+def get_params_dataframe(params_dataframe: str | pd.DataFrame, rows: list = [], verbose = False):
+    
+    # load initial model params df
+    if isinstance(params_dataframe, str):
+        df = load_params_csv(params_dataframe)
+    elif isinstance(params_dataframe, pd.DataFrame):
+        df = params_dataframe
+    
+    # assign kernel and task labels if not already done
+    if 'kernel_label' not in df.keys():
+        kernel_labels = []
+        for row in range(len(df)):
+            kernel_labels.append(get_kernel_label(kernel_type=df.kernel_type.iloc[row], \
+                                                        mask_weights=df.mask_weights.iloc[row], \
+                                                        reg_weight=df.reg_weight.iloc[row]))
+        df['kernel_label'] = kernel_labels
+    
+    if 'task_label' not in df.keys():
+        task_labels = []
+        for row in range(len(df)):
+            task_labels.append(get_task_label(df.task.iloc[row]))
+        df['task_label'] = task_labels
+    
+    # how many tasks and kernels?
+    df, task_names, n_tasks, kernel_labels, n_kernels = select_params_dataframe_rows(df, rows=rows, verbose=verbose)
+    
+    # assign additional variables to df
+    df[['task_no_modifier',
+        'task_modifier',
+        'task_with_modifier',
+        'n_io',
+        'seq_len',
+        'config',
+        'file_str',
+        'task_index',
+        'kernel_index',
+        'env_kwargs']] = None
+    
+    # get model details
+    for model_idx in range(len(df)):
+        
+        # get current model inputs
+        this = df.iloc[model_idx].copy()
+        
+        # get task details
+        this['task_with_modifier'] = this.task
+        this['task_no_modifier'], this['task_modifier'] = get_task_modifier(this.task_with_modifier)
+        check_if_supported(task=this.task_no_modifier, modifier=this.task_modifier)
+        this['seq_len'], timing = get_seq_len_and_timing(task=this.task_no_modifier, 
+                                                               modifier=this.task_modifier, 
+                                                               seq_len_multi=this.seq_len_multi)
+        this['env_kwargs'] = {'dt': this.time_step, 'timing': timing}
+        this['n_io'] = get_n_io(mask_weights=this.mask_weights, hidden_size=this.hidden_size)
+        
+        # prepare config
+        this['config'] = {
+            'dt': this.time_step, 
+            'batch_size': this.batch_size, 
+            'rnn_model': this.rnn_model, 
+            'n_runs': this.n_runs, 
+            'n_epochs': this.n_epochs, 
+            'learning_rate': this.learning_rate, 
+            'mask_weights': this.mask_weights, 
+            'hidden_size': this.hidden_size, 
+            'reg_type': this.reg_type,
+            'reg_weight': this.reg_weight,
+            'n_io': this.n_io,
+            'task_no_modifier': this.task_no_modifier,
+            'task_modifier': this.task_modifier,
+            'task_with_modifier': this.task_with_modifier,
+            'seq_len': this.seq_len,
+            'kernel_type': this.kernel_type,
+            'kernel_normalization': this.kernel_normalization,
+        }
+
+        # get data file name
+        this['file_str'] = get_file_str(this.config)
+        
+        # determine task index
+        this['task_index'] = task_names.index(this.task_with_modifier)
+        
+        # determine kernel index
+        this['kernel_index'] = kernel_labels.index(this.kernel_label)
+        
+        # update this model's info
+        df.iloc[model_idx] = this
+    
+    if verbose:
+        print('DataFrame keys:\n---------------')
+        for k in df.keys():
+            print(k)
+        print(' ')
+    
+    return df, task_names, n_tasks, kernel_labels, n_kernels
+
+
+def get_tasks_kernels_from_params_dataframe(df: pd.DataFrame, verbose = False):
+    
+    # how many tasks?
+    task_names_all = df.loc[:, 'task']
+    task_names = []
+    [task_names.append(item) for item in task_names_all if item not in task_names]
+    n_tasks = len(task_names)
+    if verbose:
+        print('Tasks:\n------')
+        for i in range(n_tasks):
+            print(task_names[i])
+        print(' ')
+
+    # how many kernels?
+    kernel_labels_all = df.loc[:, 'kernel_label']
+    kernel_labels = []
+    [kernel_labels.append(item) for item in kernel_labels_all if item not in kernel_labels]
+    n_kernels = len(kernel_labels)
+    if verbose:
+        print('Kernel types:\n-------------')
+        for i in range(n_kernels):
+            print(kernel_labels[i])
+        print(' ')
+    
+    return task_names, n_tasks, kernel_labels, n_kernels
+
+
+def select_params_dataframe_rows(df: pd.DataFrame, rows: list = [], verbose = False):
+    
+    # select rows
+    if rows == [] or rows is None:
+        df2 = df.copy()
+    else:
+        df2 = df.iloc[rows].copy().reset_index(drop=True)
+    
+    # get updated unique tasks and kernels
+    task_names, n_tasks, kernel_labels, n_kernels = get_tasks_kernels_from_params_dataframe(df2, verbose=verbose)
+    
+    # update task and kernel indices in df
+    for row in range(len(df2)):
+        df2.loc[row, 'task_index'] = task_names.index(df2.loc[row, 'task'])
+        df2.loc[row, 'kernel_index'] = kernel_labels.index(df2.loc[row, 'kernel_label'])
+    
+    return df2, task_names, n_tasks, kernel_labels, n_kernels
