@@ -99,16 +99,31 @@ def train(config):
     output_manager = ModelDataManager(outputs_path)
     model_manager = ModelStateManager(models_path)
     
-    # skip if outputs exist
-    if os.path.isfile(models_path):
-        print('found outputs! skipping... ')
+    # check if outputs exist
+    if os.path.isfile(models_path) and os.path.isfile(outputs_path):
+        print('found existing output files! checking for missing runs... ')
+        n_compl_models, _, _ = model_manager.get_info()
+        n_compl_outputs, _ = output_manager.get_info()
+        n_compl_runs = np.min((n_compl_models,n_compl_outputs))
+        print(f'found outputs for {n_compl_runs} runs')
+        if n_compl_runs == n_runs:
+            all_done = True
+            print('training already completed! skipping...')
+        else:
+            all_done = False
+            rem_runs = np.arange(n_compl_runs,n_runs)
+            print(f'will train {len(rem_runs)} more runs')
     else:
+        all_done = False
+        rem_runs = np.arange(n_runs)
+    
+    if not all_done:
         # prepare partial function for multiprocessing
         partial_train_helper = partial(train_helper, config=config)
         if device.type == 'cuda' or n_threads == 1:
             print('running in serial...')
             # train runs in sequence
-            for run in np.arange(n_runs):
+            for run in rem_runs:
                 outputs, models = partial_train_helper(run)
                 # save outputs and models
                 print(f'saving outputs and models for run {run+1}')
@@ -116,13 +131,17 @@ def train(config):
                 model_manager.save_model_states(models, run)
         else:
             print('running in parallel...')
+            # prepare processing chunks
+            proc_chunks = np.array_split(rem_runs, np.ceil(len(rem_runs)/n_threads))
             # train runs in parallel on cpu
-            with torch.multiprocessing.get_context('spawn').Pool(processes=n_threads, maxtasksperchild=1) as pool:
-                outputs, models = zip(*pool.map(partial_train_helper, np.arange(n_runs)))
-            # save outputs and models
-            print('saving outputs and models')
-            output_manager.save_model_data(outputs)
-            model_manager.save_model_states(models)
+            for chunk in proc_chunks:
+                with torch.multiprocessing.get_context('spawn').Pool(processes=len(chunk), maxtasksperchild=1) as pool:
+                    outputs, models = zip(*pool.map(partial_train_helper, chunk))
+                # save outputs and models
+                print(f'saving outputs and models for runs {chunk+1}')
+                for idx, run in enumerate(chunk):
+                    output_manager.save_model_data(outputs[idx], run)
+                    model_manager.save_model_states(models[idx], run)
         # save config
         np.save(config_path, config)
 
