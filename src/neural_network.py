@@ -12,7 +12,7 @@ from scipy.ndimage import uniform_filter1d
 import pickle
 import h5py
 
-from src.utils import fix_labels
+from src.utils import fix_labels, get_n_gpu
 
 import neurogym as ngym
 
@@ -365,7 +365,10 @@ def train_helper(run, config):
                 type=config['rnn_model'], 
                 regularization_kernel=config['regularization_kernel'], 
                 input_weight_mask=input_weight_mask, 
-                output_weight_mask=output_weight_mask).to(config['device'])
+                output_weight_mask=output_weight_mask)
+    if config['n_gpu'] > 1:
+        model = nn.DataParallel(model)
+    model.to(config['device'])
     optimizer = torch.optim.Adam(model.parameters(), lr=config['learning_rate'])
     criterion = nn.CrossEntropyLoss()
     scheduler = None
