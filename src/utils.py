@@ -6,6 +6,8 @@ import torch
 from sklearn.decomposition import PCA
 import pandas as pd
 import scipy.stats as stats
+import os
+import multiprocessing
 
 def normalize_x(x, method='rescale'):
     if method == 'rescale':
@@ -453,9 +455,6 @@ def get_slopes(feature, segment_size=20):
 
 
 def get_n_threads(threads_in=None, verbose=0):
-    
-    import os, multiprocessing
-    
     if verbose: print(' ')
 
     cpu_count = multiprocessing.cpu_count()
@@ -481,13 +480,29 @@ def get_n_threads(threads_in=None, verbose=0):
     return n_threads
 
 
-def get_device(device_opt):
+def get_n_gpu():
+    if torch.cuda.is_available():
+        if 'CUDA_VISIBLE_DEVICES' in os.environ.keys():
+            n_gpu = len(os.environ['CUDA_VISIBLE_DEVICES'].split(','))
+        else:
+            n_gpu = 1
+    else:
+        n_gpu = 0
+    return n_gpu
+
+
+def get_device(device_opt=None, n_devices=None):
     cuda_avail = torch.cuda.is_available()
     if device_opt == 'None':
         device = torch.device('cuda' if cuda_avail else 'cpu')
     else:
-        if device_opt == 'cuda':
+        if device_opt == 'cuda' or device_opt == 'gpu':
             if cuda_avail:
+                if n_devices is not None:
+                    n_cuda = np.min((torch.cuda.device_count(),n_devices))
+                    device_str = ','.join(np.arange(n_cuda).astype(str))
+                    # os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
+                    os.environ['CUDA_VISIBLE_DEVICES'] = device_str
                 device = torch.device('cuda')
             else:
                 print('CUDA not availble!')
@@ -730,6 +745,7 @@ def get_task_label(task):
     task, modifier = get_task_modifier(task)
     check_if_supported(task,modifier)
     delay, decision = parse_task_modifier(modifier)
+    _, timing = get_seq_len_and_timing(task, modifier=modifier)
     
     del_str = ''
     dec_str = ''
@@ -740,8 +756,11 @@ def get_task_label(task):
         else:
             del_str = f', Dly. {delay[0]} ± {delay[1]}'
     
-    if decision:
-        dec_str = f', Dec. {decision}'
+    # if decision:
+    #     dec_str = f', Dec. {decision}'
+
+    if 'decision' in timing.keys():
+        dec_str = f", Dec. {timing['decision']}"
         
     suff = del_str + dec_str
     
