@@ -8,7 +8,7 @@ import torch.nn as nn
 import torch.nn.init as init
 import numpy as np
 import pandas as pd
-
+from scipy.ndimage import uniform_filter1d
 import pickle
 import h5py
 
@@ -293,6 +293,38 @@ def run_testing(dataset, model, n_trials=1000, verbose=True):
         # output_activity = np.array(output_activity)
 
         return accuracy, inputs, labels, hidden_activity, output_activity, info
+
+
+def run_testing_rest(model, n_steps=1000, noise_mean=0.5, noise_sd=0.3, smooth_noise=0, fix_input_channels=(0,)):
+    if next(model.parameters()).is_cuda:
+        device = torch.device('cuda')
+    elif next(model.parameters()).is_mps:
+        device = torch.device('mps')
+    else:
+        device = torch.device('cpu')
+    
+    # create noise input
+    n_inputs = model.input_size
+    inputs = np.random.normal(noise_mean, noise_sd, (n_steps,n_inputs))
+    if fix_input_channels is not None:
+        for i in fix_input_channels:
+            inputs[:,i] = np.ones((n_steps,))
+    if smooth_noise > 0:
+        inputs = uniform_filter1d(inputs, size=smooth_noise, axis=0)
+    ob = torch.from_numpy(inputs[:, np.newaxis, :]).type(torch.float).to(device)
+    
+    # test this model on noise input (resting state)
+    action_pred, hidden = model(ob)
+    try:
+        action_pred = action_pred.detach().cpu().numpy()
+        hidden = hidden.detach().cpu().numpy()
+    except:
+        action_pred = action_pred.detach().numpy()
+        hidden = hidden.detach().numpy()
+    hidden_activity = np.array(hidden)[:, 0, :]
+    output_activity = np.array(action_pred)[:, 0, :]
+    
+    return inputs, hidden_activity, output_activity
 
 
 def train_helper(run, config):
@@ -666,3 +698,41 @@ class ModelDataManager:
         if not data:
             raise ValueError(f"No data found for run {run} and key {key}")
         return data
+
+
+def create_rnn_and_env_for_model(model_info: pd.Series, run, epoch, data_dir: str, device: torch.device):
+    
+    if isinstance(model_info, pd.DataFrame):
+        model_info = model_info.iloc[0]
+    
+    # create dataset
+    dataset = ngym.Dataset(model_info.task_no_modifier, 
+                            env_kwargs = model_info.env_kwargs, 
+                            batch_size = model_info.batch_size, 
+                            seq_len = model_info.seq_len)
+    dataset.env.reset(seed=0)
+    dataset.env.new_trial()
+    input_size = dataset.env.observation_space.shape[0]
+    n_classes = dataset.env.action_space.n
+    
+    # load model state
+    file = os.path.join(data_dir, model_info.file_str_models)
+    manager = ModelStateManager(file)
+    state = manager.load_model_states(run, epoch)
+    
+    # create rnn
+    if 'regularization_kernel' in state.keys():
+        regularization_kernel = np.zeros((model_info.hidden_size,model_info.hidden_size))
+    else:
+        regularization_kernel = None
+    rnn = RNN(input_size = input_size, 
+                hidden_size = model_info.hidden_size.item(), 
+                num_classes = n_classes, 
+                type = model_info.rnn_model, 
+                regularization_kernel = regularization_kernel,
+                input_weight_mask = np.zeros((model_info.hidden_size,input_size)), 
+                output_weight_mask = np.zeros((n_classes,model_info.hidden_size))).to(device)
+    rnn.load_state_dict(state)
+    rnn.eval()
+    
+    return dataset, rnn
