@@ -120,8 +120,10 @@ def train(config):
     if not all_done:
         # prepare partial function for multiprocessing
         partial_train_helper = partial(train_helper, config=config)
-        if device.type == 'cuda' or n_threads == 1:
-            print('running in serial...')
+        if device.type == 'cuda' or ( device.type == 'cpu' and n_threads == 1 ):
+            print(f'running in serial on {device.type}...')
+            if device.type == 'cuda':
+                print(f"each run will use {config['n_gpu']} gpus...")
             # train runs in sequence
             for run in rem_runs:
                 outputs, models = partial_train_helper(run)
@@ -130,7 +132,7 @@ def train(config):
                 output_manager.save_model_data(outputs, run)
                 model_manager.save_model_states(models, run)
         else:
-            print('running in parallel...')
+            print(f'running in parallel on {device.type} using {n_threads} threads...')
             # prepare processing chunks
             proc_chunks = np.array_split(rem_runs, np.ceil(len(rem_runs)/n_threads))
             # train runs in parallel on cpu
@@ -198,9 +200,14 @@ if __name__ == '__main__':
     device = utils.get_device(args.device)
     if device.type == 'cpu':
         n_threads = utils.get_n_threads(args.n_threads, 1)
+        n_gpu = 0
     else:
-        n_threads = None
-        print(torch.cuda.get_device_name(0))
+        # n_threads = None
+        n_threads = args.n_threads
+        device = utils.get_device(device_opt=args.device, n_devices=n_threads)
+        n_gpu = utils.get_n_gpu()
+        for ii in range(n_gpu):
+            print(f'gpu {ii} -- {torch.cuda.get_device_name(ii)}')
 
     # kernel and mask
     if args.kernel_type == 'None':
@@ -260,7 +267,8 @@ if __name__ == '__main__':
         
         # device settings
         'device': device,
-        'n_threads': n_threads
+        'n_threads': n_threads,
+        'n_gpu': n_gpu
         
     }
 
