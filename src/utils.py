@@ -813,14 +813,28 @@ def get_kernel_label(kernel_type='None', mask_weights=False, reg_weight=0.0):
 
 def load_params_csv(model_params_csv):
     import pandas as pd
-    model_params = pd.read_csv(model_params_csv, keep_default_na=False, na_values=['NaN'])
+    df = pd.read_csv(model_params_csv, keep_default_na = False, na_values = ['NaN'])
+    # df = pd.DataFrame({'task': df_in['task'].tolist(), 
+    #                     'seq_len_multi': df_in['seq_len_multi'].tolist(), 
+    #                     'rnn_model': df_in['rnn_model'].tolist(), 
+    #                     'hidden_size': df_in['hidden_size'].tolist(), 
+    #                     'batch_size': df_in['batch_size'].tolist(), 
+    #                     'learning_rate': df_in['learning_rate'].tolist(), 
+    #                     'n_runs': df_in['n_runs'].tolist(), 
+    #                     'n_epochs': df_in['n_epochs'].tolist(), 
+    #                     'mask_weights': df_in['mask_weights'].tolist(), 
+    #                     'reg_type': df_in['reg_type'].tolist(), 
+    #                     'reg_weight': df_in['reg_weight'].tolist(), 
+    #                     'kernel_type': df_in['kernel_type'].tolist(), 
+    #                     'kernel_normalization': df_in['kernel_normalization'].tolist(), 
+    #                     'time_step': df_in['time_step'].tolist()})
     kernel_labels = []
-    for row in np.arange(len(model_params)):
-        kernel_labels.append(get_kernel_label(kernel_type=model_params.kernel_type.iloc[row], \
-                                                mask_weights=model_params.mask_weights.iloc[row], \
-                                                reg_weight=model_params.reg_weight.iloc[row]))
-    model_params['kernel_label'] = kernel_labels
-    return model_params
+    for row in np.arange(len(df)):
+        kernel_labels.append(get_kernel_label(kernel_type = df.kernel_type.iloc[row], \
+                                                mask_weights = df.mask_weights.iloc[row], \
+                                                reg_weight = df.reg_weight.iloc[row]))
+    df['kernel_label'] = kernel_labels
+    return df
 
 
 def get_params_dataframe(params_dataframe: str | pd.DataFrame, rows: list = [], verbose = False):
@@ -856,7 +870,8 @@ def get_params_dataframe(params_dataframe: str | pd.DataFrame, rows: list = [], 
         'n_io',
         'seq_len',
         'config',
-        'file_str',
+        'file_str_models',
+        'file_str_outputs',
         'task_index',
         'kernel_index',
         'env_kwargs']] = None
@@ -899,7 +914,9 @@ def get_params_dataframe(params_dataframe: str | pd.DataFrame, rows: list = [], 
         }
 
         # get data file name
-        this['file_str'] = get_file_str(this.config)
+        file_str = get_file_str(this.config)
+        this['file_str_models'] = file_str + '_models.h5'
+        this['file_str_outputs'] = file_str + '_outputs.h5'
         
         # determine task index
         this['task_index'] = task_names.index(this.task_with_modifier)
@@ -909,6 +926,9 @@ def get_params_dataframe(params_dataframe: str | pd.DataFrame, rows: list = [], 
         
         # update this model's info
         df.iloc[model_idx] = this
+    
+    # add index column
+    df['model_index'] = df.index
     
     if verbose:
         print('DataFrame keys:\n---------------')
