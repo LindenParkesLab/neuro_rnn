@@ -26,7 +26,7 @@ class RNN(nn.Module):
 
         if type == 'rnn-tanh':
             self.rnn = nn.RNN(input_size, hidden_size, 1, nonlinearity='tanh')
-            nn.init.uniform_(self.rnn.rnn.weight_hh_l0, 0.0, 0.01)
+            nn.init.uniform_(self.rnn.weight_hh_l0, 0.0, 0.01)
         elif type == 'rnn-relu':
             self.rnn = nn.RNN(input_size, hidden_size, 1, nonlinearity='relu')
         elif type == 'lstm':
