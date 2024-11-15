@@ -1,0 +1,10 @@
+task,seq_len_multi,rnn_model,hidden_size,batch_size,learning_rate,n_runs,n_epochs,mask_weights,reg_type,reg_weight,kernel_type,kernel_normalization,time_step
+GoNogo-v0-Del_900_200,5,rnn-tanh,100,32,0.001,100,5000,True,l2,0.002,sa_axis,mean,100
+GoNogo-v0-Del_900_200,5,rnn-tanh,100,32,0.001,100,5000,True,l2,0.002,euclidean,mean,100
+GoNogo-v0-Del_900_200,5,rnn-tanh,100,32,0.001,100,5000,True,l2,0.002,None,mean,100
+PerceptualDecisionMaking-v0-Del_200_0_Dec_400,5,rnn-tanh,100,32,0.001,100,25000,True,l2,0.002,sa_axis,mean,100
+PerceptualDecisionMaking-v0-Del_200_0_Dec_400,5,rnn-tanh,100,32,0.001,100,25000,True,l2,0.002,euclidean,mean,100
+PerceptualDecisionMaking-v0-Del_200_0_Dec_400,5,rnn-tanh,100,32,0.001,100,25000,True,l2,0.002,None,mean,100
+MultiSensoryIntegration-v0-Dec_400,5,rnn-tanh,100,32,0.001,100,25000,True,l2,0.002,sa_axis,mean,100
+MultiSensoryIntegration-v0-Dec_400,5,rnn-tanh,100,32,0.001,100,25000,True,l2,0.002,euclidean,mean,100
+MultiSensoryIntegration-v0-Dec_400,5,rnn-tanh,100,32,0.001,100,25000,True,l2,0.002,None,mean,100
