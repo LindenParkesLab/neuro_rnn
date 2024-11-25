@@ -23,16 +23,23 @@ class RNN(nn.Module):
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.num_classes = num_classes
+        self.sigmoid = nn.Sigmoid()
+        self.rnn_type = type
 
-        if type == 'rnn-tanh':
+        if type == 'rnn-tanh' or type == 'rnn-sigmoid':
             self.rnn = nn.RNN(input_size, hidden_size, 1, nonlinearity='tanh')
-            nn.init.uniform_(self.rnn.weight_hh_l0, 0.0, 0.01)
+            # nn.init.uniform_(self.rnn.weight_hh_l0, 0.0, 0.01)
+            # nn.init.uniform_(self.rnn.weight_ih_l0, 0.0, 0.01)
+            # nn.init.uniform_(self.rnn.bias_hh_l0, 0.0, 0.01)
+            # nn.init.uniform_(self.rnn.bias_ih_l0, 0.0, 0.01)
         elif type == 'rnn-relu':
             self.rnn = nn.RNN(input_size, hidden_size, 1, nonlinearity='relu')
         elif type == 'lstm':
             self.rnn = nn.LSTM(input_size, hidden_size, 1)
         elif type == 'gru':
             self.rnn = nn.GRU(input_size, hidden_size, 1)
+        else:
+            raise ValueError(f"RNN type '{type}' not recognized.")
         self.fc = nn.Linear(hidden_size, num_classes)
 
         if type == 'lstm':
@@ -79,7 +86,6 @@ class RNN(nn.Module):
         elif type == 'l2' and matrix is not None:
             return torch.mul(torch.square(w), matrix).sum()
 
-
     def forward(self, x):
         with torch.no_grad():
             if self.input_weight_mask is not None:
@@ -88,7 +94,29 @@ class RNN(nn.Module):
             if self.output_weight_mask is not None:
                 self.fc.weight.mul_(self.output_weight_mask)
 
-        hidden, h_n = self.rnn(x)
+        if self.rnn_type == 'rnn-sigmoid':
+            # manual implementation of RNN with sigmoid activation
+            batch_size = x.size(1)  # assuming input is (seq_len, batch, input_size)
+            h = torch.zeros(1, batch_size, self.hidden_size, device=x.device)
+            hidden_seq = []
+            
+            for t in range(x.size(0)):
+                # get the current input
+                x_t = x[t:t+1]
+                # calculate hidden state using sigmoid activation
+                h = self.sigmoid(self.rnn.weight_ih_l0 @ x_t.transpose(0,2) + 
+                               self.rnn.weight_hh_l0 @ h.transpose(0,2) + 
+                               self.rnn.bias_ih_l0.unsqueeze(-1) + 
+                               self.rnn.bias_hh_l0.unsqueeze(-1))
+                h = h.transpose(0,2)
+                hidden_seq.append(h)
+            
+            hidden = torch.cat(hidden_seq, dim=0)
+            h_n = h
+        else:
+            # use standard PyTorch implementations for other RNN types
+            hidden, h_n = self.rnn(x)
+            
         action_pred = self.fc(hidden)
 
         return action_pred, hidden
