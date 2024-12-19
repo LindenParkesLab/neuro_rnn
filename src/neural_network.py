@@ -1,11 +1,16 @@
 import os, random, time, sys, copy
 from timeit import default_timer as timer
 from datetime import timedelta
+from typing import List, Tuple, Optional, overload, Union
 
 import torch
+from torch import Tensor
 import torch.utils.data
 import torch.nn as nn
 import torch.nn.init as init
+from torch.nn.parameter import Parameter
+from torch.nn.utils.rnn import PackedSequence
+from torch.nn import functional as F
 import numpy as np
 import pandas as pd
 from scipy.ndimage import uniform_filter1d
@@ -18,7 +23,8 @@ import neurogym as ngym
 
 class RNN(nn.Module):
     def __init__(self, input_size, hidden_size, num_classes,
-                 type='rnn-tanh', regularization_kernel=None, input_weight_mask=None, output_weight_mask=None):
+                 type='rnn-tanh', regularization_kernel=None, input_weight_mask=None, output_weight_mask=None,
+                 train_ih=True, train_hh=True, train_ho=True):
         super(RNN, self).__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
@@ -26,14 +32,12 @@ class RNN(nn.Module):
         self.sigmoid = nn.Sigmoid()
         self.rnn_type = type
 
-        if type == 'rnn-tanh' or type == 'rnn-sigmoid':
+        if type == 'rnn-tanh':
             self.rnn = nn.RNN(input_size, hidden_size, 1, nonlinearity='tanh')
-            # nn.init.uniform_(self.rnn.weight_hh_l0, 0.0, 0.01)
-            # nn.init.uniform_(self.rnn.weight_ih_l0, 0.0, 0.01)
-            # nn.init.uniform_(self.rnn.bias_hh_l0, 0.0, 0.01)
-            # nn.init.uniform_(self.rnn.bias_ih_l0, 0.0, 0.01)
         elif type == 'rnn-relu':
             self.rnn = nn.RNN(input_size, hidden_size, 1, nonlinearity='relu')
+        elif type == 'rnn-sigmoid':
+            self.rnn = SigmoidRNN(input_size, hidden_size, 1)
         elif type == 'lstm':
             self.rnn = nn.LSTM(input_size, hidden_size, 1)
         elif type == 'gru':
@@ -75,6 +79,23 @@ class RNN(nn.Module):
             self.register_buffer('output_weight_mask', output_weight_mask)
         else:
             self.output_weight_mask = output_weight_mask
+        
+        if not train_ih: # freeze the input-to-hidden connections 
+            nn.init.constant_(self.rnn.weight_ih_l0, 1)
+            nn.init.constant_(self.rnn.bias_ih_l0, 0)
+            self.rnn.weight_ih_l0.requires_grad_(False)
+            self.rnn.weight_ih_l0.requires_grad_(False)
+        
+        if not train_hh: # freeze the hidden-to-hidden connections 
+            nn.init.constant_(self.rnn.weight_hh_l0, 1)
+            nn.init.constant_(self.rnn.bias_hh_l0, 0)
+            self.rnn.weight_hh_l0.requires_grad_(False)
+            self.rnn.weight_hh_l0.requires_grad_(False)
+        
+        if not train_ho: # freeze the hidden-to-output connections 
+            nn.init.constant_(self.fc.weight, 1)
+            nn.init.constant_(self.fc.bias, 0)
+            self.fc.requires_grad_(False)
 
     def regularization(self, w, type='l1', matrix=None):
         if type == 'l1' and matrix is None:
@@ -93,34 +114,263 @@ class RNN(nn.Module):
                 self.rnn.bias_ih_l0.mul_(self.input_weight_mask[:, 0])
             if self.output_weight_mask is not None:
                 self.fc.weight.mul_(self.output_weight_mask)
-
-        if self.rnn_type == 'rnn-sigmoid':
-            # manual implementation of RNN with sigmoid activation
-            batch_size = x.size(1)  # assuming input is (seq_len, batch, input_size)
-            h = torch.zeros(1, batch_size, self.hidden_size, device=x.device)
-            hidden_seq = []
-            
-            for t in range(x.size(0)):
-                # get the current input
-                x_t = x[t:t+1]
-                # calculate hidden state using sigmoid activation
-                h = self.sigmoid(self.rnn.weight_ih_l0 @ x_t.transpose(0,2) + 
-                               self.rnn.weight_hh_l0 @ h.transpose(0,2) + 
-                               self.rnn.bias_ih_l0.unsqueeze(-1) + 
-                               self.rnn.bias_hh_l0.unsqueeze(-1))
-                h = h.transpose(0,2)
-                hidden_seq.append(h)
-            
-            hidden = torch.cat(hidden_seq, dim=0)
-            h_n = h
-        else:
-            # use standard PyTorch implementations for other RNN types
-            hidden, h_n = self.rnn(x)
+        
+        hidden, h_n = self.rnn(x)
             
         action_pred = self.fc(hidden)
 
         return action_pred, hidden
 
+# class SigmoidRNN(nn.RNNBase):
+#     r"""SigmoidRNN(input_size, hidden_size, num_layers=1, bias=True, batch_first=False, dropout=0.0, bidirectional=False, device=None, dtype=None)
+    
+#     Custom RNN that applies the sigmoid activation function in the hidden layer.
+    
+#     This class has been implemented to mimic torch's built-in nn.RNN, which only supports tanh and relu.
+#     The only difference at the input level is the absence of the nonlinearity option here as it is forced to be a sigmoid.
+#     Refer to nn.RNN for details about other inputs.
+#     """
+
+#     @overload
+#     def __init__(self, input_size: int, hidden_size: int, num_layers: int = 1,
+#                  nonlinearity: str = 'tanh', bias: bool = True, batch_first: bool = False,
+#                  dropout: float = 0., bidirectional: bool = False, device=None,
+#                  dtype=None) -> None:
+#         ...
+
+#     @overload
+#     def __init__(self, *args, **kwargs):
+#         ...
+
+#     def __init__(self, *args, **kwargs):
+#         if 'proj_size' in kwargs:
+#             raise ValueError("proj_size argument is only supported for LSTM, not RNN or GRU")
+#         self.nonlinearity = kwargs.pop('nonlinearity', 'tanh')
+#         if self.nonlinearity == 'tanh':
+#             mode = 'RNN_TANH'
+#         elif self.nonlinearity == 'relu':
+#             mode = 'RNN_RELU'
+#         else:
+#             raise ValueError(f"Unknown nonlinearity '{self.nonlinearity}'. Select from 'tanh' or 'relu'.")
+#         super().__init__(mode, *args, **kwargs)
+
+#     @overload
+#     @torch._jit_internal._overload_method  # noqa: F811
+#     def forward(self, input: Tensor, hx: Optional[Tensor] = None) -> Tuple[Tensor, Tensor]:
+#         pass
+
+#     @overload
+#     @torch._jit_internal._overload_method  # noqa: F811
+#     def forward(self, input: PackedSequence, hx: Optional[Tensor] = None) -> Tuple[PackedSequence, Tensor]:
+#         pass
+
+#     def forward(self, input, hx=None):  # noqa: F811
+#         self._update_flat_weights()
+
+#         num_directions = 2 if self.bidirectional else 1
+#         orig_input = input
+
+#         if isinstance(orig_input, PackedSequence):
+#             input, batch_sizes, sorted_indices, unsorted_indices = input
+#             max_batch_size = batch_sizes[0]
+#             # script() is unhappy when max_batch_size is different type in cond branches, so we duplicate
+#             if hx is None:
+#                 hx = torch.zeros(self.num_layers * num_directions,
+#                                  max_batch_size, self.hidden_size,
+#                                  dtype=input.dtype, device=input.device)
+#             else:
+#                 # Each batch of the hidden state should match the input sequence that
+#                 # the user believes he/she is passing in.
+#                 hx = self.permute_hidden(hx, sorted_indices)
+#         else:
+#             batch_sizes = None
+#             if input.dim() not in (2, 3):
+#                 raise ValueError(f"RNN: Expected input to be 2D or 3D, got {input.dim()}D tensor instead")
+#             is_batched = input.dim() == 3
+#             batch_dim = 0 if self.batch_first else 1
+#             if not is_batched:
+#                 input = input.unsqueeze(batch_dim)
+#                 if hx is not None:
+#                     if hx.dim() != 2:
+#                         raise RuntimeError(
+#                             f"For unbatched 2-D input, hx should also be 2-D but got {hx.dim()}-D tensor")
+#                     hx = hx.unsqueeze(1)
+#             else:
+#                 if hx is not None and hx.dim() != 3:
+#                     raise RuntimeError(
+#                         f"For batched 3-D input, hx should also be 3-D but got {hx.dim()}-D tensor")
+#             max_batch_size = input.size(0) if self.batch_first else input.size(1)
+#             sorted_indices = None
+#             unsorted_indices = None
+#             if hx is None:
+#                 hx = torch.zeros(self.num_layers * num_directions,
+#                                  max_batch_size, self.hidden_size,
+#                                  dtype=input.dtype, device=input.device)
+#             else:
+#                 # Each batch of the hidden state should match the input sequence that
+#                 # the user believes he/she is passing in.
+#                 hx = self.permute_hidden(hx, sorted_indices)
+
+#         assert hx is not None
+#         self.check_forward_args(input, hx, batch_sizes)
+#         assert self.mode == 'RNN_TANH' or self.mode == 'RNN_RELU'
+#         if batch_sizes is None:
+#             if self.mode == 'RNN_TANH':
+#                 result = _VF.rnn_tanh(input, hx, self._flat_weights, self.bias, self.num_layers,
+#                                       self.dropout, self.training, self.bidirectional,
+#                                       self.batch_first)
+#             else:
+#                 result = _VF.rnn_relu(input, hx, self._flat_weights, self.bias, self.num_layers,
+#                                       self.dropout, self.training, self.bidirectional,
+#                                       self.batch_first)
+#         else:
+#             if self.mode == 'RNN_TANH':
+#                 result = _VF.rnn_tanh(input, batch_sizes, hx, self._flat_weights, self.bias,
+#                                       self.num_layers, self.dropout, self.training,
+#                                       self.bidirectional)
+#             else:
+#                 result = _VF.rnn_relu(input, batch_sizes, hx, self._flat_weights, self.bias,
+#                                       self.num_layers, self.dropout, self.training,
+#                                       self.bidirectional)
+
+#         output = result[0]
+#         hidden = result[1]
+
+#         if isinstance(orig_input, PackedSequence):
+#             output_packed = PackedSequence(output, batch_sizes, sorted_indices, unsorted_indices)
+#             return output_packed, self.permute_hidden(hidden, unsorted_indices)
+
+#         if not is_batched:
+#             output = output.squeeze(batch_dim)
+#             hidden = hidden.squeeze(1)
+
+#         return output, self.permute_hidden(hidden, unsorted_indices)
+
+
+def rnn_sigmoid(input: torch.Tensor, 
+                hx: torch.Tensor, 
+                params: torch.Tensor,
+                has_biases: bool,
+                num_layers: int,
+                dropout: float,
+                train: bool,
+                bidirectional: bool,
+                batch_first: bool) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Implementation of RNN cell with sigmoid activation, following PyTorch's RNN interface.
+    This function mimics the behavior of torch._VF.rnn_tanh and torch._VF.rnn_relu.
+    """
+    if has_biases:
+        w_ih, w_hh, b_ih, b_hh = params
+    else:
+        w_ih, w_hh = params
+        b_ih = b_hh = None
+
+    if batch_first and not isinstance(input, PackedSequence):
+        input = input.transpose(0, 1)  # Convert to seq_len, batch, input_size
+
+    if isinstance(input, PackedSequence):
+        input_data = input.data
+    else:
+        input_data = input
+
+    seq_len = input_data.size(0)
+    batch_size = input_data.size(1)
+    hidden_size = hx.size(-1)
+
+    output = []
+    h_n = hx  # Use this to store the final hidden state
+
+    for t in range(seq_len):
+        x_t = input_data[t]
+        
+        # Calculate gates
+        gates = F.linear(x_t, w_ih, b_ih) + F.linear(h_n, w_hh, b_hh)
+        
+        # Apply sigmoid activation
+        h_n = torch.sigmoid(gates)
+        # Ensure h_n maintains the correct batch size
+        h_n = h_n.view(batch_size, -1)
+        
+        output.append(h_n)
+    
+    # Stack sequence outputs
+    output = torch.stack(output, dim=0)  # Shape: [seq_len, batch, hidden]
+    
+    if batch_first and not isinstance(input, PackedSequence):
+        output = output.transpose(0, 1)  # Convert to batch, seq_len, hidden
+    
+    return output, h_n
+
+class SigmoidRNN(nn.RNNBase):
+    def __init__(self, 
+                 input_size: int,
+                 hidden_size: int,
+                 num_layers: int = 1,
+                 bias: bool = True,
+                 batch_first: bool = False,
+                 dropout: float = 0.,
+                 bidirectional: bool = False) -> None:
+        """
+        RNN module with sigmoid activation function.
+        Args match PyTorch's RNN class for drop-in replacement capability.
+        """
+        super().__init__(
+            mode='RNN_TANH',  # RNNBase only accepts RNN_TANH or RNN_RELU, but this doesn't affect our implementation
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            bias=bias,
+            batch_first=batch_first,
+            dropout=dropout,
+            bidirectional=bidirectional
+        )
+
+    def forward(self, 
+                input: Union[torch.Tensor, PackedSequence], 
+                hx: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Forward pass of the SigmoidRNN.
+        Args match PyTorch's RNN forward method for drop-in replacement capability.
+        """
+        is_packed = isinstance(input, PackedSequence)
+        if is_packed:
+            input, batch_sizes, sorted_indices, unsorted_indices = input
+            max_batch_size = batch_sizes[0]
+            max_batch_size = int(max_batch_size)
+        else:
+            batch_sizes = None
+            max_batch_size = input.size(0) if self.batch_first else input.size(1)
+            sorted_indices = None
+            unsorted_indices = None
+
+        if hx is None:
+            hx = torch.zeros(self.num_layers * (2 if self.bidirectional else 1),
+                           max_batch_size, self.hidden_size,
+                           dtype=input.dtype, device=input.device)
+        else:
+            # Handle hidden state reshaping if needed
+            if hx.dim() == 2:
+                hx = hx.unsqueeze(0)
+
+        self.check_forward_args(input, hx, batch_sizes)
+        output, hidden = rnn_sigmoid(
+            input=input,
+            hx=hx[0],  # Take only the first layer for now
+            params=self.all_weights[0],  # Currently only supports single layer
+            has_biases=self.bias,
+            num_layers=self.num_layers,
+            dropout=self.dropout,
+            train=self.training,
+            bidirectional=self.bidirectional,
+            batch_first=self.batch_first
+        )
+        
+        # Ensure hidden state has the correct shape
+        hidden = hidden.unsqueeze(0)  # Add layer dimension
+        
+        return output, hidden
+    
 
 def run_training(dataset, model, optimizer, criterion, config, scheduler=None, return_models=False, epoch_log=10, run=None):
     t_overall = timer()
