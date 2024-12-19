@@ -33,11 +33,15 @@ class RNN(nn.Module):
         self.rnn_type = type
 
         if type == 'rnn-tanh':
-            self.rnn = nn.RNN(input_size, hidden_size, 1, nonlinearity='tanh')
+            self.rnn = CustomRNN(input_size, hidden_size, 1, nonlinearity='tanh')
         elif type == 'rnn-relu':
-            self.rnn = nn.RNN(input_size, hidden_size, 1, nonlinearity='relu')
+            self.rnn = CustomRNN(input_size, hidden_size, 1, nonlinearity='relu')
         elif type == 'rnn-sigmoid':
-            self.rnn = SigmoidRNN(input_size, hidden_size, 1)
+            self.rnn = CustomRNN(input_size, hidden_size, 1, nonlinearity='sigmoid')
+        elif type == 'rnn-modtanh':
+            self.rnn = CustomRNN(input_size, hidden_size, 1, nonlinearity='modtanh')
+        elif type == 'rnn-retanh':
+            self.rnn = CustomRNN(input_size, hidden_size, 1, nonlinearity='retanh')
         elif type == 'lstm':
             self.rnn = nn.LSTM(input_size, hidden_size, 1)
         elif type == 'gru':
@@ -121,133 +125,8 @@ class RNN(nn.Module):
 
         return action_pred, hidden
 
-# class SigmoidRNN(nn.RNNBase):
-#     r"""SigmoidRNN(input_size, hidden_size, num_layers=1, bias=True, batch_first=False, dropout=0.0, bidirectional=False, device=None, dtype=None)
-    
-#     Custom RNN that applies the sigmoid activation function in the hidden layer.
-    
-#     This class has been implemented to mimic torch's built-in nn.RNN, which only supports tanh and relu.
-#     The only difference at the input level is the absence of the nonlinearity option here as it is forced to be a sigmoid.
-#     Refer to nn.RNN for details about other inputs.
-#     """
 
-#     @overload
-#     def __init__(self, input_size: int, hidden_size: int, num_layers: int = 1,
-#                  nonlinearity: str = 'tanh', bias: bool = True, batch_first: bool = False,
-#                  dropout: float = 0., bidirectional: bool = False, device=None,
-#                  dtype=None) -> None:
-#         ...
-
-#     @overload
-#     def __init__(self, *args, **kwargs):
-#         ...
-
-#     def __init__(self, *args, **kwargs):
-#         if 'proj_size' in kwargs:
-#             raise ValueError("proj_size argument is only supported for LSTM, not RNN or GRU")
-#         self.nonlinearity = kwargs.pop('nonlinearity', 'tanh')
-#         if self.nonlinearity == 'tanh':
-#             mode = 'RNN_TANH'
-#         elif self.nonlinearity == 'relu':
-#             mode = 'RNN_RELU'
-#         else:
-#             raise ValueError(f"Unknown nonlinearity '{self.nonlinearity}'. Select from 'tanh' or 'relu'.")
-#         super().__init__(mode, *args, **kwargs)
-
-#     @overload
-#     @torch._jit_internal._overload_method  # noqa: F811
-#     def forward(self, input: Tensor, hx: Optional[Tensor] = None) -> Tuple[Tensor, Tensor]:
-#         pass
-
-#     @overload
-#     @torch._jit_internal._overload_method  # noqa: F811
-#     def forward(self, input: PackedSequence, hx: Optional[Tensor] = None) -> Tuple[PackedSequence, Tensor]:
-#         pass
-
-#     def forward(self, input, hx=None):  # noqa: F811
-#         self._update_flat_weights()
-
-#         num_directions = 2 if self.bidirectional else 1
-#         orig_input = input
-
-#         if isinstance(orig_input, PackedSequence):
-#             input, batch_sizes, sorted_indices, unsorted_indices = input
-#             max_batch_size = batch_sizes[0]
-#             # script() is unhappy when max_batch_size is different type in cond branches, so we duplicate
-#             if hx is None:
-#                 hx = torch.zeros(self.num_layers * num_directions,
-#                                  max_batch_size, self.hidden_size,
-#                                  dtype=input.dtype, device=input.device)
-#             else:
-#                 # Each batch of the hidden state should match the input sequence that
-#                 # the user believes he/she is passing in.
-#                 hx = self.permute_hidden(hx, sorted_indices)
-#         else:
-#             batch_sizes = None
-#             if input.dim() not in (2, 3):
-#                 raise ValueError(f"RNN: Expected input to be 2D or 3D, got {input.dim()}D tensor instead")
-#             is_batched = input.dim() == 3
-#             batch_dim = 0 if self.batch_first else 1
-#             if not is_batched:
-#                 input = input.unsqueeze(batch_dim)
-#                 if hx is not None:
-#                     if hx.dim() != 2:
-#                         raise RuntimeError(
-#                             f"For unbatched 2-D input, hx should also be 2-D but got {hx.dim()}-D tensor")
-#                     hx = hx.unsqueeze(1)
-#             else:
-#                 if hx is not None and hx.dim() != 3:
-#                     raise RuntimeError(
-#                         f"For batched 3-D input, hx should also be 3-D but got {hx.dim()}-D tensor")
-#             max_batch_size = input.size(0) if self.batch_first else input.size(1)
-#             sorted_indices = None
-#             unsorted_indices = None
-#             if hx is None:
-#                 hx = torch.zeros(self.num_layers * num_directions,
-#                                  max_batch_size, self.hidden_size,
-#                                  dtype=input.dtype, device=input.device)
-#             else:
-#                 # Each batch of the hidden state should match the input sequence that
-#                 # the user believes he/she is passing in.
-#                 hx = self.permute_hidden(hx, sorted_indices)
-
-#         assert hx is not None
-#         self.check_forward_args(input, hx, batch_sizes)
-#         assert self.mode == 'RNN_TANH' or self.mode == 'RNN_RELU'
-#         if batch_sizes is None:
-#             if self.mode == 'RNN_TANH':
-#                 result = _VF.rnn_tanh(input, hx, self._flat_weights, self.bias, self.num_layers,
-#                                       self.dropout, self.training, self.bidirectional,
-#                                       self.batch_first)
-#             else:
-#                 result = _VF.rnn_relu(input, hx, self._flat_weights, self.bias, self.num_layers,
-#                                       self.dropout, self.training, self.bidirectional,
-#                                       self.batch_first)
-#         else:
-#             if self.mode == 'RNN_TANH':
-#                 result = _VF.rnn_tanh(input, batch_sizes, hx, self._flat_weights, self.bias,
-#                                       self.num_layers, self.dropout, self.training,
-#                                       self.bidirectional)
-#             else:
-#                 result = _VF.rnn_relu(input, batch_sizes, hx, self._flat_weights, self.bias,
-#                                       self.num_layers, self.dropout, self.training,
-#                                       self.bidirectional)
-
-#         output = result[0]
-#         hidden = result[1]
-
-#         if isinstance(orig_input, PackedSequence):
-#             output_packed = PackedSequence(output, batch_sizes, sorted_indices, unsorted_indices)
-#             return output_packed, self.permute_hidden(hidden, unsorted_indices)
-
-#         if not is_batched:
-#             output = output.squeeze(batch_dim)
-#             hidden = hidden.squeeze(1)
-
-#         return output, self.permute_hidden(hidden, unsorted_indices)
-
-
-def rnn_sigmoid(input: torch.Tensor, 
+def rnn_custom(input: torch.Tensor, 
                 hx: torch.Tensor, 
                 params: torch.Tensor,
                 has_biases: bool,
@@ -255,10 +134,12 @@ def rnn_sigmoid(input: torch.Tensor,
                 dropout: float,
                 train: bool,
                 bidirectional: bool,
-                batch_first: bool) -> Tuple[torch.Tensor, torch.Tensor]:
+                batch_first: bool,
+                nonlinearity: str = 'modtanh') -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    Implementation of RNN cell with sigmoid activation, following PyTorch's RNN interface.
+    Implementation of RNN cell with custom activation, following PyTorch's RNN interface.
     This function mimics the behavior of torch._VF.rnn_tanh and torch._VF.rnn_relu.
+    'nonliearity' can be: 'tanh', 'relu', 'retanh', 'modtanh', 'sigmoid'.
     """
     if has_biases:
         w_ih, w_hh, b_ih, b_hh = params
@@ -287,8 +168,18 @@ def rnn_sigmoid(input: torch.Tensor,
         # Calculate gates
         gates = F.linear(x_t, w_ih, b_ih) + F.linear(h_n, w_hh, b_hh)
         
-        # Apply sigmoid activation
-        h_n = torch.sigmoid(gates)
+        # Apply activation
+        if nonlinearity == 'tanh':
+            h_n = torch.tanh(gates)
+        elif nonlinearity == 'relu':
+            h_n = torch.relu(gates)
+        elif nonlinearity == 'modtanh':
+            h_n = 0.5*(torch.tanh(2*gates)+1)
+        elif nonlinearity == 'retanh':
+            h_n = torch.relu(torch.tanh(gates))
+        elif nonlinearity == 'sigmoid':
+            h_n = torch.sigmoid(gates)
+        
         # Ensure h_n maintains the correct batch size
         h_n = h_n.view(batch_size, -1)
         
@@ -302,7 +193,8 @@ def rnn_sigmoid(input: torch.Tensor,
     
     return output, h_n
 
-class SigmoidRNN(nn.RNNBase):
+
+class CustomRNN(nn.RNNBase):
     def __init__(self, 
                  input_size: int,
                  hidden_size: int,
@@ -310,10 +202,12 @@ class SigmoidRNN(nn.RNNBase):
                  bias: bool = True,
                  batch_first: bool = False,
                  dropout: float = 0.,
-                 bidirectional: bool = False) -> None:
+                 bidirectional: bool = False,
+                 nonlinearity: str = 'modtanh') -> None:
         """
-        RNN module with sigmoid activation function.
+        RNN module with additional activation functions.
         Args match PyTorch's RNN class for drop-in replacement capability.
+        'nonliearity' can be: 'tanh', 'relu', 'retanh', 'modtanh', 'sigmoid'.
         """
         super().__init__(
             mode='RNN_TANH',  # RNNBase only accepts RNN_TANH or RNN_RELU, but this doesn't affect our implementation
@@ -325,6 +219,7 @@ class SigmoidRNN(nn.RNNBase):
             dropout=dropout,
             bidirectional=bidirectional
         )
+        self.nonlinearity = nonlinearity
 
     def forward(self, 
                 input: Union[torch.Tensor, PackedSequence], 
@@ -354,7 +249,7 @@ class SigmoidRNN(nn.RNNBase):
                 hx = hx.unsqueeze(0)
 
         self.check_forward_args(input, hx, batch_sizes)
-        output, hidden = rnn_sigmoid(
+        output, hidden = rnn_custom(
             input=input,
             hx=hx[0],  # Take only the first layer for now
             params=self.all_weights[0],  # Currently only supports single layer
@@ -363,7 +258,8 @@ class SigmoidRNN(nn.RNNBase):
             dropout=self.dropout,
             train=self.training,
             bidirectional=self.bidirectional,
-            batch_first=self.batch_first
+            batch_first=self.batch_first,
+            nonlinearity=self.nonlinearity
         )
         
         # Ensure hidden state has the correct shape
