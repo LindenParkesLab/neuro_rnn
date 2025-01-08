@@ -24,7 +24,7 @@ import neurogym as ngym
 class RNN(nn.Module):
     def __init__(self, input_size, hidden_size, num_classes,
                  type='rnn-tanh', regularization_kernel=None, input_weight_mask=None, output_weight_mask=None,
-                 train_ih=True, train_hh=True, train_ho=True, alpha=0):
+                 train_ih=True, train_hh=True, train_ho=True, alpha=0.0):
         super(RNN, self).__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
@@ -552,9 +552,10 @@ def train_helper(run, config):
                 type=config['rnn_model'], 
                 regularization_kernel=config['regularization_kernel'], 
                 input_weight_mask=input_weight_mask, 
-                output_weight_mask=output_weight_mask)
-    if config['n_gpu'] > 1:
-        model = nn.DataParallel(model)
+                output_weight_mask=output_weight_mask,
+                alpha=config['alpha'])
+    # if config['n_gpu'] > 1:
+    #     model = nn.DataParallel(model)
     model.to(config['device'])
     optimizer = torch.optim.Adam(model.parameters(), lr=config['learning_rate'])
     criterion = nn.CrossEntropyLoss()

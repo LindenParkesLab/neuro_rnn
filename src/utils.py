@@ -305,15 +305,20 @@ def get_file_str(config):
     kernel_type = config['kernel_type']
     kernel_normalization = config['kernel_normalization']
     
+    # continuous time parameter
+    alpha = config['alpha']
+    
     # create name string
     file_str = 'task-{:}-{:}_' \
                 'model-{:}-{:}-{:}-{:}-{:}-{:}_' \
                 'wmask-{:}-{:}_' \
-                'reg-{:}-{:}-{:}-{:}' \
+                'reg-{:}-{:}-{:}-{:}_' \
+                'alpha-{:}' \
         .format(task, seq_len,
                 rnn_model, hidden_size, batch_size, lr, n_runs, n_epochs,
                 mask_weights, n_io,
-                reg_type, reg_weight, kernel_type, kernel_normalization)
+                reg_type, reg_weight, kernel_type, kernel_normalization,
+                alpha)
 
     return file_str
 
@@ -833,20 +838,6 @@ def get_kernel_label(kernel_type='None', mask_weights=False, reg_weight=0.0):
 def load_params_csv(model_params_csv):
     import pandas as pd
     df = pd.read_csv(model_params_csv, keep_default_na = False, na_values = ['NaN'])
-    # df = pd.DataFrame({'task': df_in['task'].tolist(), 
-    #                     'seq_len_multi': df_in['seq_len_multi'].tolist(), 
-    #                     'rnn_model': df_in['rnn_model'].tolist(), 
-    #                     'hidden_size': df_in['hidden_size'].tolist(), 
-    #                     'batch_size': df_in['batch_size'].tolist(), 
-    #                     'learning_rate': df_in['learning_rate'].tolist(), 
-    #                     'n_runs': df_in['n_runs'].tolist(), 
-    #                     'n_epochs': df_in['n_epochs'].tolist(), 
-    #                     'mask_weights': df_in['mask_weights'].tolist(), 
-    #                     'reg_type': df_in['reg_type'].tolist(), 
-    #                     'reg_weight': df_in['reg_weight'].tolist(), 
-    #                     'kernel_type': df_in['kernel_type'].tolist(), 
-    #                     'kernel_normalization': df_in['kernel_normalization'].tolist(), 
-    #                     'time_step': df_in['time_step'].tolist()})
     kernel_labels = []
     for row in np.arange(len(df)):
         kernel_labels.append(get_kernel_label(kernel_type = df.kernel_type.iloc[row], \
@@ -930,6 +921,7 @@ def get_params_dataframe(params_dataframe: str | pd.DataFrame, rows: list = [], 
             'seq_len': this.seq_len,
             'kernel_type': this.kernel_type,
             'kernel_normalization': this.kernel_normalization,
+            'alpha': this.alpha, 
         }
 
         # get data file name

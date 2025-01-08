@@ -184,7 +184,11 @@ def get_args():
     parser.add_argument('--reg_weight', type=float, default=0.001)
     parser.add_argument('--kernel_type', type=str, default='None')
     parser.add_argument('--kernel_normalization', type=str, default='mean')
+    
+    # continuous time parameter
+    parser.add_argument('--alpha', type=float, default=0)
 
+    # parse inputs
     args = parser.parse_args()
     args.datadir = os.path.expanduser(args.datadir)
     args.outdir = os.path.expanduser(args.outdir)
@@ -262,7 +266,11 @@ if __name__ == '__main__':
         'reg_weight': args.reg_weight,
         'kernel_type': kernel_type,
         'kernel_normalization': args.kernel_normalization,
+        
+        # continuous time parameter
+        'alpha': args.alpha,
 
+        # ngym env
         'env_kwargs': env_kwargs,
         
         # device settings
