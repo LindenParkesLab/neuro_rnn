@@ -33,16 +33,8 @@ class RNN(nn.Module):
         self.rnn_type = type
         self.alpha = alpha
 
-        if type == 'rnn-tanh':
-            self.rnn = CustomRNN(input_size, hidden_size, 1, nonlinearity='tanh', alpha=alpha)
-        elif type == 'rnn-relu':
-            self.rnn = CustomRNN(input_size, hidden_size, 1, nonlinearity='relu', alpha=alpha)
-        elif type == 'rnn-sigmoid':
-            self.rnn = CustomRNN(input_size, hidden_size, 1, nonlinearity='sigmoid', alpha=alpha)
-        elif type == 'rnn-modtanh':
-            self.rnn = CustomRNN(input_size, hidden_size, 1, nonlinearity='modtanh', alpha=alpha)
-        elif type == 'rnn-retanh':
-            self.rnn = CustomRNN(input_size, hidden_size, 1, nonlinearity='retanh', alpha=alpha)
+        if type.replace('rnn-','') in ['tanh','relu','retanh','postanh','sigmoid']:
+            self.rnn = CustomRNN(input_size, hidden_size, 1, nonlinearity=type.replace('rnn-',''), alpha=alpha)
         elif type == 'lstm':
             self.rnn = nn.LSTM(input_size, hidden_size, 1)
         elif type == 'gru':

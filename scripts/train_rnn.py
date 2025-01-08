@@ -186,7 +186,7 @@ def get_args():
     parser.add_argument('--kernel_normalization', type=str, default='mean')
     
     # continuous time parameter
-    parser.add_argument('--alpha', type=float, default=0)
+    parser.add_argument('--alpha', type=float, default=0.0)
 
     # parse inputs
     args = parser.parse_args()
