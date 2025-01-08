@@ -24,24 +24,25 @@ import neurogym as ngym
 class RNN(nn.Module):
     def __init__(self, input_size, hidden_size, num_classes,
                  type='rnn-tanh', regularization_kernel=None, input_weight_mask=None, output_weight_mask=None,
-                 train_ih=True, train_hh=True, train_ho=True):
+                 train_ih=True, train_hh=True, train_ho=True, alpha=0):
         super(RNN, self).__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.num_classes = num_classes
         self.sigmoid = nn.Sigmoid()
         self.rnn_type = type
+        self.alpha = alpha
 
         if type == 'rnn-tanh':
-            self.rnn = CustomRNN(input_size, hidden_size, 1, nonlinearity='tanh')
+            self.rnn = CustomRNN(input_size, hidden_size, 1, nonlinearity='tanh', alpha=alpha)
         elif type == 'rnn-relu':
-            self.rnn = CustomRNN(input_size, hidden_size, 1, nonlinearity='relu')
+            self.rnn = CustomRNN(input_size, hidden_size, 1, nonlinearity='relu', alpha=alpha)
         elif type == 'rnn-sigmoid':
-            self.rnn = CustomRNN(input_size, hidden_size, 1, nonlinearity='sigmoid')
+            self.rnn = CustomRNN(input_size, hidden_size, 1, nonlinearity='sigmoid', alpha=alpha)
         elif type == 'rnn-modtanh':
-            self.rnn = CustomRNN(input_size, hidden_size, 1, nonlinearity='modtanh')
+            self.rnn = CustomRNN(input_size, hidden_size, 1, nonlinearity='modtanh', alpha=alpha)
         elif type == 'rnn-retanh':
-            self.rnn = CustomRNN(input_size, hidden_size, 1, nonlinearity='retanh')
+            self.rnn = CustomRNN(input_size, hidden_size, 1, nonlinearity='retanh', alpha=alpha)
         elif type == 'lstm':
             self.rnn = nn.LSTM(input_size, hidden_size, 1)
         elif type == 'gru':
@@ -135,11 +136,16 @@ def rnn_custom(input: torch.Tensor,
                 train: bool,
                 bidirectional: bool,
                 batch_first: bool,
-                nonlinearity: str = 'modtanh') -> Tuple[torch.Tensor, torch.Tensor]:
+                nonlinearity: str = 'modtanh',
+                alpha: float = 0) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Implementation of RNN cell with custom activation, following PyTorch's RNN interface.
-    This function mimics the behavior of torch._VF.rnn_tanh and torch._VF.rnn_relu.
-    'nonliearity' can be: 'tanh', 'relu', 'retanh', 'modtanh', 'sigmoid'.
+    This function broadly mimics the behavior of torch._VF.rnn_tanh and torch._VF.rnn_relu.
+    
+    - 'nonliearity' can be: 'tanh', 'relu', 'retanh', 'modtanh', 'sigmoid'.
+    - 'alpha' is a 'memory' parameter: alpha = 0 (default) yields standard RNN behavior, 
+    and larger values closer to 1 cause the RNN to relie more on its previous states with each update.
+    The update equation is: r(t+1) = a*r(t) + (1-a)*f(Ar(t) + Bu(t) + d).
     """
     if has_biases:
         w_ih, w_hh, b_ih, b_hh = params
@@ -166,19 +172,19 @@ def rnn_custom(input: torch.Tensor,
         x_t = input_data[t]
         
         # Calculate gates
-        gates = F.linear(x_t, w_ih, b_ih) + F.linear(h_n, w_hh, b_hh)
+        preactivation = F.linear(x_t, w_ih, b_ih) + F.linear(h_n, w_hh, b_hh)
         
-        # Apply activation
+        # Apply activation and continuous time update
         if nonlinearity == 'tanh':
-            h_n = torch.tanh(gates)
+            h_n = alpha * h_n + (1 - alpha) * torch.tanh(preactivation)
         elif nonlinearity == 'relu':
-            h_n = torch.relu(gates)
+            h_n = alpha * h_n + (1 - alpha) * torch.relu(preactivation)
         elif nonlinearity == 'modtanh':
-            h_n = 0.5*(torch.tanh(2*gates)+1)
+            h_n = alpha * h_n + (1 - alpha) * 0.5*(torch.tanh(2*preactivation)+1)
         elif nonlinearity == 'retanh':
-            h_n = torch.relu(torch.tanh(gates))
+            h_n = alpha * h_n + (1 - alpha) * torch.relu(torch.tanh(preactivation))
         elif nonlinearity == 'sigmoid':
-            h_n = torch.sigmoid(gates)
+            h_n = alpha * h_n + (1 - alpha) * torch.sigmoid(preactivation)
         
         # Ensure h_n maintains the correct batch size
         h_n = h_n.view(batch_size, -1)
@@ -203,11 +209,15 @@ class CustomRNN(nn.RNNBase):
                  batch_first: bool = False,
                  dropout: float = 0.,
                  bidirectional: bool = False,
-                 nonlinearity: str = 'modtanh') -> None:
+                 nonlinearity: str = 'modtanh',
+                 alpha: float = 0) -> None:
         """
-        RNN module with additional activation functions.
-        Args match PyTorch's RNN class for drop-in replacement capability.
-        'nonliearity' can be: 'tanh', 'relu', 'retanh', 'modtanh', 'sigmoid'.
+        RNN module with additional activation functions and support for continous time update.
+        Args broadly match PyTorch's RNN class for drop-in replacement capability with additions.
+        - 'nonliearity' can be: 'tanh', 'relu', 'retanh', 'modtanh', 'sigmoid'.
+        - 'alpha' is a 'memory' parameter: alpha = 0 (default) yields standard RNN behavior, 
+        and larger values closer to 1 cause the RNN to relie more on its previous states with each update.
+        The update equation is: r(t+1) = a*r(t) + (1-a)*f(Ar(t) + Bu(t) + d).
         """
         super().__init__(
             mode='RNN_TANH',  # RNNBase only accepts RNN_TANH or RNN_RELU, but this doesn't affect our implementation
@@ -220,6 +230,7 @@ class CustomRNN(nn.RNNBase):
             bidirectional=bidirectional
         )
         self.nonlinearity = nonlinearity
+        self.alpha = alpha
 
     def forward(self, 
                 input: Union[torch.Tensor, PackedSequence], 
@@ -259,7 +270,8 @@ class CustomRNN(nn.RNNBase):
             train=self.training,
             bidirectional=self.bidirectional,
             batch_first=self.batch_first,
-            nonlinearity=self.nonlinearity
+            nonlinearity=self.nonlinearity,
+            alpha=self.alpha
         )
         
         # Ensure hidden state has the correct shape
