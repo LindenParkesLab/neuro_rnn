@@ -128,13 +128,13 @@ def rnn_custom(input: torch.Tensor,
                 train: bool,
                 bidirectional: bool,
                 batch_first: bool,
-                nonlinearity: str = 'modtanh',
+                nonlinearity: str = 'postanh',
                 alpha: float = 0) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Implementation of RNN cell with custom activation, following PyTorch's RNN interface.
     This function broadly mimics the behavior of torch._VF.rnn_tanh and torch._VF.rnn_relu.
     
-    - 'nonliearity' can be: 'tanh', 'relu', 'retanh', 'modtanh', 'sigmoid'.
+    - 'nonliearity' can be: 'tanh', 'relu', 'retanh', 'postanh', 'sigmoid'.
     - 'alpha' is a 'memory' parameter: alpha = 0 (default) yields standard RNN behavior, 
     and larger values closer to 1 cause the RNN to relie more on its previous states with each update.
     The update equation is: r(t+1) = a*r(t) + (1-a)*f(Ar(t) + Bu(t) + d).
@@ -171,7 +171,7 @@ def rnn_custom(input: torch.Tensor,
             h_n = alpha * h_n + (1 - alpha) * torch.tanh(preactivation)
         elif nonlinearity == 'relu':
             h_n = alpha * h_n + (1 - alpha) * torch.relu(preactivation)
-        elif nonlinearity == 'modtanh':
+        elif nonlinearity == 'postanh':
             h_n = alpha * h_n + (1 - alpha) * 0.5*(torch.tanh(2*preactivation)+1)
         elif nonlinearity == 'retanh':
             h_n = alpha * h_n + (1 - alpha) * torch.relu(torch.tanh(preactivation))
@@ -201,18 +201,18 @@ class CustomRNN(nn.RNNBase):
                  batch_first: bool = False,
                  dropout: float = 0.,
                  bidirectional: bool = False,
-                 nonlinearity: str = 'modtanh',
+                 nonlinearity: str = 'postanh',
                  alpha: float = 0) -> None:
         """
         RNN module with additional activation functions and support for continous time update.
         Args broadly match PyTorch's RNN class for drop-in replacement capability with additions.
-        - 'nonliearity' can be: 'tanh', 'relu', 'retanh', 'modtanh', 'sigmoid'.
+        - 'nonliearity' can be: 'tanh', 'relu', 'retanh', 'postanh', 'sigmoid'.
         - 'alpha' is a 'memory' parameter: alpha = 0 (default) yields standard RNN behavior, 
         and larger values closer to 1 cause the RNN to relie more on its previous states with each update.
         The update equation is: r(t+1) = a*r(t) + (1-a)*f(Ar(t) + Bu(t) + d).
         """
         super().__init__(
-            mode='RNN_TANH',  # RNNBase only accepts RNN_TANH or RNN_RELU, but this doesn't affect our implementation
+            mode='RNN_TANH',  # RNNBase only accepts RNN_TANH or RNN_RELU, but this doesn't affect our implementation because we define forward here
             input_size=input_size,
             hidden_size=hidden_size,
             num_layers=num_layers,
@@ -228,7 +228,7 @@ class CustomRNN(nn.RNNBase):
                 input: Union[torch.Tensor, PackedSequence], 
                 hx: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Forward pass of the SigmoidRNN.
+        Forward pass of the CustomRNN.
         Args match PyTorch's RNN forward method for drop-in replacement capability.
         """
         is_packed = isinstance(input, PackedSequence)
