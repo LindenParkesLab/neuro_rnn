@@ -230,11 +230,13 @@ if __name__ == '__main__':
     utils.check_if_supported(task=task_no_modifier, modifier=task_modifier)
     seq_len, timing = utils.get_seq_len_and_timing(task=task_no_modifier, modifier=task_modifier, seq_len_multi=args.seq_len_multi)
     env_kwargs = {'dt': args.dt, 'timing': timing}
+    extra_kwargs = utils.get_extra_task_options(task_no_modifier)
+    env_kwargs.update(extra_kwargs)
     print(' ')
     print('Task:             ' + task_no_modifier)
     print('Task modifier:    ' + task_modifier)
     print('Sequence length:  ' + str(seq_len))
-    print('Timing:           ' + str(timing))
+    print('Task options:     ' + str(env_kwargs))
     
     # package all info into config
     config = {

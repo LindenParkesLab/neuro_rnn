@@ -17,7 +17,7 @@ else
   elif [ $USER == "ab2792" ]; then
     scriptsdir='/home/ab2792/software/snaplab_github/neuro_rnn/scripts'
     datadir='/home/ab2792/software/snaplab_github/neuro_rnn/data'
-    outdir='/home/ab2792/data/neuro_rnn/results/pytorch/model'
+    outdir='/home/ab2792/data/neuro_rnn/results/pytorch/model/20250107'
   fi
 fi
 
@@ -26,7 +26,7 @@ source ~/.bashrc
 conda activate neuro_rnn
 
 # path to inputs csv
-params_file="$datadir/model_params_gng_5x5_mean_002_500runs.csv" # < < < < < < < < < < < < < < < < SELECT MODELS FILE HERE
+params_file="$datadir/model_params_gng_pdm_100runs.csv" # < < < < < < < < < < < < < < < < SELECT MODELS FILE HERE
 tmp_params_file="/tmp/$(basename ${params_file%.csv})_${RANDOM}${RANDOM}.csv"
 cp "$params_file" "$tmp_params_file" 
 params_file="$tmp_params_file"
@@ -40,8 +40,8 @@ params_file="$tmp_params_file"
 epoch_log=100
 
 # device settings
-device='cuda'
-n_threads=4
+device='cuda' # 'cpu' or 'cuda'
+n_threads=1
 if [ ${device} == 'cpu' ] && [ ${n_threads} -gt 1 ]; then
   echo "suspending all cuda devices"
   export CUDA_VISIBLE_DEVICES=""
@@ -96,6 +96,8 @@ col_reg_type=$(get_col_num "$line" 'reg_type')
 col_reg_weight=$(get_col_num "$line" 'reg_weight')
 col_kernel_type=$(get_col_num "$line" 'kernel_type')
 col_kernel_normalization=$(get_col_num "$line" 'kernel_normalization')
+col_time_step=$(get_col_num "$line" 'time_step')
+col_alpha=$(get_col_num "$line" 'alpha')
 
 
 ########################################################################################################################
@@ -129,14 +131,17 @@ col_kernel_normalization=$(get_col_num "$line" 'kernel_normalization')
     reg_weight=$(echo $line | awk -v c=${col_reg_weight} -F ',' '{print $c}')
     kernel_type="$(echo $line | awk -v c=${col_kernel_type} -F ',' '{print $c}')"
     kernel_normalization="$(echo $line | awk -v c=${col_kernel_normalization} -F ',' '{print $c}')"
+    time_step="$(echo $line | awk -v c=${col_time_step} -F ',' '{print $c}')"
+    alpha="$(echo $line | awk -v c=${col_alpha} -F ',' '{print $c}')"
     
     # path to log file
     lfp1="$outdir/task-${task}"
     lfp2="_model-${rnn_model}-${hidden_size}-${batch_size}-${learning_rate}-${n_runs}-${n_epochs}"
     lfp3="_wmask-${mask_weights}"
     lfp4="_reg-${reg_type}-${reg_weight}-${kernel_type}-${kernel_normalization}"
-    lfp5="_$(date '+%Y-%m-%d-%H-%M-%S').log"
-    log_file="${lfp1}${lfp2}${lfp3}${lfp4}${lfp5}"
+    lfp5="_alpha-${alpha}"
+    lfp6="_$(date '+%Y-%m-%d-%H-%M-%S').log"
+    log_file="${lfp1}${lfp2}${lfp3}${lfp4}${lfp5}${lfp6}"
 
     { # start of logging code block
 
@@ -173,6 +178,8 @@ col_kernel_normalization=$(get_col_num "$line" 'kernel_normalization')
       --epoch_log ${epoch_log} \
       --reg_type ${reg_type} \
       --kernel_normalization ${kernel_normalization} \
+      --dt ${time_step} \
+      --alpha ${alpha} \
       --device ${device} \
       --n_threads ${n_threads}  2>&1 # capture stdout and stderr 
 
