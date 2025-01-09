@@ -746,6 +746,8 @@ def get_seq_len_and_timing(task, modifier='', seq_len_multi=5):
 
 
 def get_extra_task_options(task):
+    
+    opts = dict()
 
     if task == 'PerceptualDecisionMaking-v0':
         opts = {'cohs': [3.125, 6.25, 12.5, 25.0, 50.0, 100.0], 'sigma': 0.5}
