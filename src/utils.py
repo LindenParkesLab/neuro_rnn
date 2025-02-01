@@ -587,8 +587,8 @@ def check_if_supported(task, modifier):
     delay, decision = parse_task_modifier(modifier)
         
     supported_tasks = [
-        #  task_name                                |   can modify?    |
-        #                                           | delay | decision |
+        #|        task_name                          |   can modify?    |
+        #|                                           | delay | decision |
         [ 'ContextDecisionMaking-v0',                  True,    True,  ],
         [ 'DelayComparison-v0',                        True,    True,  ],
         [ 'DelayMatchCategory-v0',                     True,    False, ],
@@ -642,7 +642,7 @@ def delay_dist(delay_opt=(400,200)):
     return d
 
 
-def get_seq_len_and_timing(task, modifier='', seq_len_multi=5):
+def get_seq_len_and_timing(task, modifier='', seq_len_multi=5, dt=100):
     
     delay = ()
     decision = 300
@@ -722,7 +722,7 @@ def get_seq_len_and_timing(task, modifier='', seq_len_multi=5):
         timing = {'fixation': 300, 'stimulus': 800, 'decision': decision}
     
     elif task == 'PerceptualDecisionMaking-v0':
-        timing = {'fixation': 300, 'stimulus': 1000, 'decision': decision}
+        timing = {'fixation': 300, 'stimulus': 1500, 'decision': decision}
         if delay:
             timing['delay'] = delay
         else:
@@ -739,7 +739,7 @@ def get_seq_len_and_timing(task, modifier='', seq_len_multi=5):
         raise ValueError("Task '{:}' is not supported.".format(task))
     
     timing_all = {**timing, **timing_other}
-    seq_len_base = sum({k: round(np.mean(v)) for k, v in timing_all.items()}.values()) / 100
+    seq_len_base = sum({k: round(np.mean(v)) for k, v in timing_all.items()}.values()) / dt
     seq_len = int( seq_len_base * seq_len_multi )
     
     return seq_len, timing
@@ -750,7 +750,7 @@ def get_extra_task_options(task):
     opts = dict()
 
     if task == 'PerceptualDecisionMaking-v0':
-        opts = {'cohs': [3.125, 6.25, 12.5, 25.0, 50.0, 100.0], 'sigma': 0.5}
+        opts = {'cohs': [3.125, 6.25, 12.5, 25.0, 50.0, 100.0], 'sigma': 0.75}
 
     return opts
 
@@ -907,8 +907,9 @@ def get_params_dataframe(params_dataframe: str | pd.DataFrame, rows: list = [], 
         this['task_no_modifier'], this['task_modifier'] = get_task_modifier(this.task_with_modifier)
         check_if_supported(task=this.task_no_modifier, modifier=this.task_modifier)
         this['seq_len'], timing = get_seq_len_and_timing(task=this.task_no_modifier, 
-                                                               modifier=this.task_modifier, 
-                                                               seq_len_multi=this.seq_len_multi)
+                                                         modifier=this.task_modifier, 
+                                                         seq_len_multi=this.seq_len_multi,
+                                                         dt=this.time_step)
         this['env_kwargs'] = {'dt': this.time_step, 'timing': timing}
         this['n_io'] = get_n_io(mask_weights=this.mask_weights, hidden_size=this.hidden_size)
         

@@ -93,7 +93,7 @@ def train(config):
 
     # set file paths
     outputs_path = os.path.join(outdir, file_str + '_outputs.h5')
-    models_path = os.path.join(config['outdir'], file_str + '_models.h5')
+    models_path = os.path.join(outdir, file_str + '_models.h5')
     config_path = os.path.join(outdir, file_str + '_config.npy')
 
     output_manager = ModelDataManager(outputs_path)
@@ -237,6 +237,7 @@ if __name__ == '__main__':
     print('Task modifier:    ' + task_modifier)
     print('Sequence length:  ' + str(seq_len))
     print('Task options:     ' + str(env_kwargs))
+    print('Timing:           ' + str(timing))
     
     # package all info into config
     config = {

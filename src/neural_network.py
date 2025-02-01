@@ -163,7 +163,7 @@ def rnn_custom(input: torch.Tensor,
     for t in range(seq_len):
         x_t = input_data[t]
         
-        # Calculate gates
+        # Calculate preactivation values
         preactivation = F.linear(x_t, w_ih, b_ih) + F.linear(h_n, w_hh, b_hh)
         
         # Apply activation and continuous time update
@@ -279,14 +279,13 @@ def run_training(dataset, model, optimizer, criterion, config, scheduler=None, r
     dt = config['dt']
     try:
         decision = config['env_kwargs']['timing']['decision']
-        trim = int((decision - 100) / dt)
+        trim = int((decision - dt) / dt)
     except:
         pass
     n_epochs = config['n_epochs']
     batch_size = config['batch_size']
     reg_type = config['reg_type']
     reg_weight = config['reg_weight']
-    # trim = int((decision - 100) / dt)
 
     # output container
     training_loss = []
@@ -474,7 +473,7 @@ def run_testing(dataset, model, n_trials=1000, verbose=True):
         return accuracy, inputs, labels, hidden_activity, output_activity, info
 
 
-def run_testing_rest(model, n_steps=1000, noise_mean=0.5, noise_sd=0.3, smooth_noise=0, fix_input_channels=(0,)):
+def run_testing_rest(model, n_steps=1000, noise_mean=0.5, noise_sd=0.3, smooth_noise=0, fix_input_channels=(0,), fix_input_value=1.0):
     if next(model.parameters()).is_cuda:
         device = torch.device('cuda')
     elif next(model.parameters()).is_mps:
@@ -487,7 +486,7 @@ def run_testing_rest(model, n_steps=1000, noise_mean=0.5, noise_sd=0.3, smooth_n
     inputs = np.random.normal(noise_mean, noise_sd, (n_steps,n_inputs))
     if fix_input_channels is not None:
         for i in fix_input_channels:
-            inputs[:,i] = np.ones((n_steps,))
+            inputs[:,i] = np.ones((n_steps,)) * fix_input_value
     if smooth_noise > 0:
         inputs = uniform_filter1d(inputs, size=smooth_noise, axis=0)
     ob = torch.from_numpy(inputs[:, np.newaxis, :]).type(torch.float).to(device)
@@ -908,13 +907,18 @@ def create_rnn_and_env_for_model(model_info: pd.Series, run, epoch, data_dir: st
         regularization_kernel = np.zeros((model_info.hidden_size,model_info.hidden_size))
     else:
         regularization_kernel = None
+    if 'alpha' in model_info.keys():
+        alpha = model_info.alpha
+    else:
+        alpha = 0
     rnn = RNN(input_size = input_size, 
-                hidden_size = model_info.hidden_size.item(), 
-                num_classes = n_classes, 
-                type = model_info.rnn_model, 
-                regularization_kernel = regularization_kernel,
-                input_weight_mask = np.zeros((model_info.hidden_size,input_size)), 
-                output_weight_mask = np.zeros((n_classes,model_info.hidden_size))).to(device)
+              hidden_size = model_info.hidden_size.item(), 
+              num_classes = n_classes, 
+              type = model_info.rnn_model, 
+              regularization_kernel = regularization_kernel,
+              input_weight_mask = np.zeros((model_info.hidden_size,input_size)), 
+              output_weight_mask = np.zeros((n_classes,model_info.hidden_size)),
+              alpha=alpha).to(device)
     rnn.load_state_dict(state)
     rnn.eval()
     
