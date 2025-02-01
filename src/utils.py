@@ -8,6 +8,7 @@ import pandas as pd
 import scipy.stats as stats
 import os
 import multiprocessing
+import argparse
 
 def normalize_x(x, method='rescale'):
     if method == 'rescale':
@@ -1005,3 +1006,16 @@ def select_params_dataframe_rows(df: pd.DataFrame, rows: list = [], verbose = Fa
         df2.loc[row, 'kernel_index'] = kernel_labels.index(df2.loc[row, 'kernel_label'])
     
     return df2, task_names, n_tasks, kernel_labels, n_kernels
+
+
+def parse_float_tuple(value):
+    if value.lower() == 'none':
+        return None
+    try:
+        # Split the arguments and convert to floats
+        return tuple(map(float, value.split()))
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            'Must be either "None" or space-separated float values'
+        )
+

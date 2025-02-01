@@ -178,7 +178,8 @@ def get_args():
     parser.add_argument('--n_epochs', type=int, default=5000)
     parser.add_argument('--epoch_log', type=int, default=100)
     parser.add_argument('--mask_weights', type=str, default='True')
-    parser.add_argument('--init_rnn_weights', type=lambda s: None if s.lower() == 'none' else tuple(map(float, s.split(','))), nargs='?', default=None)
+    # parser.add_argument('--init_rnn_weights', type=lambda s: None if s.lower() == 'none' else tuple(map(float, s.split(','))), nargs=1, default=None)
+    parser.add_argument('--init_rnn_weights', type=utils.parse_float_tuple, nargs='+', default=None)
  
     # regularization parameters
     parser.add_argument('--reg_type', type=str, default='l2')
