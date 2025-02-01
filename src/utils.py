@@ -1008,12 +1008,13 @@ def select_params_dataframe_rows(df: pd.DataFrame, rows: list = [], verbose = Fa
     return df2, task_names, n_tasks, kernel_labels, n_kernels
 
 
-def parse_float_tuple(value):
-    if value.lower() == 'none':
+def parse_float_tuple(values):
+    # Handle None case
+    if len(values) == 1 and values[0].lower() == 'none':
         return None
     try:
-        # Split the arguments and convert to floats
-        return tuple(map(float, value.split()))
+        # Convert all values to floats directly
+        return tuple(float(x) for x in values)
     except ValueError:
         raise argparse.ArgumentTypeError(
             'Must be either "None" or space-separated float values'
