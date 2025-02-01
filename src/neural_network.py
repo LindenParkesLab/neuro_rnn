@@ -22,9 +22,19 @@ from src.utils import fix_labels, get_n_gpu
 import neurogym as ngym
 
 class RNN(nn.Module):
-    def __init__(self, input_size, hidden_size, num_classes,
-                 type='rnn-tanh', regularization_kernel=None, input_weight_mask=None, output_weight_mask=None,
-                 train_ih=True, train_hh=True, train_ho=True, alpha=0.0):
+    def __init__(self, 
+                 input_size: int, 
+                 hidden_size: int, 
+                 num_classes: int, 
+                 type='rnn-tanh', 
+                 regularization_kernel=None, 
+                 input_weight_mask=None, 
+                 output_weight_mask=None, 
+                 train_ih=True, 
+                 train_hh=True, 
+                 train_ho=True, 
+                 alpha=0.0, 
+                 init_rnn_weights: Union[None, tuple[float, float]] = None):
         super(RNN, self).__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
@@ -35,6 +45,9 @@ class RNN(nn.Module):
 
         if type.replace('rnn-','') in ['tanh','relu','retanh','postanh','sigmoid']:
             self.rnn = CustomRNN(input_size, hidden_size, 1, nonlinearity=type.replace('rnn-',''), alpha=alpha)
+            if init_rnn_weights is not None:
+                nn.init.uniform_(self.rnn.weight_hh_l0, init_rnn_weights[0], init_rnn_weights[1])
+                # nn.init.uniform_(self.rnn.bias_hh_l0, init_rnn_weights[0], init_rnn_weights[1])
         elif type == 'lstm':
             self.rnn = nn.LSTM(input_size, hidden_size, 1)
         elif type == 'gru':
@@ -544,7 +557,8 @@ def train_helper(run, config):
                 regularization_kernel=config['regularization_kernel'], 
                 input_weight_mask=input_weight_mask, 
                 output_weight_mask=output_weight_mask,
-                alpha=config['alpha'])
+                alpha=config['alpha'],
+                init_rnn_weights=config['init_rnn_weights'])
     # if config['n_gpu'] > 1:
     #     model = nn.DataParallel(model)
     model.to(config['device'])
