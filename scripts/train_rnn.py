@@ -234,7 +234,7 @@ if __name__ == '__main__':
     task_with_modifier = args.task
     task_no_modifier, task_modifier = utils.get_task_modifier(task_with_modifier)
     utils.check_if_supported(task=task_no_modifier, modifier=task_modifier)
-    seq_len, timing = utils.get_seq_len_and_timing(task=task_no_modifier, modifier=task_modifier, seq_len_multi=args.seq_len_multi)
+    seq_len, timing = utils.get_seq_len_and_timing(task=task_no_modifier, modifier=task_modifier, seq_len_multi=args.seq_len_multi, dt=args.dt)
     env_kwargs = {'dt': args.dt, 'timing': timing}
     extra_kwargs = utils.get_extra_task_options(task_no_modifier)
     env_kwargs.update(extra_kwargs)
