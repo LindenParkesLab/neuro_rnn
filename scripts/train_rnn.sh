@@ -7,7 +7,7 @@ if [ $(uname -s) == "Darwin" ]; then
   if [ $USER == "ahmad" ]; then
     scriptsdir='/Users/ahmad/software/snaplab_github/neuro_rnn/scripts'
     datadir='/Users/ahmad/software/snaplab_github/neuro_rnn/data'
-    outdir='/Users/ahmad/data/rutgers/neuro_rnn/results/pytorch/model'
+    outdir='/Users/ahmad/data/rutgers/neuro_rnn/results/pytorch/model/20250430'
   fi
 else
   if [ $USER == "lindenmp" ]; then
@@ -17,7 +17,7 @@ else
   elif [ $USER == "ab2792" ]; then
     scriptsdir='/home/ab2792/software/snaplab_github/neuro_rnn/scripts'
     datadir='/home/ab2792/software/snaplab_github/neuro_rnn/data'
-    outdir='/home/ab2792/data/neuro_rnn/results/pytorch/model/20250107'
+    outdir='/home/ab2792/data/neuro_rnn/results/pytorch/model/20250203'
   fi
 fi
 
@@ -26,7 +26,7 @@ source ~/.bashrc
 conda activate neuro_rnn
 
 # path to inputs csv
-params_file="$datadir/model_params_gng_pdm_100runs.csv" # < < < < < < < < < < < < < < < < SELECT MODELS FILE HERE
+params_file="$datadir/model_params_gng_pdm_dms.csv" # < < < < < < < < < < < < < < < < SELECT MODELS FILE HERE
 tmp_params_file="/tmp/$(basename ${params_file%.csv})_${RANDOM}${RANDOM}.csv"
 cp "$params_file" "$tmp_params_file" 
 params_file="$tmp_params_file"
@@ -38,15 +38,19 @@ params_file="$tmp_params_file"
 
 # rnn log settings
 epoch_log=100
+init_rnn_weights_min="-0.01"
+init_rnn_weights_max="0.01"
 
 # device settings
-device='cuda' # 'cpu' or 'cuda'
-n_threads=1
+device='cpu' # 'cpu' or 'cuda' or 'mps'
+n_threads=8
 if [ ${device} == 'cpu' ] && [ ${n_threads} -gt 1 ]; then
   echo "suspending all cuda devices"
   export CUDA_VISIBLE_DEVICES=""
   export OMP_NUM_THREADS=${n_threads}
   export MKL_NUM_THREADS=${n_threads}
+elif [ ${device} != 'cpu' ]; then
+  n_threads=1
 fi
 
 # are we running all models?
@@ -180,6 +184,7 @@ col_alpha=$(get_col_num "$line" 'alpha')
       --kernel_normalization ${kernel_normalization} \
       --dt ${time_step} \
       --alpha ${alpha} \
+      --init_rnn_weights "${init_rnn_weights_min}" "${init_rnn_weights_max}" \
       --device ${device} \
       --n_threads ${n_threads}  2>&1 # capture stdout and stderr 
 

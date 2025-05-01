@@ -11,20 +11,101 @@ import multiprocessing
 import argparse
 
 def normalize_x(x, method='rescale'):
-    if method == 'rescale':
-        y = (x - np.min(x)) / (np.max(x) - np.min(x))
-    elif method == 'mean':
-        # x = distance.squareform( normalize_x(x) )
-        # y = distance.squareform( x + 1 - np.mean(x) )
-        x = distance.squareform(x)
-        y = distance.squareform( x / np.mean(x) )
-    elif method == 'uniform':
-        x = distance.squareform(x)
-        y = normalize_x( distance.squareform( (stats.rankdata(x)-1) / (len(x)-1) ) ) * 2
-        for j in np.arange(y.shape[0]):
-            y[j,j] = 0
+    """
+    Normalize a distance matrix using various methods.
     
+    Parameters
+    ----------
+    x : numpy.ndarray
+        Square distance matrix to normalize, which must be symmetric with zeros on the diagonal
+        
+    method : str, optional
+        Normalization method to use. Options include:
+        - 'rescale': Rescales values to [0.5, 1.5] range
+        - 'mean': Divides by mean value 
+        - 'meansq': Divides by mean of squared values 
+        - 'mean_std': Scales to a mean of 1 and std of 0.3 
+        - 'uniform': Converts to uniform distribution in the [0.5, 1.5] range
+        
+        Default is 'rescale'
+    
+    Returns
+    -------
+    numpy.ndarray
+        Normalized square distance matrix with zeros on diagonal
+    """
+    # Convert to condensed vector form
+    x = distance.squareform(x)
+    
+    if method == 'rescale':
+        min_val, max_val = np.min(x), np.max(x)
+        if max_val > min_val:
+            x = (x - min_val) / (max_val - min_val) + 0.5
+    elif method == 'mean':
+        mean_val = np.mean(x)
+        if mean_val != 0: 
+            x = x / mean_val
+    elif method == 'meansq':
+        mean_sq = np.mean(x**2)
+        if mean_sq != 0:
+            x = (x**2) / mean_sq
+    elif method == 'mean_std':
+        x = x - np.mean(x)
+        std_val = np.std(x)
+        if std_val != 0: 
+            x = x / std_val * 0.33 + 1
+            x = np.maximum(x,0)
+    elif method == 'uniform':
+        ranks = stats.rankdata(x) - 1
+        x = ranks / (len(x) - 1) + 0.5
+    
+    # Convert back to square matrix
+    y = distance.squareform(x)
     return y
+
+
+def load_embedding(kernel_type=None, datadir=None, hidden_size=100, kernel_normalization='rescale'):
+    if kernel_type is None:
+        regularization_kernel = None
+        distance_matrix = None
+    elif kernel_type == 'euclidean':
+        centroids = pd.read_csv(os.path.join(datadir, 'schaefer{0}_centroids.csv'.format(hidden_size * 2)))
+        centroids = centroids[:hidden_size] 
+        centroids.set_index("ROI Name", inplace=True)
+        distance_matrix = distance.pdist(centroids, "euclidean") 
+        distance_matrix = distance.squareform(distance_matrix) 
+        regularization_kernel = normalize_x(distance_matrix, kernel_normalization)
+    elif kernel_type == 'sphere_euclidean':
+        centroids = np.loadtxt(os.path.join(datadir, 'schaefer{0}_spherical_euclidean.txt'.format(hidden_size * 2)))
+        distance_matrix = get_brainmap_distance(centroids)
+        regularization_kernel = normalize_x(distance_matrix, kernel_normalization)
+    elif kernel_type == 'sa_axis':
+        brain_map = np.load(os.path.join(datadir, 'schaefer{0}_sa-axis.npy'.format(hidden_size * 2)))
+        brain_map = brain_map[:hidden_size] 
+        distance_matrix = get_brainmap_distance(brain_map=brain_map)
+        regularization_kernel = normalize_x(distance_matrix, kernel_normalization)
+    elif kernel_type == 'ut_axis':
+        brain_map = np.load(os.path.join(datadir, 'schaefer{0}_ut-axis.npy'.format(hidden_size * 2)))
+        brain_map = brain_map[:hidden_size] 
+        distance_matrix = get_brainmap_distance(brain_map=brain_map)
+        regularization_kernel = normalize_x(distance_matrix, kernel_normalization)
+    elif kernel_type == 'sf_axis':
+        brain_map = np.load(os.path.join(datadir, 'schaefer{0}_cyto.npy'.format(hidden_size * 2)))
+        brain_map = brain_map[:hidden_size] 
+        distance_matrix = get_brainmap_distance(brain_map=brain_map)
+        regularization_kernel = normalize_x(distance_matrix, kernel_normalization)
+    elif kernel_type == 'struct_conn':
+        conn_reg_mat = np.load(os.path.join(datadir, 'schaefer{0}_structural_conn_kernel.npy'.format(hidden_size * 2)))
+        distance_matrix = conn_reg_mat[:hidden_size, :][:, :hidden_size] 
+        regularization_kernel = normalize_x(distance_matrix, kernel_normalization)
+    elif kernel_type == 'rand_uniform':
+        distance_matrix = distance.squareform(np.random.uniform(0,1,np.int16(hidden_size*(hidden_size-1)/2)))
+        regularization_kernel = normalize_x(distance_matrix, kernel_normalization)
+    elif kernel_type == 'rand_normal':
+        distance_matrix = distance.squareform(np.random.normal(0.5,0.15,np.int16(hidden_size*(hidden_size-1)/2)))
+        regularization_kernel = normalize_x(distance_matrix, kernel_normalization)
+        
+    return regularization_kernel, distance_matrix
 
 
 def get_kernel(hidden_size=200, location=0, kernel_std_frac=0.2):
@@ -310,16 +391,13 @@ def get_file_str(config):
     alpha = config['alpha']
     
     # create name string
-    file_str = 'task-{:}-{:}_' \
-                'model-{:}-{:}-{:}-{:}-{:}-{:}_' \
-                'wmask-{:}-{:}_' \
-                'reg-{:}-{:}-{:}-{:}_' \
-                'alpha-{:}' \
-        .format(task, seq_len,
-                rnn_model, hidden_size, batch_size, lr, n_runs, n_epochs,
-                mask_weights, n_io,
-                reg_type, reg_weight, kernel_type, kernel_normalization,
-                alpha)
+    file_str = f'{task}-{seq_len}-' \
+               f'{rnn_model}-{hidden_size}-{batch_size}-{lr}-' \
+               f'{n_runs}-{n_epochs}-' \
+               f'{mask_weights}-{n_io}-' \
+               f'{reg_type}-{reg_weight}-' \
+               f'{kernel_type}-{kernel_normalization}-' \
+               f'{alpha}'
 
     return file_str
 
@@ -492,6 +570,8 @@ def get_n_gpu():
             n_gpu = len(os.environ['CUDA_VISIBLE_DEVICES'].split(','))
         else:
             n_gpu = 1
+    elif torch.backends.mps.is_available():
+        n_gpu = 1
     else:
         n_gpu = 0
     return n_gpu
@@ -499,10 +579,24 @@ def get_n_gpu():
 
 def get_device(device_opt=None, n_devices=None):
     cuda_avail = torch.cuda.is_available()
+    mps_avail = torch.backends.mps.is_available()
     if device_opt == 'None':
-        device = torch.device('cuda' if cuda_avail else 'cpu')
+        if cuda_avail:
+            torch.device('cuda')
+        elif mps_avail:
+            torch.device('mps')
+        else:
+            torch.device('cpu')
     else:
-        if device_opt == 'cuda' or device_opt == 'gpu':
+        if device_opt == 'gpu':
+            if cuda_avail:
+                device_opt = 'cuda'
+            elif mps_avail:
+                device_opt = 'mps'
+            else:
+                device_opt = 'cpu'
+                print('No GPU device detected!')
+        if device_opt == 'cuda':
             if cuda_avail:
                 if n_devices is not None:
                     n_cuda = np.min((torch.cuda.device_count(),n_devices))
@@ -511,11 +605,16 @@ def get_device(device_opt=None, n_devices=None):
                     os.environ['CUDA_VISIBLE_DEVICES'] = device_str
                 device = torch.device('cuda')
             else:
-                print('CUDA not availble!')
+                print('CUDA not available!')
                 device = torch.device('cpu')
-        elif device_opt == 'cpu':
+        if device_opt == 'mps':
+            if mps_avail:
+                device = torch.device('mps')
+            else:
+                print('MPS not available!')
+        if device_opt == 'cpu':
             device = torch.device('cpu')
-        else:
+        if device_opt not in ['cpu','gpu','cuda','mps']:
             print('Device choice not recognized!')
             device = torch.device('cpu')
     print('\nDevice: ' + device.type + '.\n')
@@ -613,7 +712,7 @@ def check_if_supported(task, modifier):
     return True
 
 
-def delay_dist(delay_opt=(400,200)):
+def delay_dist(delay_opt=(400,200), dt=100):
     
     if isinstance(delay_opt,int):
         delay = delay_opt
@@ -633,7 +732,7 @@ def delay_dist(delay_opt=(400,200)):
     else:
         a = delay-plus_minus
     b = delay+plus_minus+1
-    c = np.arange(a, b, 100)
+    c = np.arange(a, b, dt)
     d = tuple(c.tolist())
     # if len(c) == 1:
     #     d = c[0]
@@ -647,44 +746,45 @@ def get_seq_len_and_timing(task, modifier='', seq_len_multi=5, dt=100):
     
     delay = ()
     decision = 300
+    fixation = 200
     delay_opt, decision_opt = parse_task_modifier(modifier)
     if decision_opt:
         decision = decision_opt
     if delay_opt:
-        delay = delay_dist(delay_opt)
+        delay = delay_dist(delay_opt, dt)
     
     timing_other = {} # other timing arguments used in seq_len calculation, not passed to ngym
     
     if task == 'ContextDecisionMaking-v0':
-        timing = {'fixation': 300, 'stimulus': 1000, 'decision': decision}
+        timing = {'fixation': fixation, 'stimulus': 1000, 'decision': decision}
         if delay:
             timing['delay'] = delay
         else:
             timing_other['delay'] = 600
     
     elif task == 'DelayComparison-v0':
-        timing = {'fixation': 300, 'stimulus1': 500, 'stimulus2': 500, 'decision': decision}
+        timing = {'fixation': fixation, 'stimulus1': 500, 'stimulus2': 500, 'decision': decision}
         if delay:
             timing['delay'] = delay
         else:
             timing_other['delay'] = 1000
     
     elif task == 'DelayMatchCategory-v0':
-        timing = {'fixation': 300, 'sample': 700, 'test': 700}
+        timing = {'fixation': fixation, 'sample': 700, 'test': 700}
         if delay:
             timing['first_delay'] = delay
         else:
             timing_other['first_delay'] = 1000
     
     elif task == 'DelayMatchSample-v0':
-        timing = {'fixation': 300, 'sample': 500, 'test': 500, 'decision': decision}
+        timing = {'fixation': fixation, 'sample': 500, 'test': 500, 'decision': decision}
         if delay:
             timing['delay'] = delay
         else:
             timing_other['delay'] = 1000
     
     elif task == 'DelayMatchSampleDistractor1D-v0':
-        timing = {'fixation': 300, 'sample': 500, 'test1': 500, 'test2': 500, 'test3': 500 }
+        timing = {'fixation': fixation, 'sample': 500, 'test1': 500, 'test2': 500, 'test3': 500 }
         if delay:
             timing['delay1'] = delay
             timing['delay2'] = delay
@@ -695,7 +795,7 @@ def get_seq_len_and_timing(task, modifier='', seq_len_multi=5, dt=100):
             timing_other['delay3'] = 1000
     
     elif task == 'DelayPairedAssociation-v0':
-        timing = {'fixation': 300, 'stim1': 1000, 'stim2': 1000, 'decision': decision}
+        timing = {'fixation': fixation, 'stim1': 1000, 'stim2': 1000, 'decision': decision}
         if delay:
             timing['delay_btw_stim'] = delay
             timing['delay_aft_stim'] = delay
@@ -704,7 +804,7 @@ def get_seq_len_and_timing(task, modifier='', seq_len_multi=5, dt=100):
             timing_other['delay_aft_stim'] = 1000
     
     elif task == 'DualDelayMatchSample-v0':
-        timing = {'fixation': 300, 'sample': 500, 'cue1': 500, 'test1': 500, 'cue2': 500, 'test2': 500}
+        timing = {'fixation': fixation, 'sample': 500, 'cue1': 500, 'test1': 500, 'cue2': 500, 'test2': 500}
         if delay:
             timing['delay1'] = delay
             timing['delay2'] = delay
@@ -713,24 +813,24 @@ def get_seq_len_and_timing(task, modifier='', seq_len_multi=5, dt=100):
             timing_other['delay2'] = 500
     
     elif task == 'GoNogo-v0':
-        timing = {'fixation': 300, 'stimulus': 500, 'decision': decision}
+        timing = {'fixation': fixation, 'stimulus': 500, 'decision': decision}
         if delay:
             timing['delay'] = delay
         else:
             timing_other['delay'] = 500
     
     elif task == 'MultiSensoryIntegration-v0':
-        timing = {'fixation': 300, 'stimulus': 800, 'decision': decision}
+        timing = {'fixation': fixation, 'stimulus': 800, 'decision': decision}
     
     elif task == 'PerceptualDecisionMaking-v0':
-        timing = {'fixation': 300, 'stimulus': 1500, 'decision': decision}
+        timing = {'fixation': fixation, 'stimulus': 1500, 'decision': decision}
         if delay:
             timing['delay'] = delay
         else:
             timing_other['delay'] = 0
     
     elif task == 'PerceptualDecisionMakingDelayResponse-v0':
-        timing = {'fixation': 300, 'stimulus': 1200, 'decision': decision}
+        timing = {'fixation': fixation, 'stimulus': 1200, 'decision': decision}
         if delay:
             timing['delay'] = delay
         else:
@@ -751,7 +851,7 @@ def get_extra_task_options(task):
     opts = dict()
 
     if task == 'PerceptualDecisionMaking-v0':
-        opts = {'cohs': [3.125, 6.25, 12.5, 25.0, 50.0, 100.0], 'sigma': 0.75}
+        opts = {'cohs': [3.125, 6.25, 12.5, 25.0, 50.0, 100.0], 'sigma': 0.67}
 
     return opts
 
@@ -834,6 +934,12 @@ def get_kernel_label(kernel_type='None', mask_weights=False, reg_weight=0.0):
         kernel_label = m + 'Eucl.'
     elif kernel_type == 'struct_conn':
         kernel_label = m + 'SC'
+    elif kernel_type == 'sphere_euclidean':
+        kernel_label = m + 'Sph. Eucl.'
+    elif kernel_type == 'rand_uniform':
+        kernel_label = m + 'Rand. Uniform'
+    elif kernel_type == 'rand_normal':
+        kernel_label = m + 'Rand. Normal'
     elif kernel_type == 'None':
         if reg_weight == 0:
             r = 'Unreg. '

@@ -132,77 +132,147 @@ class RNN(nn.Module):
         return action_pred, hidden
 
 
-def rnn_custom(input: torch.Tensor, 
-                hx: torch.Tensor, 
-                params: torch.Tensor,
-                has_biases: bool,
-                num_layers: int,
-                dropout: float,
-                train: bool,
-                bidirectional: bool,
-                batch_first: bool,
-                nonlinearity: str = 'postanh',
-                alpha: float = 0) -> Tuple[torch.Tensor, torch.Tensor]:
-    """
-    Implementation of RNN cell with custom activation, following PyTorch's RNN interface.
-    This function broadly mimics the behavior of torch._VF.rnn_tanh and torch._VF.rnn_relu.
+# def rnn_custom(input: torch.Tensor, 
+#                 hx: torch.Tensor, 
+#                 params: torch.Tensor,
+#                 has_biases: bool,
+#                 num_layers: int,
+#                 dropout: float,
+#                 train: bool,
+#                 bidirectional: bool,
+#                 batch_first: bool,
+#                 nonlinearity: str = 'postanh',
+#                 alpha: float = 0) -> Tuple[torch.Tensor, torch.Tensor]:
+#     """
+#     Implementation of RNN cell with custom activation, following PyTorch's RNN interface.
+#     This function broadly mimics the behavior of torch._VF.rnn_tanh and torch._VF.rnn_relu.
     
-    - 'nonliearity' can be: 'tanh', 'relu', 'retanh', 'postanh', 'sigmoid'.
-    - 'alpha' is a 'memory' parameter: alpha = 0 (default) yields standard RNN behavior, 
-    and larger values closer to 1 cause the RNN to relie more on its previous states with each update.
-    The update equation is: r(t+1) = a*r(t) + (1-a)*f(Ar(t) + Bu(t) + d).
-    """
+#     - 'nonliearity' can be: 'tanh', 'relu', 'retanh', 'postanh', 'sigmoid'.
+#     - 'alpha' is a 'memory' parameter: alpha = 0 (default) yields standard RNN behavior, 
+#     and larger values closer to 1 cause the RNN to relie more on its previous states with each update.
+#     The update equation is: r(t+1) = a*r(t) + (1-a)*f(Ar(t) + Bu(t) + d).
+#     """
+#     if has_biases:
+#         w_ih, w_hh, b_ih, b_hh = params
+#     else:
+#         w_ih, w_hh = params
+#         b_ih = b_hh = None
+
+#     if batch_first and not isinstance(input, PackedSequence):
+#         input = input.transpose(0, 1)  # Convert to seq_len, batch, input_size
+
+#     if isinstance(input, PackedSequence):
+#         input_data = input.data
+#     else:
+#         input_data = input
+
+#     seq_len = input_data.size(0)
+#     batch_size = input_data.size(1)
+#     hidden_size = hx.size(-1)
+
+#     output = []
+#     h_n = hx  # Use this to store the final hidden state
+
+#     for t in range(seq_len):
+#         x_t = input_data[t]
+        
+#         # Calculate preactivation values
+#         preactivation = F.linear(x_t, w_ih, b_ih) + F.linear(h_n, w_hh, b_hh)
+        
+#         # Apply activation and continuous time update
+#         if nonlinearity == 'tanh':
+#             h_n = alpha * h_n + (1 - alpha) * torch.tanh(preactivation)
+#         elif nonlinearity == 'relu':
+#             h_n = alpha * h_n + (1 - alpha) * torch.relu(preactivation)
+#         elif nonlinearity == 'postanh':
+#             h_n = alpha * h_n + (1 - alpha) * 0.5*(torch.tanh(2*preactivation)+1)
+#         elif nonlinearity == 'retanh':
+#             h_n = alpha * h_n + (1 - alpha) * torch.relu(torch.tanh(preactivation))
+#         elif nonlinearity == 'sigmoid':
+#             h_n = alpha * h_n + (1 - alpha) * torch.sigmoid(preactivation)
+        
+#         # Ensure h_n maintains the correct batch size
+#         h_n = h_n.view(batch_size, -1)
+        
+#         output.append(h_n)
+    
+#     # Stack sequence outputs
+#     output = torch.stack(output, dim=0)  # Shape: [seq_len, batch, hidden]
+    
+#     if batch_first and not isinstance(input, PackedSequence):
+#         output = output.transpose(0, 1)  # Convert to batch, seq_len, hidden
+    
+#     return output, h_n
+
+# TorchScript requires all branches to be statically typed.
+# We assume that if has_biases is True then params is a tuple of 4 Tensors,
+# otherwise params is a tuple of 2 Tensors.
+@torch.jit.script
+def rnn_custom(input: torch.Tensor, 
+               hx: torch.Tensor, 
+               params: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
+               has_biases: bool,
+               num_layers: int,
+               dropout: float,
+               train: bool,
+               bidirectional: bool,
+               batch_first: bool,
+               nonlinearity: str = "postanh",
+               alpha: float = 0.0) -> Tuple[torch.Tensor, torch.Tensor]:
+    # For TorchScript, we only support input as a Tensor.
+    # If batch_first is True, convert to [seq_len, batch, input_size]
+    if batch_first:
+        input = input.transpose(0, 1)
+        
+    seq_len = input.size(0)
+    batch_size = input.size(1)
+    # hidden_size is inferred from hx
+    # (num_layers, batch, hidden_size) or (batch, hidden_size); here we assume hx is [batch, hidden_size]
+    output: List[torch.Tensor] = []
+    h_n = hx
+
+    # Extract parameters based on has_biases
     if has_biases:
-        w_ih, w_hh, b_ih, b_hh = params
+        w_ih = params[0]
+        w_hh = params[1]
+        b_ih = params[2]
+        b_hh = params[3]
     else:
-        w_ih, w_hh = params
-        b_ih = b_hh = None
-
-    if batch_first and not isinstance(input, PackedSequence):
-        input = input.transpose(0, 1)  # Convert to seq_len, batch, input_size
-
-    if isinstance(input, PackedSequence):
-        input_data = input.data
-    else:
-        input_data = input
-
-    seq_len = input_data.size(0)
-    batch_size = input_data.size(1)
-    hidden_size = hx.size(-1)
-
-    output = []
-    h_n = hx  # Use this to store the final hidden state
+        w_ih = params[0]
+        w_hh = params[1]
+        b_ih = None
+        b_hh = None
 
     for t in range(seq_len):
-        x_t = input_data[t]
-        
-        # Calculate preactivation values
+        x_t = input[t]
         preactivation = F.linear(x_t, w_ih, b_ih) + F.linear(h_n, w_hh, b_hh)
         
-        # Apply activation and continuous time update
-        if nonlinearity == 'tanh':
+        if nonlinearity == "tanh":
             h_n = alpha * h_n + (1 - alpha) * torch.tanh(preactivation)
-        elif nonlinearity == 'relu':
+        elif nonlinearity == "relu":
             h_n = alpha * h_n + (1 - alpha) * torch.relu(preactivation)
-        elif nonlinearity == 'postanh':
-            h_n = alpha * h_n + (1 - alpha) * 0.5*(torch.tanh(2*preactivation)+1)
-        elif nonlinearity == 'retanh':
+        elif nonlinearity == "postanh":
+            h_n = alpha * h_n + (1 - alpha) * (0.5 * (torch.tanh(2 * preactivation) + 1))
+        elif nonlinearity == "retanh":
             h_n = alpha * h_n + (1 - alpha) * torch.relu(torch.tanh(preactivation))
-        elif nonlinearity == 'sigmoid':
+        elif nonlinearity == "sigmoid":
             h_n = alpha * h_n + (1 - alpha) * torch.sigmoid(preactivation)
-        
-        # Ensure h_n maintains the correct batch size
+        else:
+            # Fallback to tanh if nonlinearity not recognized.
+            h_n = alpha * h_n + (1 - alpha) * torch.tanh(preactivation)
+            
+        # Ensure h_n maintains the shape [batch_size, hidden_size]
         h_n = h_n.view(batch_size, -1)
-        
         output.append(h_n)
     
-    # Stack sequence outputs
-    output = torch.stack(output, dim=0)  # Shape: [seq_len, batch, hidden]
+    # Stack outputs into a tensor of shape [seq_len, batch, hidden_size]
+    out_tensor = torch.stack(output, 0)
     
-    if batch_first and not isinstance(input, PackedSequence):
-        output = output.transpose(0, 1)  # Convert to batch, seq_len, hidden
+    # Convert back if batch_first is True
+    if batch_first:
+        out_tensor = out_tensor.transpose(0, 1)
     
-    return output, h_n
+    return out_tensor, h_n
 
 
 class CustomRNN(nn.RNNBase):
@@ -548,6 +618,8 @@ def train_helper(run, config):
     if config['device'].type == 'cuda':
         torch.cuda.manual_seed(int(run))
         torch.cuda.manual_seed_all(int(run))
+    if config['device'].type == 'mps':
+        torch.mps.manual_seed(int(run))
     
     # initialize the model
     model = RNN(input_size=input_size, 

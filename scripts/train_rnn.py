@@ -52,37 +52,10 @@ def train(config):
     config['n_io'] = n_io
 
     # setup regularization kernel
-    if kernel_type is None:
-        # no distance penalty
-        regularization_kernel = None
-        distance_matrix = None
-    elif kernel_type == 'euclidean':
-        # static distance matrix for regularization
-        centroids = pd.read_csv(os.path.join(datadir, 'schaefer{0}_centroids.csv'.format(hidden_size * 2)))
-        centroids = centroids[:hidden_size]  # pull out left hemisphere
-        centroids.set_index("ROI Name", inplace=True)
-        distance_matrix = distance.pdist(centroids, "euclidean")  # get euclidean distances between nodes
-        distance_matrix = distance.squareform(distance_matrix)  # reshape to square matrix
-        regularization_kernel = utils.normalize_x(distance_matrix, kernel_normalization)
-    elif kernel_type == 'sa_axis':
-        brain_map = np.load(os.path.join(datadir, 'schaefer{0}_sa-axis.npy'.format(hidden_size * 2)))
-        brain_map = brain_map[:hidden_size]  # pull out left hemisphere
-        distance_matrix = utils.get_brainmap_distance(brain_map=brain_map)
-        regularization_kernel = utils.normalize_x(distance_matrix, kernel_normalization)
-    elif kernel_type == 'ut_axis':
-        brain_map = np.load(os.path.join(datadir, 'schaefer{0}_ut-axis.npy'.format(hidden_size * 2)))
-        brain_map = brain_map[:hidden_size]  # pull out left hemisphere
-        distance_matrix = utils.get_brainmap_distance(brain_map=brain_map)
-        regularization_kernel = utils.normalize_x(distance_matrix, kernel_normalization)
-    elif kernel_type == 'sf_axis':
-        brain_map = np.load(os.path.join(datadir, 'schaefer{0}_cyto.npy'.format(hidden_size * 2)))
-        brain_map = brain_map[:hidden_size]  # pull out left hemisphere
-        distance_matrix = utils.get_brainmap_distance(brain_map=brain_map)
-        regularization_kernel = utils.normalize_x(distance_matrix, kernel_normalization)
-    elif kernel_type == 'struct_conn':
-        conn_reg_mat = np.load(os.path.join(datadir, 'schaefer{0}_structural_conn_kernel.npy'.format(hidden_size * 2)))
-        distance_matrix = conn_reg_mat[:hidden_size, :][:, :hidden_size]  # pull out left hemisphere
-        regularization_kernel = utils.normalize_x(distance_matrix, kernel_normalization)
+    regularization_kernel, distance_matrix = utils.load_embedding(kernel_type=kernel_type,
+                                                                  datadir=datadir,
+                                                                  hidden_size=hidden_size,
+                                                                  kernel_normalization=kernel_normalization)
     config['distance_matrix'] = distance_matrix
     config['regularization_kernel'] = regularization_kernel
 
@@ -120,7 +93,7 @@ def train(config):
     if not all_done:
         # prepare partial function for multiprocessing
         partial_train_helper = partial(train_helper, config=config)
-        if device.type == 'cuda' or ( device.type == 'cpu' and n_threads == 1 ):
+        if device.type == 'cuda' or device.type == 'mps' or ( device.type == 'cpu' and n_threads == 1 ):
             print(f'running in serial on {device.type}...')
             if device.type == 'cuda':
                 print(f"each run will use {config['n_gpu']} gpus...")
@@ -212,8 +185,11 @@ if __name__ == '__main__':
         n_threads = args.n_threads
         device = utils.get_device(device_opt=args.device, n_devices=n_threads)
         n_gpu = utils.get_n_gpu()
-        for ii in range(n_gpu):
-            print(f'gpu {ii} -- {torch.cuda.get_device_name(ii)}')
+        try:
+            for ii in range(n_gpu):
+                print(f'gpu {ii} -- {torch.cuda.get_device_name(ii)}')
+        except:
+            print(f'gpu -- {device}')
 
     # kernel and mask
     if args.kernel_type == 'None':
@@ -244,6 +220,7 @@ if __name__ == '__main__':
     print('Sequence length:  ' + str(seq_len))
     print('Task options:     ' + str(env_kwargs))
     print('Timing:           ' + str(timing))
+    print('Alpha:            ' + str(args.alpha))
     
     # package all info into config
     config = {
