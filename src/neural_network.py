@@ -207,6 +207,12 @@ class RNN(nn.Module):
 # TorchScript requires all branches to be statically typed.
 # We assume that if has_biases is True then params is a tuple of 4 Tensors,
 # otherwise params is a tuple of 2 Tensors.
+
+@torch.jit.script
+def postanh(x):
+    return 0.5 * (torch.tanh(2 * x) + 1)
+
+
 @torch.jit.script
 def rnn_custom(input: torch.Tensor, 
                hx: torch.Tensor, 
@@ -247,19 +253,18 @@ def rnn_custom(input: torch.Tensor,
         x_t = input[t]
         preactivation = F.linear(x_t, w_ih, b_ih) + F.linear(h_n, w_hh, b_hh)
         
+        # The calculation of the output hidden state can be performed as an interpolation 
+        # between h_(t-1) and h_t with weight alpha, using torch.lerp.
         if nonlinearity == "tanh":
-            h_n = alpha * h_n + (1 - alpha) * torch.tanh(preactivation)
+            h_n = torch.lerp(torch.tanh(preactivation), h_n, alpha)
         elif nonlinearity == "relu":
-            h_n = alpha * h_n + (1 - alpha) * torch.relu(preactivation)
+            h_n = torch.lerp(torch.relu(preactivation), h_n, alpha)
         elif nonlinearity == "postanh":
-            h_n = alpha * h_n + (1 - alpha) * (0.5 * (torch.tanh(2 * preactivation) + 1))
+            h_n = torch.lerp(postanh(preactivation), h_n, alpha)
         elif nonlinearity == "retanh":
-            h_n = alpha * h_n + (1 - alpha) * torch.relu(torch.tanh(preactivation))
+            h_n = torch.lerp(torch.relu(torch.tanh(preactivation)), h_n, alpha)
         elif nonlinearity == "sigmoid":
-            h_n = alpha * h_n + (1 - alpha) * torch.sigmoid(preactivation)
-        else:
-            # Fallback to tanh if nonlinearity not recognized.
-            h_n = alpha * h_n + (1 - alpha) * torch.tanh(preactivation)
+            h_n = torch.lerp(torch.sigmoid(preactivation), h_n, alpha)
             
         # Ensure h_n maintains the shape [batch_size, hidden_size]
         h_n = h_n.view(batch_size, -1)
@@ -514,7 +519,7 @@ def run_testing(dataset, model, n_trials=1000, verbose=True):
     info = pd.DataFrame()
     with torch.no_grad():
         for trial in range(n_trials):
-            env.reset(seed=int(trial))
+            env.reset(seed=int(3*trial))
             env.new_trial()
             ob, gt = env.ob, env.gt
             # print(ob.shape, gt.shape)
@@ -533,7 +538,8 @@ def run_testing(dataset, model, n_trials=1000, verbose=True):
 
             # Compute performance
             choice = np.argmax(action_pred[-1, 0, :])
-            correct = choice == gt[-1]
+            # correct = choice == gt[-1]
+            correct = trial_accuracy(action_pred, gt)
 
             # Log stimulus period activity
             hidden_activity.append(np.array(hidden)[:, 0, :])
@@ -554,6 +560,34 @@ def run_testing(dataset, model, n_trials=1000, verbose=True):
         # output_activity = np.array(output_activity)
 
         return accuracy, inputs, labels, hidden_activity, output_activity, info
+
+
+def trial_accuracy(outputs, labels):
+    
+    # get model choice
+    choice = np.argmax(outputs[:,0,:], axis=1)
+    
+    # define response window and find where model responded
+    can_respond = labels > 0
+    has_responded = choice > 0
+    
+    # if no response expected, then any response is incorrect
+    if not np.any(can_respond) and np.any(has_responded):
+        return 0 
+    
+    # if response expected but no response, then incorrect
+    if np.any(can_respond) and not np.any(has_responded):
+        return 0
+        
+    # if responses outside allowed window, trial is incorrect
+    if not np.all(can_respond[has_responded]):
+        return 0
+    
+    # check that response magnitude matches label
+    if np.all(choice[has_responded]==labels[has_responded]):
+        return 1
+    else:
+        0
 
 
 def run_testing_rest(model, n_steps=1000, noise_mean=0.5, noise_sd=0.3, smooth_noise=0, fix_input_channels=(0,), fix_input_value=1.0):
@@ -993,6 +1027,12 @@ def create_rnn_and_env_for_model(model_info: pd.Series, run, epoch, data_dir: st
         regularization_kernel = np.zeros((model_info.hidden_size,model_info.hidden_size))
     else:
         regularization_kernel = None
+    if 'input_weight_mask' in state.keys():
+        input_weight_mask = np.zeros((model_info.hidden_size,input_size))
+        output_weight_mask = np.zeros((n_classes,model_info.hidden_size))
+    else:
+        input_weight_mask = None
+        output_weight_mask = None
     if 'alpha' in model_info.keys():
         alpha = model_info.alpha
     else:
@@ -1002,8 +1042,8 @@ def create_rnn_and_env_for_model(model_info: pd.Series, run, epoch, data_dir: st
               num_classes = n_classes, 
               type = model_info.rnn_model, 
               regularization_kernel = regularization_kernel,
-              input_weight_mask = np.zeros((model_info.hidden_size,input_size)), 
-              output_weight_mask = np.zeros((n_classes,model_info.hidden_size)),
+              input_weight_mask = input_weight_mask, 
+              output_weight_mask = output_weight_mask,
               alpha=alpha).to(device)
     rnn.load_state_dict(state)
     rnn.eval()

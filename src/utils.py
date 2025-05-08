@@ -185,21 +185,68 @@ def get_p_val_string(p_val):
     return p_str
 
 
+# def fix_labels(labels, decision=4, trim=2):
+#     if trim == 0:
+#         return labels
+#     else:
+#         labels_out = labels.copy()
+#         batch_size = labels.shape[1]
+#         cut = decision - trim
+
+#         x = labels_out != 0
+#         x_pad = np.zeros((cut, batch_size)).astype(bool)
+#         y = np.append(x[cut:, :], x_pad, axis=0)
+#         xy = x*y
+#         labels_out[xy] = 0
+
+#         return labels_out
 def fix_labels(labels, decision=4, trim=2):
+    """
+    Modifies labels based on decision parameters with flexibility for different input shapes.
+    
+    Parameters
+    ----------
+    labels : numpy.ndarray
+        Labels array, can be either 1D (time_steps,) or 2D (time_steps, batch_size)
+    decision : int, optional
+        Decision point, by default 4
+    trim : int, optional
+        Number of time steps to trim from decision point, by default 2
+    
+    Returns
+    -------
+    numpy.ndarray
+        Modified labels with same shape as input
+    """
     if trim == 0:
         return labels
-    else:
-        labels_out = labels.copy()
-        batch_size = labels.shape[1]
-        cut = decision - trim
-
-        x = labels_out != 0
-        x_pad = np.zeros((cut, batch_size)).astype(bool)
-        y = np.append(x[cut:, :], x_pad, axis=0)
-        xy = x*y
-        labels_out[xy] = 0
-
-        return labels_out
+    
+    # Save original shape and dimensionality
+    original_shape = labels.shape
+    original_ndim = labels.ndim
+    
+    # Handle 1D case by temporarily adding a batch dimension
+    if original_ndim == 1:
+        labels = labels.reshape(-1, 1)
+    
+    # Now proceed with the 2D case
+    labels_out = labels.copy()
+    time_steps = labels.shape[0]
+    batch_size = labels.shape[1]
+    cut = decision - trim
+    
+    # Create masks for the time points to zero out
+    x = labels_out != 0
+    x_pad = np.zeros((cut, batch_size)).astype(bool)
+    y = np.append(x[cut:, :], x_pad, axis=0)
+    xy = x * y
+    labels_out[xy] = 0
+    
+    # Return to original shape if input was 1D
+    if original_ndim == 1:
+        labels_out = labels_out.reshape(original_shape)
+    
+    return labels_out
 
 
 def bandpower(ts, fs, fmin, fmax):
