@@ -7,7 +7,7 @@ if [ $(uname -s) == "Darwin" ]; then
   if [ $USER == "ahmad" ]; then
     scriptsdir='/Users/ahmad/software/snaplab_github/neuro_rnn/scripts'
     datadir='/Users/ahmad/software/snaplab_github/neuro_rnn/data'
-    outdir='/Users/ahmad/data/rutgers/neuro_rnn/results/pytorch/model/20250430'
+    outdir='/Users/ahmad/data/rutgers/neuro_rnn/results/pytorch/model/20250508'
   fi
 else
   if [ $USER == "lindenmp" ]; then
@@ -43,7 +43,7 @@ init_rnn_weights_max="0.01"
 
 # device settings
 device='cpu' # 'cpu' or 'cuda' or 'mps'
-n_threads=8
+n_threads=10
 if [ ${device} == 'cpu' ] && [ ${n_threads} -gt 1 ]; then
   echo "suspending all cuda devices"
   export CUDA_VISIBLE_DEVICES=""
