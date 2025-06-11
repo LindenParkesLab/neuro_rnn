@@ -545,27 +545,34 @@ def run_training(dataset, model, optimizer, criterion, config, scheduler=None, r
     # Train the model
     for epoch in range(n_epochs):
         # get data
+        t1 = time.time() # TIME 
         dataset.env.reset(seed=int(n_epochs+epoch))
         inputs, labels = dataset()
+        data_gen_time = time.time() - t1 # TIME 
         try:
             labels = fix_labels(labels, decision=int(decision / dt), trim=trim)
         except:
             pass
         # split into train and validation
+        t2 = time.time() # TIME 
         inputs_tra = inputs[:, :int(batch_size/2), :]
         inputs_val = inputs[:, int(batch_size/2):, :]
         labels_tra = labels[:, :int(batch_size/2)]
         labels_val = labels[:, int(batch_size/2):]
+        data_split_time = time.time() - t2 # TIME 
         # convert to tensor
+        t3 = time.time() # TIME 
         inputs_tra = torch.from_numpy(inputs_tra).type(torch.float).to(device)
         inputs_val = torch.from_numpy(inputs_val).type(torch.float).to(device)
         labels_tra = torch.from_numpy(labels_tra.flatten()).type(torch.long).to(device)
         labels_val = torch.from_numpy(labels_val.flatten()).type(torch.long).to(device)
-
+        data_transfer_time = time.time() - t3 # TIME 
+        
         # zero the parameter gradients
         optimizer.zero_grad()
 
         # get model outputs for training data
+        t4 = time.time() # TIME 
         outputs, _ = model(inputs_tra)
         # compute loss for training data
         loss = criterion(outputs.view(-1, model.num_classes), labels_tra)
@@ -590,9 +597,13 @@ def run_training(dataset, model, optimizer, criterion, config, scheduler=None, r
         # update scheduler
         if scheduler is not None:
             scheduler.step()
+        compute_time = time.time() - t4 # TIME 
         # store loss
         training_loss.append(loss.item())
 
+        if epoch % 10 == 0:
+            print(f"Epoch {epoch}: Data gen: {data_gen_time:.3f}s, Data plit: {data_split_time:.3f}, Transfer: {data_transfer_time:.3f}s, Compute: {compute_time:.3f}s")
+        
         # validation
         with torch.no_grad():
             # get model outputs for validation data
@@ -802,7 +813,7 @@ def train_helper(run, config):
     input_size = dataset.env.observation_space.shape[0]
     n_classes = dataset.env.action_space.n
     hidden_size = config['hidden_size']
-    n_trials = 1000
+    n_trials = 100
     
     # setup weight masks
     if config['mask_weights']:
