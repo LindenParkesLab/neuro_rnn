@@ -210,7 +210,7 @@ def postanh(x):
     return 0.5 * (torch.tanh(2 * x) + 1)
 
 
-# class CustomRNN(nn.RNNBase):
+class CustomRNN(nn.RNNBase):
     def __init__(self, 
                  input_size: int,
                  hidden_size: int,
@@ -430,7 +430,7 @@ def rnn_custom_optimized(input_data: torch.Tensor,
     return output, h
 
 
-class CustomRNN(nn.RNNBase):
+#class CustomRNN(nn.RNNBase):
     def __init__(self, 
                  input_size: int,
                  hidden_size: int,
