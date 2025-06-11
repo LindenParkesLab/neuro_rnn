@@ -205,80 +205,9 @@ def rnn_custom(input: torch.Tensor,
     
     return output, h_n
 
-# TorchScript requires all branches to be statically typed.
-# We assume that if has_biases is True then params is a tuple of 4 Tensors,
-# otherwise params is a tuple of 2 Tensors.
-
 
 def postanh(x):
     return 0.5 * (torch.tanh(2 * x) + 1)
-
-
-# @torch.jit.script
-# def rnn_custom(input: torch.Tensor, 
-#                hx: torch.Tensor, 
-#                params: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
-#                has_biases: bool,
-#                num_layers: int,
-#                dropout: float,
-#                train: bool,
-#                bidirectional: bool,
-#                batch_first: bool,
-#                nonlinearity: str = "postanh",
-#                alpha: float = 0.0) -> Tuple[torch.Tensor, torch.Tensor]:
-#     # For TorchScript, we only support input as a Tensor.
-#     # If batch_first is True, convert to [seq_len, batch, input_size]
-#     if batch_first:
-#         input = input.transpose(0, 1)
-        
-#     seq_len = input.size(0)
-#     batch_size = input.size(1)
-#     # hidden_size is inferred from hx
-#     # (num_layers, batch, hidden_size) or (batch, hidden_size); here we assume hx is [batch, hidden_size]
-#     output: List[torch.Tensor] = []
-#     h_n = hx
-
-#     # Extract parameters based on has_biases
-#     if has_biases:
-#         w_ih = params[0]
-#         w_hh = params[1]
-#         b_ih = params[2]
-#         b_hh = params[3]
-#     else:
-#         w_ih = params[0]
-#         w_hh = params[1]
-#         b_ih = None
-#         b_hh = None
-
-#     for t in range(seq_len):
-#         x_t = input[t]
-#         preactivation = F.linear(x_t, w_ih, b_ih) + F.linear(h_n, w_hh, b_hh)
-        
-#         # The calculation of the output hidden state can be performed as an interpolation 
-#         # between h_(t-1) and h_t with weight alpha, using torch.lerp.
-#         if nonlinearity == "tanh":
-#             h_n = torch.lerp(torch.tanh(preactivation), h_n, alpha)
-#         elif nonlinearity == "relu":
-#             h_n = torch.lerp(torch.relu(preactivation), h_n, alpha)
-#         elif nonlinearity == "postanh":
-#             h_n = torch.lerp(postanh(preactivation), h_n, alpha)
-#         elif nonlinearity == "retanh":
-#             h_n = torch.lerp(torch.relu(torch.tanh(preactivation)), h_n, alpha)
-#         elif nonlinearity == "sigmoid":
-#             h_n = torch.lerp(torch.sigmoid(preactivation), h_n, alpha)
-            
-#         # Ensure h_n maintains the shape [batch_size, hidden_size]
-#         h_n = h_n.view(batch_size, -1)
-#         output.append(h_n)
-    
-#     # Stack outputs into a tensor of shape [seq_len, batch, hidden_size]
-#     out_tensor = torch.stack(output, 0)
-    
-#     # Convert back if batch_first is True
-#     if batch_first:
-#         out_tensor = out_tensor.transpose(0, 1)
-    
-#     return out_tensor, h_n
 
 
 # class CustomRNN(nn.RNNBase):
@@ -359,189 +288,7 @@ def postanh(x):
         hidden = hidden.unsqueeze(0)  # Add layer dimension
         
         return output, hidden
-    
 
-class CustomRNN(nn.RNNBase):
-    def __init__(self, 
-                 input_size: int,
-                 hidden_size: int,
-                 num_layers: int = 1,
-                 bias: bool = True,
-                 batch_first: bool = False,
-                 dropout: float = 0.,
-                 bidirectional: bool = False,
-                 nonlinearity: str = 'postanh',
-                 alpha: float = 0) -> None:
-        """
-        RNN module with additional activation functions and support for continuous time update.
-        """
-        super().__init__(
-            mode='RNN_TANH',
-            input_size=input_size,
-            hidden_size=hidden_size,
-            num_layers=num_layers,
-            bias=bias,
-            batch_first=batch_first,
-            dropout=dropout,
-            bidirectional=bidirectional
-        )
-        self.nonlinearity = nonlinearity
-        self.alpha = alpha
-
-    def forward(self, 
-                input: Union[torch.Tensor, PackedSequence], 
-                hx: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Forward pass of the CustomRNN with optimized matrix operations.
-        """
-        # Handle PackedSequence
-        is_packed = isinstance(input, PackedSequence)
-        if is_packed:
-            input_data = input.data
-            batch_sizes = input.batch_sizes
-            sorted_indices = input.sorted_indices
-            unsorted_indices = input.unsorted_indices
-            max_batch_size = batch_sizes[0].item()
-        else:
-            input_data = input
-            batch_sizes = None
-            sorted_indices = None
-            unsorted_indices = None
-            max_batch_size = input_data.size(0) if self.batch_first else input_data.size(1)
-
-        # Initialize hidden state if needed
-        if hx is None:
-            hx = torch.zeros(self.num_layers * (2 if self.bidirectional else 1),
-                           max_batch_size, self.hidden_size,
-                           dtype=input_data.dtype, device=input_data.device)
-        else:
-            # Handle hidden state reshaping if needed
-            if hx.dim() == 2:
-                hx = hx.unsqueeze(0)
-
-        self.check_forward_args(input_data, hx, batch_sizes)
-        
-        # Get weights for the first (and currently only supported) layer
-        w_ih, w_hh, b_ih, b_hh = self.all_weights[0]
-        
-        # Concatenate weights for more efficient computation
-        combined_weight = torch.cat([w_ih, w_hh], dim=1)
-        
-        # Handle biases - replace None with zeros for consistent processing
-        if b_ih is None:
-            b_ih = torch.zeros(self.hidden_size, device=input_data.device, dtype=input_data.dtype)
-        if b_hh is None:
-            b_hh = torch.zeros(self.hidden_size, device=input_data.device, dtype=input_data.dtype)
-        
-        # Pre-compute combined bias
-        combined_bias = b_ih + b_hh
-        
-        # Adjust for batch_first if needed
-        if self.batch_first and not is_packed:
-            input_data = input_data.transpose(0, 1)  # Convert to [seq_len, batch, features]
-        
-        # Get sequence dimensions
-        if is_packed:
-            seq_len = input_data.size(0) // max_batch_size
-            batch_size = max_batch_size
-        else:
-            seq_len, batch_size, _ = input_data.size()
-        
-        # Initialize output tensor
-        if is_packed:
-            output_size = input_data.size(0)
-            output = torch.zeros(output_size, self.hidden_size, 
-                                device=input_data.device, dtype=input_data.dtype)
-        else:
-            output = torch.zeros(seq_len, batch_size, self.hidden_size, 
-                                device=input_data.device, dtype=input_data.dtype)
-        
-        # Get initial hidden state for the first layer
-        h = hx[0]
-        
-        if is_packed:
-            # Special handling for packed sequences
-            batch_offset = 0
-            for time in range(len(batch_sizes)):
-                curr_batch_size = batch_sizes[time].item()
-                
-                # Get input for this timestep
-                x_t = input_data[batch_offset:batch_offset + curr_batch_size]
-                
-                # Concatenate with hidden state for efficient computation
-                combined_input = torch.cat([x_t, h[:curr_batch_size]], dim=1)
-                
-                # Single matrix multiplication
-                preactivation = F.linear(combined_input, combined_weight, combined_bias)
-                
-                # Apply activation with optimized lerp
-                if self.nonlinearity == "tanh":
-                    h_new = torch.tanh(preactivation)
-                elif self.nonlinearity == "relu":
-                    h_new = torch.relu(preactivation)
-                elif self.nonlinearity == "postanh":
-                    h_new = 0.5 * (torch.tanh(2 * preactivation) + 1)
-                elif self.nonlinearity == "retanh":
-                    h_new = torch.relu(torch.tanh(preactivation))
-                elif self.nonlinearity == "sigmoid":
-                    h_new = torch.sigmoid(preactivation)
-                else:
-                    h_new = torch.tanh(preactivation)
-                
-                # Apply alpha using lerp
-                h_out = torch.lerp(h_new, h[:curr_batch_size], self.alpha)
-                
-                # Update hidden state
-                h[:curr_batch_size] = h_out
-                
-                # Store output
-                output[batch_offset:batch_offset + curr_batch_size] = h_out
-                
-                # Update batch offset
-                batch_offset += curr_batch_size
-        else:
-            # Standard sequence processing
-            for t in range(seq_len):
-                x_t = input_data[t]
-                
-                # Concatenate input with hidden state for efficient computation
-                combined_input = torch.cat([x_t, h], dim=1)
-                
-                # Single matrix multiplication
-                preactivation = F.linear(combined_input, combined_weight, combined_bias)
-                
-                # Apply activation with optimized lerp
-                if self.nonlinearity == "tanh":
-                    h_new = torch.tanh(preactivation)
-                elif self.nonlinearity == "relu":
-                    h_new = torch.relu(preactivation)
-                elif self.nonlinearity == "postanh":
-                    h_new = 0.5 * (torch.tanh(2 * preactivation) + 1)
-                elif self.nonlinearity == "retanh":
-                    h_new = torch.relu(torch.tanh(preactivation))
-                elif self.nonlinearity == "sigmoid":
-                    h_new = torch.sigmoid(preactivation)
-                else:
-                    h_new = torch.tanh(preactivation)
-                
-                # Apply alpha using lerp
-                h = torch.lerp(h_new, h, self.alpha)
-                
-                # Store output
-                output[t] = h
-        
-        # Restore batch_first if needed
-        if self.batch_first and not is_packed:
-            output = output.transpose(0, 1)
-        
-        # Repack if input was packed
-        if is_packed:
-            output = PackedSequence(output, batch_sizes, sorted_indices, unsorted_indices)
-        
-        # Ensure hidden state has the correct shape
-        hidden = h.unsqueeze(0)  # Add layer dimension
-        
-        return output, hidden
 
 def rnn_custom_optimized(input_data: torch.Tensor,
                          hx: torch.Tensor,
@@ -683,7 +430,7 @@ def rnn_custom_optimized(input_data: torch.Tensor,
     return output, h
 
 
-class CustomRNN2(nn.RNNBase):
+class CustomRNN(nn.RNNBase):
     def __init__(self, 
                  input_size: int,
                  hidden_size: int,
@@ -769,80 +516,6 @@ class CustomRNN2(nn.RNNBase):
         hidden = h_n.unsqueeze(0)
         
         return output, hidden
-
-
-def benchmark_rnn_implementations(hidden_size=200, input_size=50, seq_len=100, batch_size=32, nonlinearity='tanh', alpha=0.1, n_iterations=100):
-    """
-    Benchmark both RNN implementations and compare performance.
-    """
-    # Create test data
-    x = torch.randn(batch_size, seq_len, input_size, device='cuda')
-    
-    # Create models
-    integrated_rnn = CustomRNN(
-        input_size=input_size,
-        hidden_size=hidden_size,
-        nonlinearity=nonlinearity,
-        alpha=alpha,
-        batch_first=True
-    ).cuda()
-    
-    separated_rnn = None  # Initialize the separated implementation model
-    if 'rnn_custom_optimized' in globals():
-        separated_rnn = CustomRNN2(
-            input_size=input_size,
-            hidden_size=hidden_size,
-            nonlinearity=nonlinearity,
-            alpha=alpha,
-            batch_first=True
-        ).cuda()
-    
-    # Ensure both models have the same weights
-    if separated_rnn is not None:
-        with torch.no_grad():
-            for param_i, param_s in zip(integrated_rnn.parameters(), separated_rnn.parameters()):
-                param_s.copy_(param_i)
-    
-    # Warmup
-    with torch.no_grad():
-        for _ in range(10):
-            _ = integrated_rnn(x)
-            if separated_rnn is not None:
-                _ = separated_rnn(x)
-    
-    # Benchmark integrated implementation
-    torch.cuda.synchronize()
-    start = torch.cuda.Event(enable_timing=True)
-    end = torch.cuda.Event(enable_timing=True)
-    
-    start.record()
-    with torch.no_grad():
-        for _ in range(n_iterations):
-            _ = integrated_rnn(x)
-    end.record()
-    torch.cuda.synchronize()
-    integrated_time = start.elapsed_time(end) / n_iterations
-    
-    # Benchmark separated implementation
-    separated_time = 0
-    if separated_rnn is not None:
-        start.record()
-        with torch.no_grad():
-            for _ in range(n_iterations):
-                _ = separated_rnn(x)
-        end.record()
-        torch.cuda.synchronize()
-        separated_time = start.elapsed_time(end) / n_iterations
-    
-    print(f"Benchmark Results (average over {n_iterations} iterations):")
-    print(f"  Integrated Implementation: {integrated_time:.3f} ms per iteration")
-    if separated_rnn is not None:
-        print(f"  Separated Implementation: {separated_time:.3f} ms per iteration")
-        print(f"  Difference: {(integrated_time - separated_time):.3f} ms ({(integrated_time / separated_time - 1) * 100:.2f}%)")
-    else:
-        print("  Separated Implementation: Not available")
-    
-    return integrated_time, separated_time
 
 
 def run_training(dataset, model, optimizer, criterion, config, scheduler=None, return_models=False, epoch_log=10, run=None):
@@ -974,12 +647,21 @@ def run_training(dataset, model, optimizer, criterion, config, scheduler=None, r
         return training_loss, validation_loss, test_accuracy
 
 
-def infer_test_timing(env):
+def infer_test_timing(env_or_timing):
     """Infer timing of environment for testing."""
-    timing = {}
-    for period in env.timing.keys():
-        period_times = [env.sample_time(period) for _ in range(100)]
-        timing[period] = np.median(period_times)
+    if isinstance(env_or_timing, dict):
+        timing = {}
+        for period in env_or_timing.keys():
+            period_times = env_or_timing[period]
+            try:
+                timing[period] = np.median(period_times)
+            except:
+                timing[period] = period_times
+    else:
+        timing = {}
+        for period in env_or_timing.timing.keys():
+            period_times = [env_or_timing.sample_time(period) for _ in range(100)]
+            timing[period] = np.median(period_times)
     return timing
 
 
