@@ -11,6 +11,7 @@ import torch.nn.init as init
 from torch.nn.parameter import Parameter
 from torch.nn.utils.rnn import PackedSequence
 from torch.nn import functional as F
+from torch.cuda.amp import GradScaler, autocast
 import numpy as np
 import pandas as pd
 from scipy.ndimage import uniform_filter1d
@@ -573,9 +574,10 @@ def run_training(dataset, model, optimizer, criterion, config, scheduler=None, r
 
         # get model outputs for training data
         t4 = time.time() # TIME 
-        outputs, _ = model(inputs_tra)
-        # compute loss for training data
-        loss = criterion(outputs.view(-1, model.num_classes), labels_tra)
+        with autocast():
+            outputs, _ = model(inputs_tra)
+            # compute loss for training data
+            loss = criterion(outputs.view(-1, model.num_classes), labels_tra)
 
         # perform regularization
         if model.regularization_kernel is None:
