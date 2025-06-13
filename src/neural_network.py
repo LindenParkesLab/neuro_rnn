@@ -574,10 +574,10 @@ def run_training(dataset, model, optimizer, criterion, config, scheduler=None, r
 
         # get model outputs for training data
         t4 = time.time() # TIME 
-        with autocast():
-            outputs, _ = model(inputs_tra)
-            # compute loss for training data
-            loss = criterion(outputs.view(-1, model.num_classes), labels_tra)
+        # with autocast():
+        outputs, _ = model(inputs_tra)
+        # compute loss for training data
+        loss = criterion(outputs.view(-1, model.num_classes), labels_tra)
 
         # perform regularization
         if model.regularization_kernel is None:
