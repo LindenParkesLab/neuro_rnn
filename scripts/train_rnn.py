@@ -90,25 +90,115 @@ def train(config):
         all_done = False
         rem_runs = np.arange(n_runs)
     
+    # if not all_done:
+    #     # prepare partial function for multiprocessing
+    #     partial_train_helper = partial(train_helper, config=config)
+    #     if device.type == 'cuda' or device.type == 'mps' or ( device.type == 'cpu' and n_threads == 1 ):
+    #         print(f'running in serial on {device.type}...')
+    #         if device.type == 'cuda':
+    #             print(f"each run will use {config['n_gpu']} gpus...")
+    #         # train runs in sequence
+    #         for run in rem_runs:
+    #             outputs, models = partial_train_helper(run)
+    #             # save outputs and models
+    #             print(f'saving outputs and models for run {run+1}')
+    #             output_manager.save_model_data(outputs, run)
+    #             model_manager.save_model_states(models, run)
+    #     else:
+    #         print(f'running in parallel on {device.type} using {n_threads} threads...')
+    #         # prepare processing chunks
+    #         proc_chunks = np.array_split(rem_runs, np.ceil(len(rem_runs)/n_threads))
+    #         # train runs in parallel on cpu
+    #         for chunk in proc_chunks:
+    #             with torch.multiprocessing.get_context('spawn').Pool(processes=len(chunk), maxtasksperchild=1) as pool:
+    #                 outputs, models = zip(*pool.map(partial_train_helper, chunk))
+    #             # save outputs and models
+    #             print(f'saving outputs and models for runs {chunk+1}')
+    #             for idx, run in enumerate(chunk):
+    #                 output_manager.save_model_data(outputs[idx], run)
+    #                 model_manager.save_model_states(models[idx], run)
+    #     # save config
+    #     np.save(config_path, config)
+    
     if not all_done:
+        # Print GPU environment info for debugging
+        if device.type == 'cuda':
+            utils.print_gpu_environment_info()
+        
         # prepare partial function for multiprocessing
         partial_train_helper = partial(train_helper, config=config)
-        if device.type == 'cuda' or device.type == 'mps' or ( device.type == 'cpu' and n_threads == 1 ):
-            print(f'running in serial on {device.type}...')
-            if device.type == 'cuda':
-                print(f"each run will use {config['n_gpu']} gpus...")
-            # train runs in sequence
+        
+        # Enhanced GPU processing with multi-GPU support
+        if device.type == 'cuda':
+            available_gpus = utils.get_safe_gpu_list()
+            
+            if len(available_gpus) > 1 and n_threads and n_threads > 1:
+                print(f'Running in parallel on {len(available_gpus)} GPUs using {min(n_threads, len(available_gpus))} processes...')
+                
+                # Get optimal GPU assignment for all runs
+                gpu_assignments = utils.get_optimal_gpu_assignment(len(rem_runs), n_threads)
+                
+                # Prepare processing chunks
+                max_concurrent = min(n_threads, len(available_gpus))
+                proc_chunks = np.array_split(rem_runs, np.ceil(len(rem_runs) / max_concurrent))
+                
+                # Process chunks in parallel
+                for chunk in proc_chunks:
+                    # Get GPU assignments for this chunk
+                    chunk_gpu_assignments = [gpu_assignments[np.where(rem_runs == run)[0][0]] for run in chunk]
+                    
+                    # Create partial function with GPU assignments
+                    def train_with_gpu_assignment(run_gpu_pair):
+                        run, gpu_id = run_gpu_pair
+                        from src.neural_network import train_helper_with_gpu
+                        return train_helper_with_gpu(run, config, gpu_id)
+                    
+                    # Run this chunk in parallel
+                    with torch.multiprocessing.get_context('spawn').Pool(processes=len(chunk), maxtasksperchild=1) as pool:
+                        run_gpu_pairs = list(zip(chunk, chunk_gpu_assignments))
+                        results = pool.map(train_with_gpu_assignment, run_gpu_pairs)
+                        outputs, models = zip(*results)
+                    
+                    # Save outputs and models
+                    print(f'Saving outputs and models for runs {chunk+1}')
+                    for idx, run in enumerate(chunk):
+                        output_manager.save_model_data(outputs[idx], run)
+                        model_manager.save_model_states(models[idx], run)
+            
+            else:
+                # Single GPU or sequential processing
+                if len(available_gpus) > 1:
+                    print(f'Running sequentially across {len(available_gpus)} GPUs...')
+                    gpu_assignments = utils.get_optimal_gpu_assignment(len(rem_runs))
+                else:
+                    print(f'Running in serial on single GPU...')
+                    gpu_assignments = [None] * len(rem_runs)
+                
+                # Sequential processing with GPU rotation
+                from src.neural_network import train_helper_with_gpu
+                for i, run in enumerate(rem_runs):
+                    gpu_id = gpu_assignments[i] if gpu_assignments[i] is not None else None
+                    outputs, models = train_helper_with_gpu(run, config, gpu_id)
+                    
+                    # Save outputs and models
+                    print(f'Saving outputs and models for run {run+1}')
+                    output_manager.save_model_data(outputs, run)
+                    model_manager.save_model_states(models, run)
+        
+        elif device.type == 'mps' or (device.type == 'cpu' and n_threads == 1):
+            print(f'Running in serial on {device.type}...')
+            # Original serial processing
             for run in rem_runs:
                 outputs, models = partial_train_helper(run)
                 # save outputs and models
                 print(f'saving outputs and models for run {run+1}')
                 output_manager.save_model_data(outputs, run)
                 model_manager.save_model_states(models, run)
+        
         else:
-            print(f'running in parallel on {device.type} using {n_threads} threads...')
-            # prepare processing chunks
+            print(f'Running in parallel on {device.type} using {n_threads} threads...')
+            # Original CPU parallel processing
             proc_chunks = np.array_split(rem_runs, np.ceil(len(rem_runs)/n_threads))
-            # train runs in parallel on cpu
             for chunk in proc_chunks:
                 with torch.multiprocessing.get_context('spawn').Pool(processes=len(chunk), maxtasksperchild=1) as pool:
                     outputs, models = zip(*pool.map(partial_train_helper, chunk))
@@ -117,6 +207,7 @@ def train(config):
                 for idx, run in enumerate(chunk):
                     output_manager.save_model_data(outputs[idx], run)
                     model_manager.save_model_states(models[idx], run)
+        
         # save config
         np.save(config_path, config)
 

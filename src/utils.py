@@ -1158,3 +1158,83 @@ def parse_float_tuple(values):
             'Must be either "None" or space-separated float values'
         )
 
+def get_safe_gpu_list():
+    """
+    Get a verified list of working GPU device IDs
+    Handles SLURM GPU allocation and verifies GPU accessibility
+    """
+    if not torch.cuda.is_available():
+        return []
+    
+    working_gpus = []
+    device_count = torch.cuda.device_count()
+    
+    for device_id in range(device_count):
+        try:
+            # Test if GPU actually works by creating a small tensor
+            device = torch.device(f'cuda:{device_id}')
+            test_tensor = torch.ones(10, device=device)
+            test_result = test_tensor.sum().item()
+            
+            if test_result == 10.0:  # Sanity check
+                working_gpus.append(device_id)
+                
+        except Exception as e:
+            print(f"Warning: GPU {device_id} failed accessibility test: {e}")
+            continue
+    
+    return working_gpus
+
+
+def print_gpu_environment_info():
+    """
+    Print comprehensive GPU environment information for debugging
+    """
+    if not torch.cuda.is_available():
+        print("CUDA not available")
+        return
+    
+    working_gpus = get_safe_gpu_list()
+    
+    print("=== GPU Environment Information ===")
+    print(f"PyTorch CUDA available: {torch.cuda.is_available()}")
+    print(f"PyTorch device count: {torch.cuda.device_count()}")
+    print(f"Working GPU devices: {working_gpus}")
+    print(f"CUDA_VISIBLE_DEVICES: {os.environ.get('CUDA_VISIBLE_DEVICES', 'Not set')}")
+    print(f"SLURM_JOB_ID: {os.environ.get('SLURM_JOB_ID', 'Not set')}")
+    
+    # Print individual GPU info
+    for i in range(torch.cuda.device_count()):
+        try:
+            name = torch.cuda.get_device_name(i)
+            props = torch.cuda.get_device_properties(i)
+            memory_gb = props.total_memory / (1024**3)
+            print(f"  GPU {i}: {name} ({memory_gb:.1f} GB)")
+        except Exception as e:
+            print(f"  GPU {i}: Error getting info - {e}")
+    print("=" * 40)
+
+
+def get_optimal_gpu_assignment(n_runs, n_threads=None):
+    """
+    Get optimal GPU assignment for training runs
+    """
+    safe_gpus = get_safe_gpu_list()
+    n_gpus = len(safe_gpus)
+    
+    if n_gpus == 0:
+        return []
+    
+    # Limit concurrent processes if specified
+    if n_threads:
+        max_concurrent = min(n_threads, n_gpus)
+    else:
+        max_concurrent = n_gpus
+    
+    # Create GPU assignment list for all runs
+    gpu_assignments = []
+    for run in range(n_runs):
+        gpu_id = safe_gpus[run % max_concurrent]
+        gpu_assignments.append(gpu_id)
+    
+    return gpu_assignments

@@ -887,6 +887,46 @@ def train_helper(run, config):
     return outputs, trained_models
 
 
+def train_helper_with_gpu(run, config, gpu_id=None):
+    """
+    Enhanced train_helper that handles GPU assignment for multi-GPU training
+    
+    Parameters:
+    -----------
+    run : int
+        Training run number
+    config : dict
+        Training configuration
+    gpu_id : int, optional
+        GPU device ID to use for this run. If None, uses config device.
+        
+    Returns:
+    --------
+    tuple
+        (outputs, trained_models) - same as original train_helper
+    """
+    if gpu_id is not None:
+        # Verify the GPU is accessible
+        try:
+            device = torch.device(f'cuda:{gpu_id}')
+            torch.cuda.set_device(device)
+            # Quick test to make sure GPU works
+            test_tensor = torch.ones(10, device=device)
+            
+            # Create modified config with assigned GPU device
+            config = config.copy()
+            config['device'] = device
+            print(f'Run {run+1} assigned to GPU {gpu_id}')
+            
+        except Exception as e:
+            print(f'Warning: GPU {gpu_id} failed for run {run+1}: {e}')
+            print(f'Falling back to original device for run {run+1}')
+            # Keep original config device (fallback)
+    
+    # Call the original train_helper with potentially modified config
+    return train_helper(run, config)
+
+
 class ModelStateManager:
     """
     Description
