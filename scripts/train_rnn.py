@@ -16,6 +16,17 @@ warnings.simplefilter(action='ignore', category=RuntimeWarning)
 warnings.simplefilter(action='ignore', category=UserWarning)
 
 # %%
+
+def train_helper_with_gpu_assignment(run_gpu_pair, config):
+    """
+    Wrapper function for multiprocessing with GPU assignment
+    This needs to be at module level to be pickleable
+    """
+    run, gpu_id = run_gpu_pair
+    from src.neural_network import train_helper_with_gpu
+    return train_helper_with_gpu(run, config, gpu_id)
+
+
 def train(config):
     # get config params
     datadir = config['datadir']
@@ -142,21 +153,20 @@ def train(config):
                 max_concurrent = min(n_threads, len(available_gpus))
                 proc_chunks = np.array_split(rem_runs, np.ceil(len(rem_runs) / max_concurrent))
                 
+                # Create partial function for GPU assignment (FIXED - using module level function)
+                partial_train_with_gpu = partial(train_helper_with_gpu_assignment, config=config)
+                
                 # Process chunks in parallel
                 for chunk in proc_chunks:
                     # Get GPU assignments for this chunk
                     chunk_gpu_assignments = [gpu_assignments[np.where(rem_runs == run)[0][0]] for run in chunk]
                     
-                    # Create partial function with GPU assignments
-                    def train_with_gpu_assignment(run_gpu_pair):
-                        run, gpu_id = run_gpu_pair
-                        from src.neural_network import train_helper_with_gpu
-                        return train_helper_with_gpu(run, config, gpu_id)
+                    # Create run-GPU pairs for this chunk
+                    run_gpu_pairs = list(zip(chunk, chunk_gpu_assignments))
                     
                     # Run this chunk in parallel
                     with torch.multiprocessing.get_context('spawn').Pool(processes=len(chunk), maxtasksperchild=1) as pool:
-                        run_gpu_pairs = list(zip(chunk, chunk_gpu_assignments))
-                        results = pool.map(train_with_gpu_assignment, run_gpu_pairs)
+                        results = pool.map(partial_train_with_gpu, run_gpu_pairs)
                         outputs, models = zip(*results)
                     
                     # Save outputs and models
