@@ -1,7 +1,7 @@
 import os, random, time, sys, copy
 from timeit import default_timer as timer
 from datetime import timedelta
-from typing import List, Tuple, Optional, overload, Union
+from typing import List, Tuple, Optional, overload, Union, Literal
 
 import torch
 from torch import Tensor
@@ -11,7 +11,6 @@ import torch.nn.init as init
 from torch.nn.parameter import Parameter
 from torch.nn.utils.rnn import PackedSequence
 from torch.nn import functional as F
-from torch.cuda.amp import GradScaler, autocast
 import numpy as np
 import pandas as pd
 from scipy.ndimage import uniform_filter1d
@@ -23,47 +22,214 @@ from src.utils import fix_labels, get_n_gpu
 import neurogym as ngym
 
 class RNN(nn.Module):
+    """
+    Initialize a flexible RNN with customizable weight initialization and training control.
+    
+    This RNN implementation provides fine-grained control over all weight matrices and biases,
+    supporting custom activation functions, spatial regularization, weight masking, and 
+    continuous-time dynamics.
+    
+    Parameters
+    ----------
+    input_size : int
+        Number of expected features in the input x.
+        
+    hidden_size : int  
+        Number of hidden layer nodes. 
+        
+    num_classes : int
+        Number of output classes/features.
+        
+    type : {'rnn-tanh', 'rnn-sigmoid', 'rnn-relu', 'rnn-retanh', 'rnn-postanh'}, default='rnn-tanh'
+        RNN activation function type:
+        - 'rnn-tanh': Standard hyperbolic tangent, torch.tanh(x)
+        - 'rnn-sigmoid': Standard sigmoid, torch.sigmoid(x)
+        - 'rnn-relu': Standard rectified linear unit, torch.relu(x)
+        - 'rnn-retanh': Rectified tanh, torch.relu(torch.tanh(x))
+        - 'rnn-postanh': Positive tanh, 0.5*(torch.tanh(2x)+1)
+        
+    regularization_kernel : array-like, optional
+        Spatial regularization kernel for hidden-to-hidden weights. Can be:
+        - None: No spatial regularization
+        - 2D array (hidden_size, hidden_size): Static regularization matrix
+        - 3D array (hidden_size, hidden_size, n_epochs): Time-varying regularization
+        
+    input_weight_mask : array-like, optional
+        Binary mask for input-to-hidden weights. Can be:
+        - None: No masking applied
+        - 1D array (hidden_size,): Applied to all input dimensions
+        - 2D array (hidden_size, input_size): Full input weight mask
+        
+    output_weight_mask : array-like, optional
+        Binary mask for hidden-to-output weights. Can be:
+        - None: No masking applied  
+        - 1D array (hidden_size,): Applied to all output dimensions
+        - 2D array (num_classes, hidden_size): Full output weight mask
+        
+    init_ih_w : None, float, tuple of float, or ndarray, optional
+        Input-to-hidden weight initialization:
+        - None: Use PyTorch default initialization
+        - float: Constant initialization (all weights set to this value)
+        - (min, max): Uniform random initialization in [min, max] 
+        - ndarray: Explicit weight values (shape: hidden_size, input_size)
+        
+    train_ih_w : bool, default=True
+        Whether input-to-hidden weights are trainable (require gradients).
+        
+    init_ih_b : None, float, tuple of float, or ndarray, optional  
+        Input-to-hidden bias initialization:
+        - None: Use PyTorch default initialization
+        - float: Constant initialization (all biases set to this value)
+        - (min, max): Uniform random initialization in [min, max]
+        - ndarray: Explicit bias values (shape: hidden_size,)
+        
+    train_ih_b : bool, default=True
+        Whether input-to-hidden biases are trainable (require gradients).
+        
+    init_hh_w : None, float, tuple of float, or ndarray, optional
+        Hidden-to-hidden weight initialization:
+        - None: Use PyTorch default initialization  
+        - float: Constant initialization (all weights set to this value)
+        - (min, max): Uniform random initialization in [min, max]
+        - ndarray: Explicit weight values (shape: hidden_size, hidden_size)
+        
+    train_hh_w : bool, default=True
+        Whether hidden-to-hidden weights are trainable (require gradients).
+        
+    init_hh_b : None, float, tuple of float, or ndarray, optional
+        Hidden-to-hidden bias initialization:
+        - None: Use PyTorch default initialization
+        - float: Constant initialization (all biases set to this value)
+        - (min, max): Uniform random initialization in [min, max] 
+        - ndarray: Explicit bias values (shape: hidden_size,)
+        
+    train_hh_b : bool, default=True
+        Whether hidden-to-hidden biases are trainable (require gradients).
+        
+    init_ho_w : None, float, tuple of float, or ndarray, optional
+        Hidden-to-output weight initialization:
+        - None: Use PyTorch default initialization
+        - float: Constant initialization (all weights set to this value)
+        - (min, max): Uniform random initialization in [min, max]
+        - ndarray: Explicit weight values (shape: num_classes, hidden_size)
+        
+    train_ho_w : bool, default=True  
+        Whether hidden-to-output weights are trainable (require gradients).
+        
+    init_ho_b : None, float, tuple of float, or ndarray, optional
+        Hidden-to-output bias initialization:
+        - None: Use PyTorch default initialization
+        - float: Constant initialization (all biases set to this value)
+        - (min, max): Uniform random initialization in [min, max]
+        - ndarray: Explicit bias values (shape: num_classes,)
+        
+    train_ho_b : bool, default=True
+        Whether hidden-to-output biases are trainable (require gradients).
+        
+    allow_self_connections : bool, default=True
+        Whether to allow self-connections (diagonal elements) in hidden-to-hidden weights.
+        If False, diagonal elements of the hh_w matrix are forced to zero during forward pass.
+        This constraint is applied regardless of initialization or training status.
+        
+    alpha : float, default=0.0
+        Continuous-time parameter in the range [0,1]:
+        - 0.0: Standard discrete RNN updates
+        - (0, 1): Interpolation between new activation and previous state
+        - Update equation: h(t+1) = α * h(t) + (1-α) * f(Wh(t) + Ux(t) + b)
+    
+    Examples
+    --------
+    Standard (vanilla) RNN:
+    >>> rnn = RNN(input_size=10, hidden_size=20, num_classes=2)
+    
+    RNN with frozen input weights randomly initialized in (0.1, 0.5):
+    >>> rnn = RNN(input_size=10, hidden_size=20, num_classes=2, 
+                  init_ih_w=(0.1, 0.5), train_ih_w=False)
+    
+    RNN with constant hidden weight (0.1) initialization and no self-connections:
+    >>> rnn = RNN(input_size=10, hidden_size=20, num_classes=2,
+                  init_hh_w=0.1, allow_self_connections=False)
+    
+    RNN with spatial regularization and custom initialization:
+    >>> kernel = np.eye(20) * 0.5  # Diagonal regularization
+    >>> rnn = RNN(input_size=10, hidden_size=20, num_classes=2,
+                  regularization_kernel=kernel, init_hh_w=(-0.1, 0.1))
+    
+    Reservoir computer:
+    >>> rnn = RNN(input_size=10, hidden_size=20, num_classes=2,
+                  train_hh_w=False, train_hh_b=False)
+    
+    Continuous-time RNN with sigmoid activation:
+    >>> rnn = RNN(input_size=10, hidden_size=20, num_classes=2,
+                  type='rnn-sigmoid', alpha=0.2)
+    """
+    
     def __init__(self, 
                  input_size: int, 
                  hidden_size: int, 
                  num_classes: int, 
-                 type='rnn-tanh', 
-                 regularization_kernel=None, 
-                 input_weight_mask=None, 
-                 output_weight_mask=None, 
-                 train_ih=True, 
-                 train_hh=True, 
-                 train_ho=True, 
-                 alpha=0.0, 
-                 init_rnn_weights: Union[None, tuple[float, float]] = None):
+                 type: Literal['rnn-tanh','rnn-sigmoid','rnn-relu','rnn-retanh','rnn-postanh'] = 'rnn-tanh', 
+                 regularization_kernel = None, 
+                 input_weight_mask = None, 
+                 output_weight_mask = None, 
+                 init_ih_w: Union[None, float, tuple[float,float], np.ndarray] = None, 
+                 train_ih_w: bool = True, 
+                 init_ih_b: Union[None, float, tuple[float,float], np.ndarray] = None, 
+                 train_ih_b: bool = True, 
+                 init_hh_w: Union[None, float, tuple[float,float], np.ndarray] = None, 
+                 train_hh_w: bool = True, 
+                 init_hh_b: Union[None, float, tuple[float,float], np.ndarray] = None, 
+                 train_hh_b: bool = True, 
+                 init_ho_w: Union[None, float, tuple[float,float], np.ndarray] = None, 
+                 train_ho_w: bool = True, 
+                 init_ho_b: Union[None, float, tuple[float,float], np.ndarray] = None, 
+                 train_ho_b: bool = True, 
+                 allow_self_connections: bool = True,
+                 alpha: float = 0.0):
+        
         super(RNN, self).__init__()
+        
+        # Store basic parameters
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.num_classes = num_classes
-        self.sigmoid = nn.Sigmoid()
         self.rnn_type = type
         self.alpha = alpha
-
+        self.allow_self_connections = allow_self_connections
+        
+        # Create RNN layer based on type
         if type.replace('rnn-','') in ['tanh','relu','retanh','postanh','sigmoid']:
-            self.rnn = CustomRNN(input_size, hidden_size, 1, nonlinearity=type.replace('rnn-',''), alpha=alpha)
-            if init_rnn_weights is not None:
-                nn.init.uniform_(self.rnn.weight_hh_l0, init_rnn_weights[0], init_rnn_weights[1])
-                # nn.init.uniform_(self.rnn.bias_hh_l0, init_rnn_weights[0], init_rnn_weights[1])
+            self.rnn = CustomRNN(input_size, hidden_size, 1, 
+                               nonlinearity=type.replace('rnn-',''), alpha=alpha)
+            n_repeats = 1
         elif type == 'lstm':
             self.rnn = nn.LSTM(input_size, hidden_size, 1)
-        elif type == 'gru':
-            self.rnn = nn.GRU(input_size, hidden_size, 1)
-        else:
-            raise ValueError(f"RNN type '{type}' not recognized.")
-        self.fc = nn.Linear(hidden_size, num_classes)
-
-        if type == 'lstm':
             n_repeats = 4
         elif type == 'gru':
+            self.rnn = nn.GRU(input_size, hidden_size, 1)
             n_repeats = 3
         else:
-            n_repeats = 1
+            raise ValueError(f"RNN type '{type}' not recognized.")
+        
+        # Create output layer
+        self.fc = nn.Linear(hidden_size, num_classes)
+        
+        # Process and store regularization kernel
+        self._setup_regularization_kernel(regularization_kernel, n_repeats)
+        
+        # Process and store weight masks
+        self._setup_weight_masks(input_weight_mask, output_weight_mask, n_repeats)
+        
+        # Initialize all weights and biases
+        self._initialize_all_weights(init_ih_w, init_ih_b, init_hh_w, init_hh_b, 
+                                   init_ho_w, init_ho_b)
+        
+        # Set trainable flags for all parameters
+        self._set_all_trainable_flags(train_ih_w, train_ih_b, train_hh_w, train_hh_b,
+                                    train_ho_w, train_ho_b)
 
+    def _setup_regularization_kernel(self, regularization_kernel, n_repeats):
+        """Process and register regularization kernel as buffer."""
         if regularization_kernel is not None:
             regularization_kernel = torch.from_numpy(regularization_kernel).type(torch.float)
             if regularization_kernel.ndim == 2:
@@ -72,43 +238,117 @@ class RNN(nn.Module):
                 regularization_kernel = regularization_kernel.repeat(n_repeats, 1, 1)
             self.register_buffer('regularization_kernel', regularization_kernel)
         else:
-            self.regularization_kernel = regularization_kernel
+            self.regularization_kernel = None
 
+    def _setup_weight_masks(self, input_weight_mask, output_weight_mask, n_repeats):
+        """Process and register weight masks as buffers."""
+        # Process input weight mask
         if input_weight_mask is not None:
             if input_weight_mask.ndim == 1:
-                input_weight_mask = np.repeat(input_weight_mask[:, np.newaxis], repeats=self.input_size, axis=1)
+                input_weight_mask = np.repeat(input_weight_mask[:, np.newaxis], 
+                                            repeats=self.input_size, axis=1)
             input_weight_mask = torch.from_numpy(input_weight_mask).type(torch.float)
             input_weight_mask = input_weight_mask.repeat(n_repeats, 1)
             self.register_buffer('input_weight_mask', input_weight_mask)
         else:
-            self.input_weight_mask = input_weight_mask
+            self.input_weight_mask = None
 
+        # Process output weight mask
         if output_weight_mask is not None:
             if output_weight_mask.ndim == 1:
-                output_weight_mask = np.repeat(output_weight_mask[np.newaxis, :], repeats=self.num_classes, axis=0)
+                output_weight_mask = np.repeat(output_weight_mask[np.newaxis, :], 
+                                             repeats=self.num_classes, axis=0)
             output_weight_mask = torch.from_numpy(output_weight_mask).type(torch.float)
             self.register_buffer('output_weight_mask', output_weight_mask)
         else:
-            self.output_weight_mask = output_weight_mask
+            self.output_weight_mask = None
+
+    def _initialize_all_weights(self, init_ih_w, init_ih_b, init_hh_w, init_hh_b, 
+                              init_ho_w, init_ho_b):
+        """Initialize all weights and biases according to specifications."""
         
-        if not train_ih: # freeze the input-to-hidden connections 
-            nn.init.constant_(self.rnn.weight_ih_l0, 1)
-            nn.init.constant_(self.rnn.bias_ih_l0, 0)
-            self.rnn.weight_ih_l0.requires_grad_(False)
-            self.rnn.weight_ih_l0.requires_grad_(False)
+        # Initialize input-to-hidden weights
+        if init_ih_w is not None:
+            self._apply_initialization(self.rnn.weight_ih_l0, init_ih_w)
         
-        if not train_hh: # freeze the hidden-to-hidden connections 
-            nn.init.constant_(self.rnn.weight_hh_l0, 1)
-            nn.init.constant_(self.rnn.bias_hh_l0, 0)
-            self.rnn.weight_hh_l0.requires_grad_(False)
-            self.rnn.weight_hh_l0.requires_grad_(False)
+        # Initialize input-to-hidden bias
+        if init_ih_b is not None and hasattr(self.rnn, 'bias_ih_l0') and self.rnn.bias_ih_l0 is not None:
+            self._apply_initialization(self.rnn.bias_ih_l0, init_ih_b)
         
-        if not train_ho: # freeze the hidden-to-output connections 
-            nn.init.constant_(self.fc.weight, 1)
-            nn.init.constant_(self.fc.bias, 0)
-            self.fc.requires_grad_(False)
+        # Initialize hidden-to-hidden weights
+        if init_hh_w is not None:
+            self._apply_initialization(self.rnn.weight_hh_l0, init_hh_w)
+        
+        # Initialize hidden-to-hidden bias
+        if init_hh_b is not None and hasattr(self.rnn, 'bias_hh_l0') and self.rnn.bias_hh_l0 is not None:
+            self._apply_initialization(self.rnn.bias_hh_l0, init_hh_b)
+        
+        # Initialize hidden-to-output weights
+        if init_ho_w is not None:
+            self._apply_initialization(self.fc.weight, init_ho_w)
+        
+        # Initialize hidden-to-output bias
+        if init_ho_b is not None and self.fc.bias is not None:
+            self._apply_initialization(self.fc.bias, init_ho_b)
+
+    def _apply_initialization(self, param, init_spec):
+        """Apply initialization to a parameter based on specification type."""
+        
+        with torch.no_grad():
+            if isinstance(init_spec, (int, float)):
+                # Constant initialization
+                nn.init.constant_(param, init_spec)
+            elif isinstance(init_spec, (tuple, list)) and len(init_spec) == 2:
+                # Uniform initialization
+                nn.init.uniform_(param, init_spec[0], init_spec[1])
+            elif isinstance(init_spec, np.ndarray):
+                # Explicit values
+                init_tensor = torch.from_numpy(init_spec).type(torch.float)
+                if param.shape != init_tensor.shape:
+                    raise ValueError(f"Shape mismatch: parameter shape {param.shape} "
+                                   f"vs initialization shape {init_tensor.shape}")
+                param.copy_(init_tensor)
+            else:
+                raise ValueError(f"Invalid initialization specification: {init_spec}. "
+                               f"Must be None, float, tuple, or ndarray.")
+
+    def _set_all_trainable_flags(self, train_ih_w, train_ih_b, train_hh_w, train_hh_b,
+                               train_ho_w, train_ho_b):
+        """Set requires_grad for all parameters based on trainable flags."""
+        
+        # Input-to-hidden weights and bias
+        self.rnn.weight_ih_l0.requires_grad_(train_ih_w)
+        if hasattr(self.rnn, 'bias_ih_l0') and self.rnn.bias_ih_l0 is not None:
+            self.rnn.bias_ih_l0.requires_grad_(train_ih_b)
+        
+        # Hidden-to-hidden weights and bias
+        self.rnn.weight_hh_l0.requires_grad_(train_hh_w)
+        if hasattr(self.rnn, 'bias_hh_l0') and self.rnn.bias_hh_l0 is not None:
+            self.rnn.bias_hh_l0.requires_grad_(train_hh_b)
+        
+        # Hidden-to-output weights and bias
+        self.fc.weight.requires_grad_(train_ho_w)
+        if self.fc.bias is not None:
+            self.fc.bias.requires_grad_(train_ho_b)
 
     def regularization(self, w, type='l1', matrix=None):
+        """
+        Compute regularization term for weights.
+        
+        Parameters
+        ----------
+        w : torch.Tensor
+            Weight tensor to regularize
+        type : str, default='l1'
+            Type of regularization ('l1' or 'l2')
+        matrix : torch.Tensor, optional
+            Spatial regularization matrix. If None, applies uniform regularization.
+            
+        Returns
+        -------
+        torch.Tensor
+            Scalar regularization loss
+        """
         if type == 'l1' and matrix is None:
             return torch.abs(w).sum()
         elif type == 'l1' and matrix is not None:
@@ -117,20 +357,144 @@ class RNN(nn.Module):
             return torch.square(w).sum()
         elif type == 'l2' and matrix is not None:
             return torch.mul(torch.square(w), matrix).sum()
+        else:
+            raise ValueError(f"Unknown regularization type: {type}")
 
     def forward(self, x):
+        """
+        Forward pass with mask and self-connection constraint application.
+        
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input tensor of shape (seq_len, batch_size, input_size) or 
+            (batch_size, seq_len, input_size) depending on batch_first
+            
+        Returns
+        -------
+        tuple[torch.Tensor, torch.Tensor]
+            - action_pred: Output predictions of shape (seq_len, batch_size, num_classes)
+            - hidden: Hidden states of shape (seq_len, batch_size, hidden_size)
+        """
+        
         with torch.no_grad():
+            # Apply input weight mask
             if self.input_weight_mask is not None:
                 self.rnn.weight_ih_l0.mul_(self.input_weight_mask)
-                self.rnn.bias_ih_l0.mul_(self.input_weight_mask[:, 0])
+                if hasattr(self.rnn, 'bias_ih_l0') and self.rnn.bias_ih_l0 is not None:
+                    # Mask bias for hidden units that have no input connections
+                    input_bias_mask = (self.input_weight_mask.sum(dim=1) > 0).float()
+                    self.rnn.bias_ih_l0.mul_(input_bias_mask)
+            
+            # Apply output weight mask
             if self.output_weight_mask is not None:
                 self.fc.weight.mul_(self.output_weight_mask)
-        
-        hidden, h_n = self.rnn(x)
             
+            # Apply self-connection constraint
+            if not self.allow_self_connections:
+                # Zero out diagonal elements of hidden-to-hidden weights
+                diagonal_mask = torch.eye(self.hidden_size, device=self.rnn.weight_hh_l0.device)
+                if self.rnn_type in ['lstm', 'gru']:
+                    # For LSTM/GRU, handle the stacked weight matrix
+                    n_gates = 4 if self.rnn_type == 'lstm' else 3
+                    for i in range(n_gates):
+                        start_idx = i * self.hidden_size
+                        end_idx = (i + 1) * self.hidden_size
+                        self.rnn.weight_hh_l0[start_idx:end_idx].mul_(1 - diagonal_mask)
+                else:
+                    # For custom RNN, direct application
+                    self.rnn.weight_hh_l0.mul_(1 - diagonal_mask)
+        
+        # Forward pass through RNN
+        hidden, h_n = self.rnn(x)
+        
+        # Forward pass through output layer
         action_pred = self.fc(hidden)
 
         return action_pred, hidden
+
+    def get_weight_info(self):
+        """
+        Get summary information about current weight values and masks.
+        
+        Returns
+        -------
+        dict
+            Dictionary containing weight statistics and mask information
+        """
+        info = {
+            'input_size': self.input_size,
+            'hidden_size': self.hidden_size,
+            'num_classes': self.num_classes,
+            'rnn_type': self.rnn_type,
+            'allow_self_connections': self.allow_self_connections,
+            'alpha': self.alpha
+        }
+        
+        # Weight statistics
+        with torch.no_grad():
+            info['ih_weight_stats'] = {
+                'mean': self.rnn.weight_ih_l0.mean().item(),
+                'std': self.rnn.weight_ih_l0.std().item(),
+                'min': self.rnn.weight_ih_l0.min().item(),
+                'max': self.rnn.weight_ih_l0.max().item()
+            }
+            
+            info['hh_weight_stats'] = {
+                'mean': self.rnn.weight_hh_l0.mean().item(),
+                'std': self.rnn.weight_hh_l0.std().item(),
+                'min': self.rnn.weight_hh_l0.min().item(),
+                'max': self.rnn.weight_hh_l0.max().item()
+            }
+            
+            info['ho_weight_stats'] = {
+                'mean': self.fc.weight.mean().item(),
+                'std': self.fc.weight.std().item(),
+                'min': self.fc.weight.min().item(),
+                'max': self.fc.weight.max().item()
+            }
+        
+        # Mask information
+        if self.input_weight_mask is not None:
+            info['input_mask_stats'] = {
+                'total_connections': self.input_weight_mask.numel(),
+                'masked_connections': (self.input_weight_mask == 0).sum().item(),
+                'unmasked_connections': (self.input_weight_mask == 1).sum().item(),
+                'sparsity': (self.input_weight_mask == 0).float().mean().item()
+            }
+        
+        if self.output_weight_mask is not None:
+            info['output_mask_stats'] = {
+                'total_connections': self.output_weight_mask.numel(),
+                'masked_connections': (self.output_weight_mask == 0).sum().item(),
+                'unmasked_connections': (self.output_weight_mask == 1).sum().item(),
+                'sparsity': (self.output_weight_mask == 0).float().mean().item()
+            }
+        
+        return info
+
+    def freeze_weights(self, ih_w=None, ih_b=None, hh_w=None, hh_b=None, ho_w=None, ho_b=None):
+        """
+        Freeze or unfreeze specific weight/bias components after initialization.
+        
+        Parameters
+        ----------
+        ih_w, ih_b, hh_w, hh_b, ho_w, ho_b : bool, optional
+            Whether to freeze (True) or unfreeze (False) each weight/bias component.
+            If None (default), the current state is unchanged.
+        """
+        if ih_w is not None:
+            self.rnn.weight_ih_l0.requires_grad_(not ih_w)
+        if ih_b is not None and hasattr(self.rnn, 'bias_ih_l0') and self.rnn.bias_ih_l0 is not None:
+            self.rnn.bias_ih_l0.requires_grad_(not ih_b)
+        if hh_w is not None:
+            self.rnn.weight_hh_l0.requires_grad_(not hh_w)
+        if hh_b is not None and hasattr(self.rnn, 'bias_hh_l0') and self.rnn.bias_hh_l0 is not None:
+            self.rnn.bias_hh_l0.requires_grad_(not hh_b)
+        if ho_w is not None:
+            self.fc.weight.requires_grad_(not ho_w)
+        if ho_b is not None and self.fc.bias is not None:
+            self.fc.bias.requires_grad_(not ho_b)
 
 
 def rnn_custom(input: torch.Tensor, 
@@ -291,235 +655,8 @@ class CustomRNN(nn.RNNBase):
         return output, hidden
 
 
-def rnn_custom_optimized(input_data: torch.Tensor,
-                         hx: torch.Tensor,
-                         w_ih: torch.Tensor,
-                         w_hh: torch.Tensor,
-                         b_ih: Optional[torch.Tensor],
-                         b_hh: Optional[torch.Tensor],
-                         nonlinearity: str,
-                         alpha: float,
-                         batch_first: bool,
-                         is_packed: bool = False,
-                         batch_sizes: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
-    """
-    Optimized implementation of custom RNN cell with fused matrix operations.
-    
-    Parameters:
-        input_data: Input tensor [seq_len, batch, input_size] or packed sequence data
-        hx: Initial hidden state [batch, hidden_size]
-        w_ih: Input-to-hidden weights [hidden_size, input_size]
-        w_hh: Hidden-to-hidden weights [hidden_size, hidden_size]
-        b_ih: Input-to-hidden bias [hidden_size] or None
-        b_hh: Hidden-to-hidden bias [hidden_size] or None
-        nonlinearity: Activation function ('tanh', 'relu', 'postanh', 'retanh', 'sigmoid')
-        alpha: Continuous-time parameter (0 = standard RNN, higher values increase state memory)
-        batch_first: Whether input has batch dimension first
-        is_packed: Whether input is from a PackedSequence
-        batch_sizes: Batch sizes for PackedSequence processing
-    
-    Returns:
-        output: Output of RNN [seq_len, batch, hidden_size] or packed data
-        h_n: Final hidden state [batch, hidden_size]
-    """
-    # Pre-concatenate weights for more efficient computation
-    combined_weight = torch.cat([w_ih, w_hh], dim=1)
-    
-    # Handle None biases by replacing with zeros
-    hidden_size = w_ih.size(0)
-    device, dtype = input_data.device, input_data.dtype
-    
-    if b_ih is None:
-        b_ih = torch.zeros(hidden_size, device=device, dtype=dtype)
-    if b_hh is None:
-        b_hh = torch.zeros(hidden_size, device=device, dtype=dtype)
-    
-    # Combine biases
-    combined_bias = b_ih + b_hh
-    
-    # Ensure correct input layout
-    if batch_first and not is_packed:
-        input_data = input_data.transpose(0, 1)  # Convert to [seq_len, batch, features]
-    
-    # Determine dimensions
-    if is_packed:
-        assert batch_sizes is not None, "batch_sizes must be provided for packed sequences"
-        max_batch_size = batch_sizes[0].item()
-        output_size = input_data.size(0)
-        output = torch.zeros(output_size, hidden_size, device=device, dtype=dtype)
-    else:
-        seq_len, batch_size, _ = input_data.size()
-        output = torch.zeros(seq_len, batch_size, hidden_size, device=device, dtype=dtype)
-    
-    # Initial hidden state
-    h = hx.clone()  # Clone to avoid modifying the input
-    
-    # Process the sequence
-    if is_packed:
-        batch_offset = 0
-        for time in range(len(batch_sizes)):
-            curr_batch_size = batch_sizes[time].item()
-            
-            # Get input for this timestep
-            x_t = input_data[batch_offset:batch_offset + curr_batch_size]
-            
-            # Concatenate with hidden state for efficient computation
-            combined_input = torch.cat([x_t, h[:curr_batch_size]], dim=1)
-            
-            # Single matrix multiplication
-            preactivation = F.linear(combined_input, combined_weight, combined_bias)
-            
-            # Apply activation
-            if nonlinearity == "tanh":
-                h_new = torch.tanh(preactivation)
-            elif nonlinearity == "relu":
-                h_new = torch.relu(preactivation)
-            elif nonlinearity == "postanh":
-                h_new = 0.5 * (torch.tanh(2 * preactivation) + 1)
-            elif nonlinearity == "retanh":
-                h_new = torch.relu(torch.tanh(preactivation))
-            elif nonlinearity == "sigmoid":
-                h_new = torch.sigmoid(preactivation)
-            else:
-                h_new = torch.tanh(preactivation)
-            
-            # Apply alpha using lerp
-            h_out = torch.lerp(h_new, h[:curr_batch_size], alpha)
-            
-            # Update hidden state
-            h[:curr_batch_size] = h_out
-            
-            # Store output
-            output[batch_offset:batch_offset + curr_batch_size] = h_out
-            
-            # Update batch offset
-            batch_offset += curr_batch_size
-    else:
-        for t in range(seq_len):
-            x_t = input_data[t]
-            
-            # Concatenate input with hidden state for efficient computation
-            combined_input = torch.cat([x_t, h], dim=1)
-            
-            # Single matrix multiplication
-            preactivation = F.linear(combined_input, combined_weight, combined_bias)
-            
-            # Apply activation
-            if nonlinearity == "tanh":
-                h_new = torch.tanh(preactivation)
-            elif nonlinearity == "relu":
-                h_new = torch.relu(preactivation)
-            elif nonlinearity == "postanh":
-                h_new = 0.5 * (torch.tanh(2 * preactivation) + 1)
-            elif nonlinearity == "retanh":
-                h_new = torch.relu(torch.tanh(preactivation))
-            elif nonlinearity == "sigmoid":
-                h_new = torch.sigmoid(preactivation)
-            else:
-                h_new = torch.tanh(preactivation)
-            
-            # Apply alpha using lerp
-            h = torch.lerp(h_new, h, alpha)
-            
-            # Store output
-            output[t] = h
-    
-    # Restore batch_first if needed
-    if batch_first and not is_packed:
-        output = output.transpose(0, 1)
-    
-    return output, h
-
-
-#class CustomRNN(nn.RNNBase):
-    def __init__(self, 
-                 input_size: int,
-                 hidden_size: int,
-                 num_layers: int = 1,
-                 bias: bool = True,
-                 batch_first: bool = False,
-                 dropout: float = 0.,
-                 bidirectional: bool = False,
-                 nonlinearity: str = 'postanh',
-                 alpha: float = 0) -> None:
-        """
-        RNN module with additional activation functions and support for continuous time update.
-        """
-        super().__init__(
-            mode='RNN_TANH',
-            input_size=input_size,
-            hidden_size=hidden_size,
-            num_layers=num_layers,
-            bias=bias,
-            batch_first=batch_first,
-            dropout=dropout,
-            bidirectional=bidirectional
-        )
-        self.nonlinearity = nonlinearity
-        self.alpha = alpha
-
-    def forward(self, 
-                input: Union[torch.Tensor, PackedSequence], 
-                hx: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Forward pass using the optimized RNN implementation.
-        """
-        # Handle PackedSequence
-        is_packed = isinstance(input, PackedSequence)
-        if is_packed:
-            input_data = input.data
-            batch_sizes = input.batch_sizes
-            sorted_indices = input.sorted_indices
-            unsorted_indices = input.unsorted_indices
-            max_batch_size = batch_sizes[0].item()
-        else:
-            input_data = input
-            batch_sizes = None
-            sorted_indices = None
-            unsorted_indices = None
-            max_batch_size = input_data.size(0) if self.batch_first else input_data.size(1)
-
-        # Initialize hidden state if needed
-        if hx is None:
-            hx = torch.zeros(self.num_layers * (2 if self.bidirectional else 1),
-                           max_batch_size, self.hidden_size,
-                           dtype=input_data.dtype, device=input_data.device)
-        else:
-            # Handle hidden state reshaping if needed
-            if hx.dim() == 2:
-                hx = hx.unsqueeze(0)
-
-        self.check_forward_args(input_data, hx, batch_sizes)
-        
-        # Get weights
-        w_ih, w_hh, b_ih, b_hh = self.all_weights[0]
-        
-        # Process with the optimized RNN function
-        output, h_n = rnn_custom_optimized(
-            input_data=input_data,
-            hx=hx[0],  # Use first layer's hidden state
-            w_ih=w_ih,
-            w_hh=w_hh,
-            b_ih=b_ih,
-            b_hh=b_hh,
-            nonlinearity=self.nonlinearity,
-            alpha=self.alpha,
-            batch_first=self.batch_first,
-            is_packed=is_packed,
-            batch_sizes=batch_sizes
-        )
-        
-        # Repack if needed
-        if is_packed:
-            output = PackedSequence(output, batch_sizes, sorted_indices, unsorted_indices)
-        
-        # Add layer dimension to hidden state
-        hidden = h_n.unsqueeze(0)
-        
-        return output, hidden
-
-
 def run_training(dataset, model, optimizer, criterion, config, scheduler=None, return_models=False, epoch_log=10, run=None):
+    microtiming = False
     t_overall = timer()
     model.train()
     device = config['device']
@@ -546,36 +683,43 @@ def run_training(dataset, model, optimizer, criterion, config, scheduler=None, r
     # Train the model
     for epoch in range(n_epochs):
         # get data
-        # t1 = time.time() # TIME 
+        if microtiming:
+            t1 = time.time()
         dataset.env.reset(seed=int(n_epochs+epoch))
         inputs, labels = dataset()
-        # data_gen_time = time.time() - t1 # TIME 
+        if microtiming:
+            data_gen_time = time.time() - t1 
         try:
             labels = fix_labels(labels, decision=int(decision / dt), trim=trim)
         except:
             pass
         # split into train and validation
-        # t2 = time.time() # TIME 
+        if microtiming:
+            t2 = time.time()
         inputs_tra = inputs[:, :int(batch_size/2), :]
         inputs_val = inputs[:, int(batch_size/2):, :]
         labels_tra = labels[:, :int(batch_size/2)]
         labels_val = labels[:, int(batch_size/2):]
-        # data_split_time = time.time() - t2 # TIME 
+        if microtiming:
+            data_split_time = time.time() - t2 
         # convert to tensor
-        # t3 = time.time() # TIME 
+        if microtiming:
+            t3 = time.time()
         inputs_tra = torch.from_numpy(inputs_tra).type(torch.float).to(device)
         inputs_val = torch.from_numpy(inputs_val).type(torch.float).to(device)
         labels_tra = torch.from_numpy(labels_tra.flatten()).type(torch.long).to(device)
         labels_val = torch.from_numpy(labels_val.flatten()).type(torch.long).to(device)
-        # data_transfer_time = time.time() - t3 # TIME 
+        if microtiming:
+            data_transfer_time = time.time() - t3
         
         # zero the parameter gradients
         optimizer.zero_grad()
 
         # get model outputs for training data
-        # t4 = time.time() # TIME 
-        # with autocast():
+        if microtiming:
+            t4 = time.time()
         outputs, _ = model(inputs_tra)
+        
         # compute loss for training data
         loss = criterion(outputs.view(-1, model.num_classes), labels_tra)
 
@@ -599,12 +743,14 @@ def run_training(dataset, model, optimizer, criterion, config, scheduler=None, r
         # update scheduler
         if scheduler is not None:
             scheduler.step()
-        # compute_time = time.time() - t4 # TIME 
+        if microtiming:
+            compute_time = time.time() - t4 
         # store loss
         training_loss.append(loss.item())
 
-        # if epoch % 10 == 0:
-        #     print(f"Epoch {epoch}: Data gen: {data_gen_time:.3f}s, Data plit: {data_split_time:.3f}, Transfer: {data_transfer_time:.3f}s, Compute: {compute_time:.3f}s")
+        if microtiming:
+            if epoch % 10 == 0:
+                print(f"Epoch {epoch}: Data gen: {data_gen_time:.3f}s, Data split: {data_split_time:.3f}, Transfer: {data_transfer_time:.3f}s, Compute: {compute_time:.3f}s", flush=True)
         
         # validation
         with torch.no_grad():
@@ -844,7 +990,7 @@ def train_helper(run, config):
                 input_weight_mask=input_weight_mask, 
                 output_weight_mask=output_weight_mask,
                 alpha=config['alpha'],
-                init_rnn_weights=config['init_rnn_weights'])
+                init_ih_w=config['init_rnn_weights'])
     # if config['n_gpu'] > 1:
     #     model = nn.DataParallel(model)
     model.to(config['device'])
