@@ -2,12 +2,14 @@
 
 ########################################################################################################################
 
+params="202506a"
+
 # directories
 if [ $(uname -s) == "Darwin" ]; then
   if [ $USER == "ahmad" ]; then
     scriptsdir='/Users/ahmad/software/snaplab_github/neuro_rnn/scripts'
     datadir='/Users/ahmad/software/snaplab_github/neuro_rnn/data'
-    outdir='/Users/ahmad/data/rutgers/neuro_rnn/results/pytorch/model/20250508'
+    outdir="/Users/ahmad/data/rutgers/neuro_rnn/results/pytorch/model/${params}"
   fi
 else
   if [ $USER == "lindenmp" ]; then
@@ -17,7 +19,7 @@ else
   elif [ $USER == "ab2792" ]; then
     scriptsdir='/home/ab2792/software/snaplab_github/neuro_rnn/scripts'
     datadir='/home/ab2792/software/snaplab_github/neuro_rnn/data'
-    outdir='/home/ab2792/data/neuro_rnn/results/pytorch/model/20250203'
+    outdir="/home/ab2792/data/neuro_rnn/results/pytorch/model/${params}"
   fi
 fi
 
@@ -26,7 +28,7 @@ source ~/.bashrc
 conda activate neuro_rnn
 
 # path to inputs csv
-params_file="$datadir/model_params_gng_pdm_dms.csv" # < < < < < < < < < < < < < < < < SELECT MODELS FILE HERE
+params_file="$datadir/model_params_${params}.csv" # < < < < < < < < < < < < < < < < SELECT MODELS FILE HERE
 tmp_params_file="/tmp/$(basename ${params_file%.csv})_${RANDOM}${RANDOM}.csv"
 cp "$params_file" "$tmp_params_file" 
 params_file="$tmp_params_file"
