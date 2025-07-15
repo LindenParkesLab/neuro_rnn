@@ -17,6 +17,56 @@ warnings.simplefilter(action='ignore', category=UserWarning)
 
 # %%
 
+def cleanup_and_exit(exit_code, message):
+    """Clean up resources that prevent script exit, and force exit"""
+    import gc
+    import time
+    
+    print("Cleaning up for script exit...", flush=True)
+    
+    # 1. PyTorch cleanup
+    try:
+        if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+            torch.mps.empty_cache()
+    except:
+        pass
+    
+    # 2. HDF5 cleanup  
+    try:
+        import h5py
+        for obj_id in h5py.h5f.get_obj_ids(h5py.h5f.OBJ_ALL):
+            try:
+                h5py.h5o.close(obj_id)
+            except:
+                pass
+    except:
+        pass
+    
+    # 3. Multiprocessing cleanup
+    try:
+        import multiprocessing as mp
+        for p in mp.active_children():
+            p.terminate()
+            p.join(timeout=0.5)
+    except:
+        pass
+    
+    # 4. Multiple garbage collection passes
+    for _ in range(3):
+        gc.collect()
+    
+    # 5. Brief pause for cleanup
+    time.sleep(0.1)
+    
+    print("Cleanup completed", flush=True)
+    if exit_code == 0:
+        print(f"Script completed successfully{': ' + message if message else ''}", flush=True)
+    else:
+        print(f"Script failed (exit code {exit_code}){': ' + message if message else ''}", file=sys.stderr, flush=True)
+
+    os._exit(exit_code)
+
+
 def train_helper_with_gpu_assignment(run_gpu_pair, config):
     """
     Wrapper function for multiprocessing with GPU assignment
@@ -100,36 +150,6 @@ def train(config):
     else:
         all_done = False
         rem_runs = np.arange(n_runs)
-    
-    # if not all_done:
-    #     # prepare partial function for multiprocessing
-    #     partial_train_helper = partial(train_helper, config=config)
-    #     if device.type == 'cuda' or device.type == 'mps' or ( device.type == 'cpu' and n_threads == 1 ):
-    #         print(f'running in serial on {device.type}...')
-    #         if device.type == 'cuda':
-    #             print(f"each run will use {config['n_gpu']} gpus...")
-    #         # train runs in sequence
-    #         for run in rem_runs:
-    #             outputs, models = partial_train_helper(run)
-    #             # save outputs and models
-    #             print(f'saving outputs and models for run {run+1}')
-    #             output_manager.save_model_data(outputs, run)
-    #             model_manager.save_model_states(models, run)
-    #     else:
-    #         print(f'running in parallel on {device.type} using {n_threads} threads...')
-    #         # prepare processing chunks
-    #         proc_chunks = np.array_split(rem_runs, np.ceil(len(rem_runs)/n_threads))
-    #         # train runs in parallel on cpu
-    #         for chunk in proc_chunks:
-    #             with torch.multiprocessing.get_context('spawn').Pool(processes=len(chunk), maxtasksperchild=1) as pool:
-    #                 outputs, models = zip(*pool.map(partial_train_helper, chunk))
-    #             # save outputs and models
-    #             print(f'saving outputs and models for runs {chunk+1}')
-    #             for idx, run in enumerate(chunk):
-    #                 output_manager.save_model_data(outputs[idx], run)
-    #                 model_manager.save_model_states(models[idx], run)
-    #     # save config
-    #     np.save(config_path, config)
     
     if not all_done:
         # Print GPU environment info for debugging
@@ -273,6 +293,9 @@ def get_args():
 
 
 if __name__ == '__main__':
+
+    exit_code = 0
+    error_message = ""
     
     args = get_args()
     
@@ -368,4 +391,34 @@ if __name__ == '__main__':
         
     }
 
-    train(config=config)
+    try:
+        train(config=config)
+        exit_code = 0
+        error_message = ''
+        print(error_message, flush=True)
+
+    except KeyboardInterrupt:
+        exit_code = 2
+        error_message = "Script interrupted by user (Ctrl+C)"
+        print("\nScript interrupted by user")
+        
+    except FileNotFoundError as e:
+        exit_code = 5
+        error_message = f"File not found: {str(e)}"
+        print(f"File error: {e}", file=sys.stderr, flush=True)
+        
+    except PermissionError as e:
+        exit_code = 5
+        error_message = f"Permission error: {str(e)}"
+        print(f"Permission error: {e}", file=sys.stderr, flush=True)
+        
+    except Exception as e:
+        exit_code = 1
+        error_message = f"Unexpected error: {str(e)}"
+        print(f"Error occurred: {e}", file=sys.stderr, flush=True)
+        import traceback
+        traceback.print_exc()
+
+    finally:
+        cleanup_and_exit(exit_code, error_message)
+        # os._exit(0)

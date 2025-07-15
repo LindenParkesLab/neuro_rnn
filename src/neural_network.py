@@ -835,7 +835,7 @@ def run_testing(dataset, model, n_trials=1000, verbose=True):
     # Environment
     env = dataset.env
     env.timing = infer_test_timing(env)
-    env.reset(no_step=True)
+    env.reset() #no_step=True)
 
     # compute test performance
     inputs = list()
