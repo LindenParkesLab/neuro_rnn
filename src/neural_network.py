@@ -136,6 +136,11 @@ class RNN(nn.Module):
         - 0.0: Standard discrete RNN updates
         - (0, 1): Interpolation between new activation and previous state
         - Update equation: h(t+1) = α * h(t) + (1-α) * f(Wh(t) + Ux(t) + b)
+        
+    rec_noise : float, default = 0.0
+        Scale of the Gaussian noise (centered at zero with unit variance) injected into 
+        each node during the forward pass, range [0,1]. Noise is calculated using the 
+        following equation: noise = √(2/(1-alpha)) * rec_noise * N(0,1).
     
     Examples
     --------
@@ -185,7 +190,8 @@ class RNN(nn.Module):
                  init_ho_b: Union[None, float, tuple[float,float], np.ndarray] = None, 
                  train_ho_b: bool = True, 
                  allow_self_connections: bool = True,
-                 alpha: float = 0.0):
+                 alpha: float = 0.0,
+                 rec_noise: float = 0.05):
         
         super(RNN, self).__init__()
         
@@ -195,12 +201,14 @@ class RNN(nn.Module):
         self.num_classes = num_classes
         self.rnn_type = type
         self.alpha = alpha
+        self.rec_noise = rec_noise
         self.allow_self_connections = allow_self_connections
         
         # Create RNN layer based on type
         if type.replace('rnn-','') in ['tanh','relu','retanh','postanh','sigmoid']:
             self.rnn = CustomRNN(input_size, hidden_size, 1, 
-                               nonlinearity=type.replace('rnn-',''), alpha=alpha)
+                               nonlinearity=type.replace('rnn-',''), 
+                               alpha=alpha, rec_noise=rec_noise)
             n_repeats = 1
         elif type == 'lstm':
             self.rnn = nn.LSTM(input_size, hidden_size, 1)
@@ -507,7 +515,8 @@ def rnn_custom(input: torch.Tensor,
                 bidirectional: bool,
                 batch_first: bool,
                 nonlinearity: str = 'tanh',
-                alpha: float = 0) -> Tuple[torch.Tensor, torch.Tensor]:
+                alpha: float = 0.0,
+                rec_noise: float = 0.0) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Implementation of RNN cell with custom activation, following PyTorch's RNN interface.
     This function broadly mimics the behavior of torch._VF.rnn_tanh and torch._VF.rnn_relu.
@@ -516,6 +525,8 @@ def rnn_custom(input: torch.Tensor,
     - 'alpha' is a 'memory' parameter: alpha = 0 (default) yields standard RNN behavior, 
     and larger values closer to 1 cause the RNN to relie more on its previous states with each update.
     The update equation is: r(t+1) = a*r(t) + (1-a)*f(Ar(t) + Bu(t) + d).
+    - 'rec_noise' is the scaling factor for the Gaussian noise injected into the hidden layer with 
+    each update. Noise is calculated as √(2/(1-a)) * rec_noise * N(0,1).
     """
     if has_biases:
         w_ih, w_hh, b_ih, b_hh = params
@@ -537,12 +548,20 @@ def rnn_custom(input: torch.Tensor,
 
     output = []
     h_n = hx  # Use this to store the final hidden state
+    
+    # Determine noise scale
+    noise_scale = torch.tensor( np.sqrt(2/(1-alpha)) * rec_noise )
 
     for t in range(seq_len):
         x_t = input_data[t]
         
         # Calculate preactivation values
         preactivation = F.linear(x_t, w_ih, b_ih) + F.linear(h_n, w_hh, b_hh)
+        
+        # Add noise
+        if train and rec_noise > 0:
+            noise = torch.randn_like(preactivation) * noise_scale
+            preactivation = preactivation + noise 
         
         # The calculation of the output hidden state can be performed as an interpolation 
         # between h_(t-1) and h_t with weight alpha, using torch.lerp.
@@ -585,7 +604,8 @@ class CustomRNN(nn.RNNBase):
                  dropout: float = 0.,
                  bidirectional: bool = False,
                  nonlinearity: str = 'postanh',
-                 alpha: float = 0) -> None:
+                 alpha: float = 0.0,
+                 rec_noise: float = 0.0) -> None:
         """
         RNN module with additional activation functions and support for continous time update.
         Args broadly match PyTorch's RNN class for drop-in replacement capability with additions.
@@ -593,6 +613,8 @@ class CustomRNN(nn.RNNBase):
         - 'alpha' is a 'memory' parameter: alpha = 0 (default) yields standard RNN behavior, 
         and larger values closer to 1 cause the RNN to relie more on its previous states with each update.
         The update equation is: r(t+1) = a*r(t) + (1-a)*f(Ar(t) + Bu(t) + d).
+        - 'rec_noise' is the scaling factor for the Gaussian noise injected into the hidden layer with 
+        each update. Noise is calculated as √(2/(1-a)) * rec_noise * N(0,1).
         """
         super().__init__(
             mode='RNN_TANH',  # RNNBase only accepts RNN_TANH or RNN_RELU, but this doesn't affect our implementation because we define forward here
@@ -606,6 +628,7 @@ class CustomRNN(nn.RNNBase):
         )
         self.nonlinearity = nonlinearity
         self.alpha = alpha
+        self.rec_noise = rec_noise
 
     def forward(self, 
                 input: Union[torch.Tensor, PackedSequence], 
@@ -646,7 +669,8 @@ class CustomRNN(nn.RNNBase):
             bidirectional=self.bidirectional,
             batch_first=self.batch_first,
             nonlinearity=self.nonlinearity,
-            alpha=self.alpha
+            alpha=self.alpha,
+            rec_noise=self.rec_noise
         )
         
         # Ensure hidden state has the correct shape
