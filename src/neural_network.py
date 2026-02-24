@@ -131,16 +131,17 @@ class RNN(nn.Module):
         If False, diagonal elements of the hh_w matrix are forced to zero during forward pass.
         This constraint is applied regardless of initialization or training status.
         
-    alpha : float, default=0.0
+    alpha : float, default=1.0
         Continuous-time parameter in the range [0,1]:
-        - 0.0: Standard discrete RNN updates
+        - 1.0: Standard discrete RNN updates
         - (0, 1): Interpolation between new activation and previous state
-        - Update equation: h(t+1) = α * h(t) + (1-α) * f(Wh(t) + Ux(t) + b)
+        - Update equation: h(t+1) = (1-α) * h(t) + α * f(Wh(t) + Ux(t) + b)
         
     rec_noise : float, default = 0.0
-        Scale of the Gaussian noise (centered at zero with unit variance) injected into 
+        Scale, σ, of the Gaussian noise (centered at zero with unit variance) injected into 
         each node during the forward pass, range [0,1]. Noise is calculated using the 
-        following equation: noise = √(2/(1-alpha)) * rec_noise * N(0,1).
+        following equation: noise = √(2 * α^-1 * σ^2) * N(0,1), where N is a vector of 
+        independent Gaussian noise processes (one value per node).
     
     Examples
     --------
@@ -190,7 +191,7 @@ class RNN(nn.Module):
                  init_ho_b: Union[None, float, tuple[float,float], np.ndarray] = None, 
                  train_ho_b: bool = True, 
                  allow_self_connections: bool = True,
-                 alpha: float = 0.0,
+                 alpha: float = 1.0,
                  rec_noise: float = 0.05):
         
         super(RNN, self).__init__()
@@ -505,178 +506,9 @@ class RNN(nn.Module):
             self.fc.bias.requires_grad_(not ho_b)
 
 
-# def rnn_custom(input: torch.Tensor, 
-#                 hx: torch.Tensor, 
-#                 params: torch.Tensor,
-#                 has_biases: bool,
-#                 num_layers: int,
-#                 dropout: float,
-#                 train: bool,
-#                 bidirectional: bool,
-#                 batch_first: bool,
-#                 nonlinearity: str = 'tanh',
-#                 alpha: float = 0.0,
-#                 rec_noise: float = 0.0) -> Tuple[torch.Tensor, torch.Tensor]:
-#     """
-#     Implementation of RNN cell with custom activation, following PyTorch's RNN interface.
-#     This function broadly mimics the behavior of torch._VF.rnn_tanh and torch._VF.rnn_relu.
-    
-#     - 'nonliearity' can be: 'tanh', 'relu', 'retanh', 'postanh', 'sigmoid'.
-#     - 'alpha' is a 'memory' parameter: alpha = 0 (default) yields standard RNN behavior, 
-#     and larger values closer to 1 cause the RNN to relie more on its previous states with each update.
-#     The update equation is: r(t+1) = a*r(t) + (1-a)*f(Ar(t) + Bu(t) + d).
-#     - 'rec_noise' is the scaling factor for the Gaussian noise injected into the hidden layer with 
-#     each update. Noise is calculated as √(2/(1-a)) * rec_noise * N(0,1).
-#     """
-#     if has_biases:
-#         w_ih, w_hh, b_ih, b_hh = params
-#     else:
-#         w_ih, w_hh = params
-#         b_ih = b_hh = None
-
-#     if batch_first and not isinstance(input, PackedSequence):
-#         input = input.transpose(0, 1)  # Convert to seq_len, batch, input_size
-
-#     if isinstance(input, PackedSequence):
-#         input_data = input.data
-#     else:
-#         input_data = input
-
-#     seq_len = input_data.size(0)
-#     batch_size = input_data.size(1)
-#     hidden_size = hx.size(-1)
-
-#     output = []
-#     h_n = hx  # Use this to store the final hidden state
-    
-#     # Determine noise scale
-#     noise_scale = torch.tensor( np.sqrt(2/(1-alpha)) * rec_noise )
-
-#     for t in range(seq_len):
-#         x_t = input_data[t]
-        
-#         # Calculate preactivation values
-#         preactivation = F.linear(x_t, w_ih, b_ih) + F.linear(h_n, w_hh, b_hh)
-        
-#         # Add noise
-#         if train and rec_noise > 0:
-#             noise = torch.randn_like(preactivation) * noise_scale
-#             preactivation = preactivation + noise 
-        
-#         # The calculation of the output hidden state can be performed as an interpolation 
-#         # between h_(t-1) and h_t with weight alpha, using torch.lerp.
-#         if nonlinearity == "tanh":
-#             h_n = torch.lerp(torch.tanh(preactivation), h_n, alpha)
-#         elif nonlinearity == "relu":
-#             h_n = torch.lerp(torch.relu(preactivation), h_n, alpha)
-#         elif nonlinearity == "postanh":
-#             h_n = torch.lerp(postanh(preactivation), h_n, alpha)
-#         elif nonlinearity == "retanh":
-#             h_n = torch.lerp(torch.relu(torch.tanh(preactivation)), h_n, alpha)
-#         elif nonlinearity == "sigmoid":
-#             h_n = torch.lerp(torch.sigmoid(preactivation), h_n, alpha)
-        
-#         # Ensure h_n maintains the correct batch size
-#         h_n = h_n.view(batch_size, -1)
-        
-#         output.append(h_n)
-    
-#     # Stack sequence outputs
-#     output = torch.stack(output, dim=0)  # Shape: [seq_len, batch, hidden]
-    
-#     if batch_first and not isinstance(input, PackedSequence):
-#         output = output.transpose(0, 1)  # Convert to batch, seq_len, hidden
-    
-#     return output, h_n
-
-
 def postanh(x):
     return 0.5 * (torch.tanh(2 * x) + 1)
 
-
-# class CustomRNN(nn.RNNBase):
-#     def __init__(self, 
-#                  input_size: int,
-#                  hidden_size: int,
-#                  num_layers: int = 1,
-#                  bias: bool = True,
-#                  batch_first: bool = False,
-#                  dropout: float = 0.,
-#                  bidirectional: bool = False,
-#                  nonlinearity: str = 'postanh',
-#                  alpha: float = 0.0,
-#                  rec_noise: float = 0.0) -> None:
-#         """
-#         RNN module with additional activation functions and support for continous time update.
-#         Args broadly match PyTorch's RNN class for drop-in replacement capability with additions.
-#         - 'nonliearity' can be: 'tanh', 'relu', 'retanh', 'postanh', 'sigmoid'.
-#         - 'alpha' is a 'memory' parameter: alpha = 0 (default) yields standard RNN behavior, 
-#         and larger values closer to 1 cause the RNN to relie more on its previous states with each update.
-#         The update equation is: r(t+1) = a*r(t) + (1-a)*f(Ar(t) + Bu(t) + d).
-#         - 'rec_noise' is the scaling factor for the Gaussian noise injected into the hidden layer with 
-#         each update. Noise is calculated as √(2/(1-a)) * rec_noise * N(0,1).
-#         """
-#         super().__init__(
-#             mode='RNN_TANH',  # RNNBase only accepts RNN_TANH or RNN_RELU, but this doesn't affect our implementation because we define forward here
-#             input_size=input_size,
-#             hidden_size=hidden_size,
-#             num_layers=num_layers,
-#             bias=bias,
-#             batch_first=batch_first,
-#             dropout=dropout,
-#             bidirectional=bidirectional
-#         )
-#         self.nonlinearity = nonlinearity
-#         self.alpha = alpha
-#         self.rec_noise = rec_noise
-
-#     def forward(self, 
-#                 input: Union[torch.Tensor, PackedSequence], 
-#                 hx: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
-#         """
-#         Forward pass of the CustomRNN.
-#         Args match PyTorch's RNN forward method for drop-in replacement capability.
-#         """
-#         is_packed = isinstance(input, PackedSequence)
-#         if is_packed:
-#             input, batch_sizes, sorted_indices, unsorted_indices = input
-#             max_batch_size = batch_sizes[0]
-#             max_batch_size = int(max_batch_size)
-#         else:
-#             batch_sizes = None
-#             max_batch_size = input.size(0) if self.batch_first else input.size(1)
-#             sorted_indices = None
-#             unsorted_indices = None
-
-#         if hx is None:
-#             hx = torch.zeros(self.num_layers * (2 if self.bidirectional else 1),
-#                            max_batch_size, self.hidden_size,
-#                            dtype=input.dtype, device=input.device)
-#         else:
-#             # Handle hidden state reshaping if needed
-#             if hx.dim() == 2:
-#                 hx = hx.unsqueeze(0)
-
-#         self.check_forward_args(input, hx, batch_sizes)
-#         output, hidden = rnn_custom(
-#             input=input,
-#             hx=hx[0],  # Take only the first layer for now
-#             params=self.all_weights[0],  # Currently only supports single layer
-#             has_biases=self.bias,
-#             num_layers=self.num_layers,
-#             dropout=self.dropout,
-#             train=self.training,
-#             bidirectional=self.bidirectional,
-#             batch_first=self.batch_first,
-#             nonlinearity=self.nonlinearity,
-#             alpha=self.alpha,
-#             rec_noise=self.rec_noise
-#         )
-        
-#         # Ensure hidden state has the correct shape
-#         hidden = hidden.unsqueeze(0)  # Add layer dimension
-        
-#         return output, hidden
 
 class CustomRNN(nn.RNNBase):
     def __init__(self, 
@@ -688,15 +520,10 @@ class CustomRNN(nn.RNNBase):
                  dropout: float = 0.,
                  bidirectional: bool = False,
                  nonlinearity: str = 'postanh',
-                 alpha: float = 0.0,
+                 alpha: float = 1.0,
                  rec_noise: float = 0.0) -> None:
         """
-        Enhanced RNN module with custom activation functions and continuous time dynamics.
-        
-        This class incorporates all the functionality from the rnn_custom function directly
-        into its forward method, eliminating the need for external function calls.
-        
-        Parameters match those of CustomRNN for drop-in replacement capability.
+        RNN module with custom activation functions and continuous time dynamics.
         """
         super().__init__(
             mode='RNN_TANH',  # RNNBase requirement, doesn't affect our implementation
@@ -717,9 +544,6 @@ class CustomRNN(nn.RNNBase):
                 hx: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Forward pass with integrated RNN cell computation.
-        
-        This method contains all the logic previously handled by the rnn_custom function,
-        including custom nonlinearities, alpha interpolation, and recurrent noise.
         """
         # Handle PackedSequence input
         is_packed = isinstance(input, PackedSequence)
@@ -774,7 +598,7 @@ class CustomRNN(nn.RNNBase):
         
         # Pre-compute noise 
         if self.training and self.rec_noise > 0:
-            noise_scale = torch.tensor(np.sqrt(2/(1-self.alpha)) * self.rec_noise)
+            noise_scale = float(np.sqrt( (2/self.alpha) * self.rec_noise**2) )
             noise = torch.randn((seq_len,batch_size,hidden_size), device=input.device) * noise_scale
 
         # Main sequence processing loop
@@ -790,17 +614,17 @@ class CustomRNN(nn.RNNBase):
                 preactivation += noise[t]
             
             # Apply nonlinearity with alpha interpolation
-            # h_n = alpha * h_n + (1-alpha) * f(preactivation)
+            # h_n = (1-alpha) * h_n + alpha * f(preactivation)
             if self.nonlinearity == "tanh":
-                h_n = torch.lerp(torch.tanh(preactivation), h_n, self.alpha)
+                h_n = torch.lerp(h_n, torch.tanh(preactivation), self.alpha)
             elif self.nonlinearity == "relu":
-                h_n = torch.lerp(torch.relu(preactivation), h_n, self.alpha)
+                h_n = torch.lerp(h_n, torch.relu(preactivation), self.alpha)
             elif self.nonlinearity == "postanh":
-                h_n = torch.lerp(postanh(preactivation), h_n, self.alpha)
+                h_n = torch.lerp(h_n, postanh(preactivation), self.alpha)
             elif self.nonlinearity == "retanh":
-                h_n = torch.lerp(torch.relu(torch.tanh(preactivation)), h_n, self.alpha)
+                h_n = torch.lerp(h_n, torch.relu(torch.tanh(preactivation)), self.alpha)
             elif self.nonlinearity == "sigmoid":
-                h_n = torch.lerp(torch.sigmoid(preactivation), h_n, self.alpha)
+                h_n = torch.lerp(h_n, torch.sigmoid(preactivation), self.alpha)
             
             # Ensure proper batch dimensions
             # h_n = h_n.view(batch_size, -1)
@@ -826,7 +650,7 @@ def run_training(dataset, model, optimizer, criterion, config, scheduler=None, r
     t_overall = timer()
     model.train()
     device = config['device']
-    dt = config['dt']
+    dt = config['time_step']
     try:
         decision = config['env_kwargs']['timing']['decision']
         trim = int((decision - dt) / dt)
@@ -1148,15 +972,28 @@ def train_helper(run, config):
         torch.mps.manual_seed(int(run))
     
     # initialize the model
-    model = RNN(input_size=input_size, 
-                hidden_size=hidden_size, 
-                num_classes=n_classes, 
-                type=config['rnn_model'], 
-                regularization_kernel=config['regularization_kernel'], 
-                input_weight_mask=input_weight_mask, 
+    model = RNN(input_size=input_size,
+                hidden_size=hidden_size,
+                num_classes=n_classes,
+                type=config['rnn_model'],
+                regularization_kernel=config['regularization_kernel'],
+                input_weight_mask=input_weight_mask,
                 output_weight_mask=output_weight_mask,
                 alpha=config['alpha'],
-                init_ih_w=config['init_rnn_weights'])
+                rec_noise=config['rec_noise'],
+                init_ih_w=config['init_ih_w'],
+                train_ih_w=config['train_ih_w'],
+                init_ih_b=config['init_ih_b'],
+                train_ih_b=config['train_ih_b'],
+                init_hh_w=config['init_hh_w'],
+                train_hh_w=config['train_hh_w'],
+                init_hh_b=config['init_hh_b'],
+                train_hh_b=config['train_hh_b'],
+                init_ho_w=config['init_ho_w'],
+                train_ho_w=config['train_ho_w'],
+                init_ho_b=config['init_ho_b'],
+                train_ho_b=config['train_ho_b'],
+                allow_self_connections=config['allow_self_connections'])
     # if config['n_gpu'] > 1:
     #     model = nn.DataParallel(model)
     model.to(config['device'])
@@ -1552,6 +1389,9 @@ def create_rnn_and_env_for_model(model_info: pd.Series, run, epoch, data_dir: st
     # load model state
     file = os.path.join(data_dir, model_info.file_str_models)
     manager = ModelStateManager(file)
+    if epoch == -1:
+        _, epochs, _ = manager.get_info()
+        epoch = epochs[-1]
     state = manager.load_model_states(run, epoch)
     
     # create rnn

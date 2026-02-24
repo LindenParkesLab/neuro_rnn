@@ -94,6 +94,11 @@ def load_embedding(kernel_type=None, datadir=None, hidden_size=100, kernel_norma
         brain_map = brain_map[:hidden_size] 
         distance_matrix = get_brainmap_distance(brain_map=brain_map)
         regularization_kernel = normalize_x(distance_matrix, kernel_normalization)
+    elif kernel_type == 'myelin':
+        brain_map = np.load(os.path.join(datadir, 'schaefer{0}_myelin.npy'.format(hidden_size * 2)))
+        brain_map = brain_map[:hidden_size] 
+        distance_matrix = get_brainmap_distance(brain_map=brain_map)
+        regularization_kernel = normalize_x(distance_matrix, kernel_normalization)
     elif kernel_type == 'struct_conn':
         conn_reg_mat = np.load(os.path.join(datadir, 'schaefer{0}_structural_conn_kernel.npy'.format(hidden_size * 2)))
         distance_matrix = conn_reg_mat[:hidden_size, :][:, :hidden_size] 
@@ -1054,7 +1059,7 @@ def get_params_dataframe(params_dataframe: str | pd.DataFrame, rows: list = [], 
         
         # prepare config
         this['config'] = {
-            'dt': this.time_step, 
+            'time_step': this.time_step,
             'batch_size': this.batch_size, 
             'rnn_model': this.rnn_model, 
             'n_runs': this.n_runs, 

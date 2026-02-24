@@ -1,4 +1,4 @@
-import os, random, argparse, warnings, sys
+import os, random, warnings, sys
 import numpy as np
 from scipy.spatial import distance
 import pandas as pd
@@ -10,6 +10,7 @@ torch.multiprocessing.set_sharing_strategy('file_system')
 
 from src.neural_network import train_helper, ModelStateManager, ModelDataManager
 from src import utils
+from src.io_utils import build_config, print_config
 
 warnings.simplefilter(action='ignore', category=FutureWarning)
 warnings.simplefilter(action='ignore', category=RuntimeWarning)
@@ -242,72 +243,21 @@ def train(config):
         np.save(config_path, config)
 
 
-def get_args():
-    '''function to get args from command line and return the args
-
-    Returns:
-        args: args that could be used by other function
-    '''
-    parser = argparse.ArgumentParser()
-
-    # file locations
-    parser.add_argument('--datadir', type=str, default='/home/lindenmp/research_projects/neuro_rnn/data')
-    parser.add_argument('--outdir', type=str, default='/media/lindenmp/storage_ssd/research_projects/neuro_rnn/results/pytorch/model')
-    
-    # device settings
-    parser.add_argument('--device', type=str, default='None')
-    parser.add_argument('--n_threads', type=int, default=None)
-
-    # data parameters
-    parser.add_argument('--task', type=str, default='PerceptualDecisionMaking-v0')
-    parser.add_argument('--dt', type=int, default=100)
-    parser.add_argument('--seq_len_multi', type=int, default=5)
-
-    # RNN model and training parameters
-    parser.add_argument('--rnn_model', type=str, default='rnn-tanh')
-    parser.add_argument('--hidden_size', type=int, default=100)
-    parser.add_argument('--batch_size', type=int, default=64)
-    parser.add_argument('--learning_rate', type=float, default=0.001)
-    parser.add_argument('--n_runs', type=int, default=50)
-    parser.add_argument('--n_epochs', type=int, default=5000)
-    parser.add_argument('--epoch_log', type=int, default=100)
-    parser.add_argument('--mask_weights', type=str, default='True')
-    # parser.add_argument('--init_rnn_weights', type=lambda s: None if s.lower() == 'none' else tuple(map(float, s.split(','))), nargs=1, default=None)
-    parser.add_argument('--init_rnn_weights', type=str, nargs='+', default=None)
- 
-    # regularization parameters
-    parser.add_argument('--reg_type', type=str, default='l2')
-    parser.add_argument('--reg_weight', type=float, default=0.001)
-    parser.add_argument('--kernel_type', type=str, default='None')
-    parser.add_argument('--kernel_normalization', type=str, default='mean')
-    
-    # continuous time parameter
-    parser.add_argument('--alpha', type=float, default=0.0)
-
-    # parse inputs
-    args = parser.parse_args()
-    args.datadir = os.path.expanduser(args.datadir)
-    args.outdir = os.path.expanduser(args.outdir)
-
-    return args
-
-
 if __name__ == '__main__':
 
     exit_code = 0
     error_message = ""
-    
-    args = get_args()
-    
+
+    config = build_config()
+
     # device configuration
-    device = utils.get_device(args.device)
+    device = utils.get_device(config['device'])
     if device.type == 'cpu':
-        n_threads = utils.get_n_threads(args.n_threads, 1)
+        n_threads = utils.get_n_threads(config['n_threads'], 1)
         n_gpu = 0
     else:
-        # n_threads = None
-        n_threads = args.n_threads
-        device = utils.get_device(device_opt=args.device, n_devices=n_threads)
+        n_threads = config['n_threads']
+        device = utils.get_device(device_opt=config['device'], n_devices=n_threads)
         n_gpu = utils.get_n_gpu()
         try:
             for ii in range(n_gpu):
@@ -315,81 +265,26 @@ if __name__ == '__main__':
         except:
             print(f'gpu -- {device}')
 
-    # kernel and mask
-    if args.kernel_type == 'None':
-        kernel_type = None
-    else:
-        kernel_type = args.kernel_type
+    config['device'] = device
+    config['n_threads'] = n_threads
+    config['n_gpu'] = n_gpu
 
-    if args.mask_weights == 'False':
-        mask_weights = False
-    elif args.mask_weights == 'True':
-        mask_weights = True
-    
-    # rnn weights
-    if args.init_rnn_weights is not None:
-        args.init_rnn_weights = utils.parse_float_tuple(args.init_rnn_weights)
-    
-    # task details 
-    task_with_modifier = args.task
+    # task details
+    task_with_modifier = config['task']
     task_no_modifier, task_modifier = utils.get_task_modifier(task_with_modifier)
     utils.check_if_supported(task=task_no_modifier, modifier=task_modifier)
-    seq_len, timing = utils.get_seq_len_and_timing(task=task_no_modifier, modifier=task_modifier, seq_len_multi=args.seq_len_multi, dt=args.dt)
-    env_kwargs = {'dt': args.dt, 'timing': timing}
+    seq_len, timing = utils.get_seq_len_and_timing(task=task_no_modifier, modifier=task_modifier, seq_len_multi=config['seq_len_multi'], dt=config['time_step'])
+    env_kwargs = {'dt': config['time_step'], 'timing': timing}
     extra_kwargs = utils.get_extra_task_options(task_no_modifier)
     env_kwargs.update(extra_kwargs)
-    print(' ')
-    print('Task:             ' + task_no_modifier)
-    print('Task modifier:    ' + task_modifier)
-    print('Sequence length:  ' + str(seq_len))
-    print('Task options:     ' + str(env_kwargs))
-    print('Timing:           ' + str(timing))
-    print('Alpha:            ' + str(args.alpha))
-    
-    # package all info into config
-    config = {
-        
-        # file locations
-        'datadir': args.datadir,
-        'outdir': args.outdir,
 
-        # task parameters
-        'task_no_modifier': task_no_modifier,
-        'task_modifier': task_modifier,
-        'task_with_modifier': task_with_modifier,
-        'dt': args.dt,
-        'seq_len_multi': args.seq_len_multi,
-        'seq_len': seq_len,
+    config['task_no_modifier'] = task_no_modifier
+    config['task_modifier'] = task_modifier
+    config['task_with_modifier'] = task_with_modifier
+    config['seq_len'] = seq_len
+    config['env_kwargs'] = env_kwargs
 
-        # RNN model and training parameters
-        'rnn_model': args.rnn_model,
-        'hidden_size': args.hidden_size,
-        'batch_size': args.batch_size,
-        'learning_rate': args.learning_rate,
-        'n_runs': args.n_runs,
-        'n_epochs': args.n_epochs,
-        'epoch_log': args.epoch_log,
-        'mask_weights': mask_weights,
-        'init_rnn_weights': args.init_rnn_weights,
-
-        # regularization parameters
-        'reg_type': args.reg_type,
-        'reg_weight': args.reg_weight,
-        'kernel_type': kernel_type,
-        'kernel_normalization': args.kernel_normalization,
-        
-        # continuous time parameter
-        'alpha': args.alpha,
-
-        # ngym env
-        'env_kwargs': env_kwargs,
-        
-        # device settings
-        'device': device,
-        'n_threads': n_threads,
-        'n_gpu': n_gpu
-        
-    }
+    print_config(config)
 
     try:
         train(config=config)
