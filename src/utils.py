@@ -5,9 +5,112 @@ from scipy.spatial import distance
 import torch
 from sklearn.decomposition import PCA
 import pandas as pd
+import scipy.stats as stats
+import os
+import multiprocessing
+import argparse
 
-def normalize_x(x):
-    return (x - np.min(x)) / (np.max(x) - np.min(x))
+def normalize_x(x, method='rescale'):
+    """
+    Normalize a distance matrix using various methods.
+    
+    Parameters
+    ----------
+    x : numpy.ndarray
+        Square distance matrix to normalize, which must be symmetric with zeros on the diagonal
+        
+    method : str, optional
+        Normalization method to use. Options include:
+        - 'rescale': Rescales values to [0.5, 1.5] range
+        - 'mean': Divides by mean value 
+        - 'meansq': Divides by mean of squared values 
+        - 'mean_std': Scales to a mean of 1 and std of 0.3 
+        - 'uniform': Converts to uniform distribution in the [0.5, 1.5] range
+        
+        Default is 'rescale'
+    
+    Returns
+    -------
+    numpy.ndarray
+        Normalized square distance matrix with zeros on diagonal
+    """
+    # Convert to condensed vector form
+    x = distance.squareform(x)
+    
+    if method == 'rescale':
+        min_val, max_val = np.min(x), np.max(x)
+        if max_val > min_val:
+            x = (x - min_val) / (max_val - min_val) + 0.5
+    elif method == 'mean':
+        mean_val = np.mean(x)
+        if mean_val != 0: 
+            x = x / mean_val
+    elif method == 'meansq':
+        mean_sq = np.mean(x**2)
+        if mean_sq != 0:
+            x = (x**2) / mean_sq
+    elif method == 'mean_std':
+        x = x - np.mean(x)
+        std_val = np.std(x)
+        if std_val != 0: 
+            x = x / std_val * 0.33 + 1
+            x = np.maximum(x,0)
+    elif method == 'uniform':
+        ranks = stats.rankdata(x) - 1
+        x = ranks / (len(x) - 1) + 0.5
+    
+    # Convert back to square matrix
+    y = distance.squareform(x)
+    return y
+
+
+def load_embedding(kernel_type=None, datadir=None, hidden_size=100, kernel_normalization='rescale'):
+    if kernel_type is None:
+        regularization_kernel = None
+        distance_matrix = None
+    elif kernel_type == 'euclidean':
+        centroids = pd.read_csv(os.path.join(datadir, 'schaefer{0}_centroids.csv'.format(hidden_size * 2)))
+        centroids = centroids[:hidden_size] 
+        centroids.set_index("ROI Name", inplace=True)
+        distance_matrix = distance.pdist(centroids, "euclidean") 
+        distance_matrix = distance.squareform(distance_matrix) 
+        regularization_kernel = normalize_x(distance_matrix, kernel_normalization)
+    elif kernel_type == 'sphere_euclidean':
+        centroids = np.loadtxt(os.path.join(datadir, 'schaefer{0}_spherical_euclidean.txt'.format(hidden_size * 2)))
+        distance_matrix = get_brainmap_distance(centroids)
+        regularization_kernel = normalize_x(distance_matrix, kernel_normalization)
+    elif kernel_type == 'sa_axis':
+        brain_map = np.load(os.path.join(datadir, 'schaefer{0}_sa-axis.npy'.format(hidden_size * 2)))
+        brain_map = brain_map[:hidden_size] 
+        distance_matrix = get_brainmap_distance(brain_map=brain_map)
+        regularization_kernel = normalize_x(distance_matrix, kernel_normalization)
+    elif kernel_type == 'ut_axis':
+        brain_map = np.load(os.path.join(datadir, 'schaefer{0}_ut-axis.npy'.format(hidden_size * 2)))
+        brain_map = brain_map[:hidden_size] 
+        distance_matrix = get_brainmap_distance(brain_map=brain_map)
+        regularization_kernel = normalize_x(distance_matrix, kernel_normalization)
+    elif kernel_type == 'sf_axis':
+        brain_map = np.load(os.path.join(datadir, 'schaefer{0}_cyto.npy'.format(hidden_size * 2)))
+        brain_map = brain_map[:hidden_size] 
+        distance_matrix = get_brainmap_distance(brain_map=brain_map)
+        regularization_kernel = normalize_x(distance_matrix, kernel_normalization)
+    elif kernel_type == 'myelin':
+        brain_map = np.load(os.path.join(datadir, 'schaefer{0}_myelin.npy'.format(hidden_size * 2)))
+        brain_map = brain_map[:hidden_size] 
+        distance_matrix = get_brainmap_distance(brain_map=brain_map)
+        regularization_kernel = normalize_x(distance_matrix, kernel_normalization)
+    elif kernel_type == 'struct_conn':
+        conn_reg_mat = np.load(os.path.join(datadir, 'schaefer{0}_structural_conn_kernel.npy'.format(hidden_size * 2)))
+        distance_matrix = conn_reg_mat[:hidden_size, :][:, :hidden_size] 
+        regularization_kernel = normalize_x(distance_matrix, kernel_normalization)
+    elif kernel_type == 'rand_uniform':
+        distance_matrix = distance.squareform(np.random.uniform(0,1,np.int16(hidden_size*(hidden_size-1)/2)))
+        regularization_kernel = normalize_x(distance_matrix, kernel_normalization)
+    elif kernel_type == 'rand_normal':
+        distance_matrix = distance.squareform(np.random.normal(0.5,0.15,np.int16(hidden_size*(hidden_size-1)/2)))
+        regularization_kernel = normalize_x(distance_matrix, kernel_normalization)
+        
+    return regularization_kernel, distance_matrix
 
 
 def get_kernel(hidden_size=200, location=0, kernel_std_frac=0.2):
@@ -88,20 +191,52 @@ def get_p_val_string(p_val):
 
 
 def fix_labels(labels, decision=4, trim=2):
+    """
+    Modifies labels based on decision parameters with flexibility for different input shapes.
+    
+    Parameters
+    ----------
+    labels : numpy.ndarray
+        Labels array, can be either 1D (time_steps,) or 2D (time_steps, batch_size)
+    decision : int, optional
+        Decision point, by default 4
+    trim : int, optional
+        Number of time steps to trim from decision point, by default 2
+    
+    Returns
+    -------
+    numpy.ndarray
+        Modified labels with same shape as input
+    """
     if trim == 0:
         return labels
-    else:
-        labels_out = labels.copy()
-        batch_size = labels.shape[1]
-        cut = decision - trim
-
-        x = labels_out != 0
-        x_pad = np.zeros((cut, batch_size)).astype(bool)
-        y = np.append(x[cut:, :], x_pad, axis=0)
-        xy = x*y
-        labels_out[xy] = 0
-
-        return labels_out
+    
+    # Save original shape and dimensionality
+    original_shape = labels.shape
+    original_ndim = labels.ndim
+    
+    # Handle 1D case by temporarily adding a batch dimension
+    if original_ndim == 1:
+        labels = labels.reshape(-1, 1)
+    
+    # Now proceed with the 2D case
+    labels_out = labels.copy()
+    time_steps = labels.shape[0]
+    batch_size = labels.shape[1]
+    cut = decision - trim
+    
+    # Create masks for the time points to zero out
+    x = labels_out != 0
+    x_pad = np.zeros((cut, batch_size)).astype(bool)
+    y = np.append(x[cut:, :], x_pad, axis=0)
+    xy = x * y
+    labels_out[xy] = 0
+    
+    # Return to original shape if input was 1D
+    if original_ndim == 1:
+        labels_out = labels_out.reshape(original_shape)
+    
+    return labels_out
 
 
 def bandpower(ts, fs, fmin, fmax):
@@ -287,16 +422,19 @@ def get_file_str(config):
     reg_type = config['reg_type']
     reg_weight = config['reg_weight']
     kernel_type = config['kernel_type']
+    kernel_normalization = config['kernel_normalization']
+    
+    # continuous time parameter
+    alpha = config['alpha']
     
     # create name string
-    file_str = 'task-{:}-{:}_' \
-                'model-{:}-{:}-{:}-{:}-{:}-{:}_' \
-                'wmask-{:}-{:}_' \
-                'reg-{:}-{:}-{:}' \
-        .format(task, seq_len,
-                rnn_model, hidden_size, batch_size, lr, n_runs, n_epochs,
-                mask_weights, n_io,
-                reg_type, reg_weight, kernel_type)
+    file_str = f'{task}-{seq_len}-' \
+               f'{rnn_model}-{hidden_size}-{batch_size}-{lr}-' \
+               f'{n_runs}-{n_epochs}-' \
+               f'{mask_weights}-{n_io}-' \
+               f'{reg_type}-{reg_weight}-' \
+               f'{kernel_type}-{kernel_normalization}-' \
+               f'{alpha}'
 
     return file_str
 
@@ -438,9 +576,6 @@ def get_slopes(feature, segment_size=20):
 
 
 def get_n_threads(threads_in=None, verbose=0):
-    
-    import os, multiprocessing
-    
     if verbose: print(' ')
 
     cpu_count = multiprocessing.cpu_count()
@@ -466,20 +601,57 @@ def get_n_threads(threads_in=None, verbose=0):
     return n_threads
 
 
-def get_device(device_opt):
-    cuda_avail = torch.cuda.is_available()
-    if device_opt == 'None':
-        device = torch.device('cuda' if cuda_avail else 'cpu')
+def get_n_gpu():
+    if torch.cuda.is_available():
+        if 'CUDA_VISIBLE_DEVICES' in os.environ.keys():
+            n_gpu = len(os.environ['CUDA_VISIBLE_DEVICES'].split(','))
+        else:
+            n_gpu = 1
+    elif torch.backends.mps.is_available():
+        n_gpu = 1
     else:
+        n_gpu = 0
+    return n_gpu
+
+
+def get_device(device_opt=None, n_devices=None):
+    cuda_avail = torch.cuda.is_available()
+    mps_avail = torch.backends.mps.is_available()
+    if device_opt == 'None':
+        if cuda_avail:
+            torch.device('cuda')
+        elif mps_avail:
+            torch.device('mps')
+        else:
+            torch.device('cpu')
+    else:
+        if device_opt == 'gpu':
+            if cuda_avail:
+                device_opt = 'cuda'
+            elif mps_avail:
+                device_opt = 'mps'
+            else:
+                device_opt = 'cpu'
+                print('No GPU device detected!')
         if device_opt == 'cuda':
             if cuda_avail:
+                if n_devices is not None:
+                    n_cuda = np.min((torch.cuda.device_count(),n_devices))
+                    device_str = ','.join(np.arange(n_cuda).astype(str))
+                    # os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
+                    os.environ['CUDA_VISIBLE_DEVICES'] = device_str
                 device = torch.device('cuda')
             else:
-                print('CUDA not availble!')
+                print('CUDA not available!')
                 device = torch.device('cpu')
-        elif device_opt == 'cpu':
+        if device_opt == 'mps':
+            if mps_avail:
+                device = torch.device('mps')
+            else:
+                print('MPS not available!')
+        if device_opt == 'cpu':
             device = torch.device('cpu')
-        else:
+        if device_opt not in ['cpu','gpu','cuda','mps']:
             print('Device choice not recognized!')
             device = torch.device('cpu')
     print('\nDevice: ' + device.type + '.\n')
@@ -552,8 +724,8 @@ def check_if_supported(task, modifier):
     delay, decision = parse_task_modifier(modifier)
         
     supported_tasks = [
-        #  task_name                                |   can modify?    |
-        #                                           | delay | decision |
+        #|        task_name                          |   can modify?    |
+        #|                                           | delay | decision |
         [ 'ContextDecisionMaking-v0',                  True,    True,  ],
         [ 'DelayComparison-v0',                        True,    True,  ],
         [ 'DelayMatchCategory-v0',                     True,    False, ],
@@ -563,7 +735,7 @@ def check_if_supported(task, modifier):
         [ 'DualDelayMatchSample-v0',                   True,    False, ],
         [ 'GoNogo-v0',                                 True,    True,  ],
         [ 'MultiSensoryIntegration-v0',                False,   True,  ],
-        [ 'PerceptualDecisionMaking-v0-ND',            True,    True,  ],
+        [ 'PerceptualDecisionMaking-v0',               True,    True,  ],
         [ 'PerceptualDecisionMakingDelayResponse-v0',  True,    True,  ],
     ]
 
@@ -577,7 +749,7 @@ def check_if_supported(task, modifier):
     return True
 
 
-def delay_dist(delay_opt=(400,200)):
+def delay_dist(delay_opt=(400,200), dt=100):
     
     if isinstance(delay_opt,int):
         delay = delay_opt
@@ -597,7 +769,7 @@ def delay_dist(delay_opt=(400,200)):
     else:
         a = delay-plus_minus
     b = delay+plus_minus+1
-    c = np.arange(a, b, 100)
+    c = np.arange(a, b, dt)
     d = tuple(c.tolist())
     # if len(c) == 1:
     #     d = c[0]
@@ -607,48 +779,49 @@ def delay_dist(delay_opt=(400,200)):
     return d
 
 
-def get_seq_len_and_timing(task, modifier='', seq_len_multi=5):
+def get_seq_len_and_timing(task, modifier='', seq_len_multi=5, dt=100):
     
     delay = ()
     decision = 300
+    fixation = 200
     delay_opt, decision_opt = parse_task_modifier(modifier)
     if decision_opt:
         decision = decision_opt
     if delay_opt:
-        delay = delay_dist(delay_opt)
+        delay = delay_dist(delay_opt, dt)
     
     timing_other = {} # other timing arguments used in seq_len calculation, not passed to ngym
     
     if task == 'ContextDecisionMaking-v0':
-        timing = {'fixation': 300, 'stimulus': 1000, 'decision': decision}
+        timing = {'fixation': fixation, 'stimulus': 1000, 'decision': decision}
         if delay:
             timing['delay'] = delay
         else:
             timing_other['delay'] = 600
     
     elif task == 'DelayComparison-v0':
-        timing = {'fixation': 300, 'stimulus1': 500, 'stimulus2': 500, 'decision': decision}
+        timing = {'fixation': fixation, 'stimulus1': 500, 'stimulus2': 500, 'decision': decision}
         if delay:
             timing['delay'] = delay
         else:
             timing_other['delay'] = 1000
     
     elif task == 'DelayMatchCategory-v0':
-        timing = {'fixation': 300, 'sample': 700, 'test': 700}
+        timing = {'fixation': fixation, 'sample': 700, 'test': 700}
         if delay:
             timing['first_delay'] = delay
         else:
             timing_other['first_delay'] = 1000
     
     elif task == 'DelayMatchSample-v0':
-        timing = {'fixation': 300, 'sample': 500, 'test': 500, 'decision': decision}
+        timing = {'fixation': fixation, 'sample': 500, 'test': 500, 'decision': decision}
         if delay:
             timing['delay'] = delay
         else:
             timing_other['delay'] = 1000
     
     elif task == 'DelayMatchSampleDistractor1D-v0':
-        timing = {'fixation': 300, 'sample': 500, 'test1': 500, 'test2': 500, 'test3': 500 }
+        timing = {'fixation': fixation, 'sample': 500, 'test1': 500, 'test2': 500, 'test3': 500 }
         if delay:
             timing['delay1'] = delay
             timing['delay2'] = delay
@@ -659,7 +832,7 @@ def get_seq_len_and_timing(task, modifier='', seq_len_multi=5):
             timing_other['delay3'] = 1000
     
     elif task == 'DelayPairedAssociation-v0':
-        timing = {'fixation': 300, 'stim1': 1000, 'stim2': 1000, 'decision': decision}
+        timing = {'fixation': fixation, 'stim1': 1000, 'stim2': 1000, 'decision': decision}
         if delay:
             timing['delay_btw_stim'] = delay
             timing['delay_aft_stim'] = delay
@@ -668,7 +841,7 @@ def get_seq_len_and_timing(task, modifier='', seq_len_multi=5):
             timing_other['delay_aft_stim'] = 1000
     
     elif task == 'DualDelayMatchSample-v0':
-        timing = {'fixation': 300, 'sample': 500, 'cue1': 500, 'test1': 500, 'cue2': 500, 'test2': 500}
+        timing = {'fixation': fixation, 'sample': 500, 'cue1': 500, 'test1': 500, 'cue2': 500, 'test2': 500}
         if delay:
             timing['delay1'] = delay
             timing['delay2'] = delay
@@ -677,24 +850,24 @@ def get_seq_len_and_timing(task, modifier='', seq_len_multi=5):
             timing_other['delay2'] = 500
     
     elif task == 'GoNogo-v0':
-        timing = {'fixation': 300, 'stimulus': 500, 'decision': decision}
+        timing = {'fixation': fixation, 'stimulus': 500, 'decision': decision}
         if delay:
             timing['delay'] = delay
         else:
             timing_other['delay'] = 500
     
     elif task == 'MultiSensoryIntegration-v0':
-        timing = {'fixation': 300, 'stimulus': 800, 'decision': decision}
+        timing = {'fixation': fixation, 'stimulus': 800, 'decision': decision}
     
     elif task == 'PerceptualDecisionMaking-v0':
-        timing = {'fixation': 300, 'stimulus': 2000, 'decision': decision}
+        timing = {'fixation': fixation, 'stimulus': 1500, 'decision': decision}
         if delay:
             timing['delay'] = delay
         else:
             timing_other['delay'] = 0
     
     elif task == 'PerceptualDecisionMakingDelayResponse-v0':
-        timing = {'fixation': 300, 'stimulus': 1200, 'decision': decision}
+        timing = {'fixation': fixation, 'stimulus': 1200, 'decision': decision}
         if delay:
             timing['delay'] = delay
         else:
@@ -704,10 +877,20 @@ def get_seq_len_and_timing(task, modifier='', seq_len_multi=5):
         raise ValueError("Task '{:}' is not supported.".format(task))
     
     timing_all = {**timing, **timing_other}
-    seq_len_base = sum({k: round(np.mean(v)) for k, v in timing_all.items()}.values()) / 100
+    seq_len_base = sum({k: round(np.mean(v)) for k, v in timing_all.items()}.values()) / dt
     seq_len = int( seq_len_base * seq_len_multi )
     
     return seq_len, timing
+
+
+def get_extra_task_options(task):
+    
+    opts = dict()
+
+    if task == 'PerceptualDecisionMaking-v0':
+        opts = {'cohs': [3.125, 6.25, 12.5, 25.0, 50.0, 100.0], 'sigma': 0.67}
+
+    return opts
 
 
 def get_task_label(task):
@@ -715,6 +898,7 @@ def get_task_label(task):
     task, modifier = get_task_modifier(task)
     check_if_supported(task,modifier)
     delay, decision = parse_task_modifier(modifier)
+    _, timing = get_seq_len_and_timing(task, modifier=modifier)
     
     del_str = ''
     dec_str = ''
@@ -725,8 +909,11 @@ def get_task_label(task):
         else:
             del_str = f', Dly. {delay[0]} ± {delay[1]}'
     
-    if decision:
-        dec_str = f', Dec. {decision}'
+    # if decision:
+    #     dec_str = f', Dec. {decision}'
+
+    if 'decision' in timing.keys():
+        dec_str = f", Dec. {timing['decision']}"
         
     suff = del_str + dec_str
     
@@ -784,6 +971,12 @@ def get_kernel_label(kernel_type='None', mask_weights=False, reg_weight=0.0):
         kernel_label = m + 'Eucl.'
     elif kernel_type == 'struct_conn':
         kernel_label = m + 'SC'
+    elif kernel_type == 'sphere_euclidean':
+        kernel_label = m + 'Sph. Eucl.'
+    elif kernel_type == 'rand_uniform':
+        kernel_label = m + 'Rand. Uniform'
+    elif kernel_type == 'rand_normal':
+        kernel_label = m + 'Rand. Normal'
     elif kernel_type == 'None':
         if reg_weight == 0:
             r = 'Unreg. '
@@ -798,11 +991,255 @@ def get_kernel_label(kernel_type='None', mask_weights=False, reg_weight=0.0):
 
 def load_params_csv(model_params_csv):
     import pandas as pd
-    model_params = pd.read_csv(model_params_csv, keep_default_na=False, na_values=['NaN'])
+    df = pd.read_csv(model_params_csv, keep_default_na = False, na_values = ['NaN'])
     kernel_labels = []
-    for row in np.arange(len(model_params)):
-        kernel_labels.append(get_kernel_label(kernel_type=model_params.kernel_type.iloc[row], \
-                                                mask_weights=model_params.mask_weights.iloc[row], \
-                                                reg_weight=model_params.reg_weight.iloc[row]))
-    model_params['kernel_label'] = kernel_labels
-    return model_params
+    for row in np.arange(len(df)):
+        kernel_labels.append(get_kernel_label(kernel_type = df.kernel_type.iloc[row], \
+                                                mask_weights = df.mask_weights.iloc[row], \
+                                                reg_weight = df.reg_weight.iloc[row]))
+    df['kernel_label'] = kernel_labels
+    return df
+
+
+def get_params_dataframe(params_dataframe: str | pd.DataFrame, rows: list = [], verbose = False):
+    
+    # load initial model params df
+    if isinstance(params_dataframe, str):
+        df = load_params_csv(params_dataframe)
+    elif isinstance(params_dataframe, pd.DataFrame):
+        df = params_dataframe
+    
+    # assign kernel and task labels if not already done
+    if 'kernel_label' not in df.keys():
+        kernel_labels = []
+        for row in range(len(df)):
+            kernel_labels.append(get_kernel_label(kernel_type=df.kernel_type.iloc[row], \
+                                                        mask_weights=df.mask_weights.iloc[row], \
+                                                        reg_weight=df.reg_weight.iloc[row]))
+        df['kernel_label'] = kernel_labels
+    
+    if 'task_label' not in df.keys():
+        task_labels = []
+        for row in range(len(df)):
+            task_labels.append(get_task_label(df.task.iloc[row]))
+        df['task_label'] = task_labels
+    
+    # how many tasks and kernels?
+    df, task_names, n_tasks, kernel_labels, n_kernels = select_params_dataframe_rows(df, rows=rows, verbose=verbose)
+    
+    # assign additional variables to df
+    df[['task_no_modifier',
+        'task_modifier',
+        'task_with_modifier',
+        'n_io',
+        'seq_len',
+        'config',
+        'file_str_models',
+        'file_str_outputs',
+        'task_index',
+        'kernel_index',
+        'env_kwargs']] = None
+    
+    # get model details
+    for model_idx in range(len(df)):
+        
+        # get current model inputs
+        this = df.iloc[model_idx].copy()
+        
+        # get task details
+        this['task_with_modifier'] = this.task
+        this['task_no_modifier'], this['task_modifier'] = get_task_modifier(this.task_with_modifier)
+        check_if_supported(task=this.task_no_modifier, modifier=this.task_modifier)
+        this['seq_len'], timing = get_seq_len_and_timing(task=this.task_no_modifier, 
+                                                         modifier=this.task_modifier, 
+                                                         seq_len_multi=this.seq_len_multi,
+                                                         dt=this.time_step)
+        this['env_kwargs'] = {'dt': this.time_step, 'timing': timing}
+        this['n_io'] = get_n_io(mask_weights=this.mask_weights, hidden_size=this.hidden_size)
+        
+        # prepare config
+        this['config'] = {
+            'time_step': this.time_step,
+            'batch_size': this.batch_size, 
+            'rnn_model': this.rnn_model, 
+            'n_runs': this.n_runs, 
+            'n_epochs': this.n_epochs, 
+            'learning_rate': this.learning_rate, 
+            'mask_weights': this.mask_weights, 
+            'hidden_size': this.hidden_size, 
+            'reg_type': this.reg_type,
+            'reg_weight': this.reg_weight,
+            'n_io': this.n_io,
+            'task_no_modifier': this.task_no_modifier,
+            'task_modifier': this.task_modifier,
+            'task_with_modifier': this.task_with_modifier,
+            'seq_len': this.seq_len,
+            'kernel_type': this.kernel_type,
+            'kernel_normalization': this.kernel_normalization,
+            'alpha': this.alpha, 
+        }
+
+        # get data file name
+        file_str = get_file_str(this.config)
+        this['file_str_models'] = file_str + '_models.h5'
+        this['file_str_outputs'] = file_str + '_outputs.h5'
+        
+        # determine task index
+        this['task_index'] = task_names.index(this.task_with_modifier)
+        
+        # determine kernel index
+        this['kernel_index'] = kernel_labels.index(this.kernel_label)
+        
+        # update this model's info
+        df.iloc[model_idx] = this
+    
+    # add index column
+    df['model_index'] = df.index
+    
+    if verbose:
+        print('DataFrame keys:\n---------------')
+        for k in df.keys():
+            print(k)
+        print(' ')
+    
+    return df, task_names, n_tasks, kernel_labels, n_kernels
+
+
+def get_tasks_kernels_from_params_dataframe(df: pd.DataFrame, verbose = False):
+    
+    # how many tasks?
+    task_names_all = df.loc[:, 'task']
+    task_names = []
+    [task_names.append(item) for item in task_names_all if item not in task_names]
+    n_tasks = len(task_names)
+    if verbose:
+        print('Tasks:\n------')
+        for i in range(n_tasks):
+            print(task_names[i])
+        print(' ')
+
+    # how many kernels?
+    kernel_labels_all = df.loc[:, 'kernel_label']
+    kernel_labels = []
+    [kernel_labels.append(item) for item in kernel_labels_all if item not in kernel_labels]
+    n_kernels = len(kernel_labels)
+    if verbose:
+        print('Kernel types:\n-------------')
+        for i in range(n_kernels):
+            print(kernel_labels[i])
+        print(' ')
+    
+    return task_names, n_tasks, kernel_labels, n_kernels
+
+
+def select_params_dataframe_rows(df: pd.DataFrame, rows: list = [], verbose = False):
+    
+    # select rows
+    if rows == [] or rows is None:
+        df2 = df.copy()
+    else:
+        df2 = df.iloc[rows].copy().reset_index(drop=True)
+    
+    # get updated unique tasks and kernels
+    task_names, n_tasks, kernel_labels, n_kernels = get_tasks_kernels_from_params_dataframe(df2, verbose=verbose)
+    
+    # update task and kernel indices in df
+    for row in range(len(df2)):
+        df2.loc[row, 'task_index'] = task_names.index(df2.loc[row, 'task'])
+        df2.loc[row, 'kernel_index'] = kernel_labels.index(df2.loc[row, 'kernel_label'])
+    
+    return df2, task_names, n_tasks, kernel_labels, n_kernels
+
+
+def parse_float_tuple(values):
+    # Handle None case
+    if len(values) == 1 and values[0].lower() == 'none':
+        return None
+    try:
+        # Convert all values to floats directly
+        return tuple(float(x) for x in values)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            'Must be either "None" or space-separated float values'
+        )
+
+def get_safe_gpu_list():
+    """
+    Get a verified list of working GPU device IDs
+    Handles SLURM GPU allocation and verifies GPU accessibility
+    """
+    if not torch.cuda.is_available():
+        return []
+    
+    working_gpus = []
+    device_count = torch.cuda.device_count()
+    
+    for device_id in range(device_count):
+        try:
+            # Test if GPU actually works by creating a small tensor
+            device = torch.device(f'cuda:{device_id}')
+            test_tensor = torch.ones(10, device=device)
+            test_result = test_tensor.sum().item()
+            
+            if test_result == 10.0:  # Sanity check
+                working_gpus.append(device_id)
+                
+        except Exception as e:
+            print(f"Warning: GPU {device_id} failed accessibility test: {e}")
+            continue
+    
+    return working_gpus
+
+
+def print_gpu_environment_info():
+    """
+    Print comprehensive GPU environment information for debugging
+    """
+    if not torch.cuda.is_available():
+        print("CUDA not available")
+        return
+    
+    working_gpus = get_safe_gpu_list()
+    
+    print("=== GPU Environment Information ===")
+    print(f"PyTorch CUDA available: {torch.cuda.is_available()}")
+    print(f"PyTorch device count: {torch.cuda.device_count()}")
+    print(f"Working GPU devices: {working_gpus}")
+    print(f"CUDA_VISIBLE_DEVICES: {os.environ.get('CUDA_VISIBLE_DEVICES', 'Not set')}")
+    print(f"SLURM_JOB_ID: {os.environ.get('SLURM_JOB_ID', 'Not set')}")
+    
+    # Print individual GPU info
+    for i in range(torch.cuda.device_count()):
+        try:
+            name = torch.cuda.get_device_name(i)
+            props = torch.cuda.get_device_properties(i)
+            memory_gb = props.total_memory / (1024**3)
+            print(f"  GPU {i}: {name} ({memory_gb:.1f} GB)")
+        except Exception as e:
+            print(f"  GPU {i}: Error getting info - {e}")
+    print("=" * 40)
+
+
+def get_optimal_gpu_assignment(n_runs, n_threads=None):
+    """
+    Get optimal GPU assignment for training runs
+    """
+    safe_gpus = get_safe_gpu_list()
+    n_gpus = len(safe_gpus)
+    
+    if n_gpus == 0:
+        return []
+    
+    # Limit concurrent processes if specified
+    if n_threads:
+        max_concurrent = min(n_threads, n_gpus)
+    else:
+        max_concurrent = n_gpus
+    
+    # Create GPU assignment list for all runs
+    gpu_assignments = []
+    for run in range(n_runs):
+        gpu_id = safe_gpus[run % max_concurrent]
+        gpu_assignments.append(gpu_id)
+    
+    return gpu_assignments
