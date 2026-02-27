@@ -2,14 +2,35 @@
 
 ########################################################################################################################
 
-params="202602"
+usage(){
+cat << EOF
+
+Usage: $(basename $0) <params_csv_file> [index1 index2 ...]
+
+EOF
+exit 1
+}
+
+[ $# -eq 0 ] && usage
+
+# first positional argument: path to model params CSV file (required)
+if [ ! -f "$1" ]; then
+  echo "$(basename $0): Error: First argument must be a valid path to a model params CSV file."
+  exit 1
+fi
+params_file="$1"
+params_name=$(basename "${1%.csv}")
+shift
+
+# remaining positional arguments: optional space-separated 0-based model indices (e.g. 0 2 5)
+selected_indices="$*"
 
 # directories
 if [ $(uname -s) == "Darwin" ]; then
   if [ $USER == "ahmad" ]; then
     scriptsdir='/Users/ahmad/software/snaplab_github/neuro_rnn/scripts'
     datadir='/Users/ahmad/software/snaplab_github/neuro_rnn/data'
-    outdir="/Users/ahmad/data/rutgers/neuro_rnn/results/pytorch/model/${params}"
+    outdir="/Users/ahmad/data/rutgers/neuro_rnn/results/pytorch/model/${params_name}"
   fi
 else
   if [ $USER == "lindenmp" ]; then
@@ -19,19 +40,13 @@ else
   elif [ $USER == "ab2792" ]; then
     scriptsdir='/home/ab2792/software/snaplab_github/neuro_rnn/scripts'
     datadir='/home/ab2792/software/snaplab_github/neuro_rnn/data'
-    outdir="/home/ab2792/data/neuro_rnn/results/pytorch/model/${params}"
+    outdir="/home/ab2792/data/neuro_rnn/results/pytorch/model/${params_name}"
   fi
 fi
 
 # activate conda env
 source ~/.bashrc
 conda activate neuro_rnn
-
-# path to inputs csv
-params_file="$datadir/model_params_${params}.csv" # < < < < < < < < < < < < < < < < SELECT MODELS FILE HERE
-# tmp_params_file="/tmp/$(basename ${params_file%.csv})_${RANDOM}${RANDOM}.csv"
-# cp "$params_file" "$tmp_params_file"
-# params_file="$tmp_params_file"
 
 [ ! -d "$outdir" ] && mkdir -p "$outdir"
 
@@ -50,13 +65,6 @@ elif [ ${device} != 'cpu' ]; then
   n_threads=1
 fi
 
-# optional: pass space-separated 0-based model indices to run a subset (e.g. "0 2 5")
-if [ "$1" != "" ]; then
-  selected_indices="$1"
-else
-  selected_indices=""
-fi
-
 ########################################################################################################################
 
 # # clean csv to avoid encoding issues
@@ -73,7 +81,7 @@ while IFS= read -r line || [ -n "$line" ]; do
     continue
   fi
 
-  log_file="$outdir/model-${model_index}_$(date '+%Y-%m-%d-%H-%M-%S').log"
+  log_file="$outdir/model-$(printf '$03i' ${model_index})_$(date '+%Y-%m-%d-%H-%M-%S').log"
 
   { # start of logging code block
 
