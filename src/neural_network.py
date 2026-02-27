@@ -131,8 +131,10 @@ class RNN(nn.Module):
         If False, diagonal elements of the hh_w matrix are forced to zero during forward pass.
         This constraint is applied regardless of initialization or training status.
         
-    alpha : float, default=1.0
-        Continuous-time parameter in the range [0,1]:
+    alpha : float or 1-D np.ndarray, default=1.0
+        Continuous-time parameter in the range [0,1]. Can be:
+        - float: single α shared across all nodes
+        - 1-D np.ndarray of length hidden_size: per-node α values
         - 1.0: Standard discrete RNN updates
         - (0, 1): Interpolation between new activation and previous state
         - Update equation: h(t+1) = (1-α) * h(t) + α * f(Wh(t) + Ux(t) + b)
@@ -191,7 +193,7 @@ class RNN(nn.Module):
                  init_ho_b: Union[None, float, tuple[float,float], np.ndarray] = None, 
                  train_ho_b: bool = True, 
                  allow_self_connections: bool = True,
-                 alpha: float = 1.0,
+                 alpha: Union[float, np.ndarray] = 1.0,
                  rec_noise: float = 0.05):
         
         super(RNN, self).__init__()
@@ -520,7 +522,7 @@ class CustomRNN(nn.RNNBase):
                  dropout: float = 0.,
                  bidirectional: bool = False,
                  nonlinearity: str = 'postanh',
-                 alpha: float = 1.0,
+                 alpha: Union[float, np.ndarray] = 1.0,
                  rec_noise: float = 0.0) -> None:
         """
         RNN module with custom activation functions and continuous time dynamics.
@@ -536,8 +538,13 @@ class CustomRNN(nn.RNNBase):
             bidirectional=bidirectional
         )
         self.nonlinearity = nonlinearity
-        self.alpha = alpha
         self.rec_noise = rec_noise
+        # alpha can be a scalar float or a per-node 1-D array.
+        # For the vector case, register as a buffer so .to(device) moves it automatically.
+        if isinstance(alpha, np.ndarray):
+            self.register_buffer('alpha', torch.tensor(alpha, dtype=torch.float32))
+        else:
+            self.alpha = float(alpha)
 
     def forward(self, 
                 input: Union[torch.Tensor, PackedSequence], 
@@ -596,10 +603,14 @@ class CustomRNN(nn.RNNBase):
         output = []
         h_n = hx[0]  # Use first layer (single layer support)
         
-        # Pre-compute noise 
+        # Pre-compute noise
         if self.training and self.rec_noise > 0:
-            noise_scale = float(np.sqrt( (2/self.alpha) * self.rec_noise**2) )
-            noise = torch.randn((seq_len,batch_size,hidden_size), device=input.device) * noise_scale
+            if isinstance(self.alpha, torch.Tensor):
+                # Per-node scale: shape [hidden_size], broadcasts over [seq, batch, hidden]
+                noise_scale = torch.sqrt((2.0 / self.alpha) * self.rec_noise ** 2)
+            else:
+                noise_scale = float(np.sqrt((2 / self.alpha) * self.rec_noise ** 2))
+            noise = torch.randn((seq_len, batch_size, hidden_size), device=input.device) * noise_scale
 
         # Main sequence processing loop
         for t in range(seq_len):
@@ -775,10 +786,10 @@ def run_training(dataset, model, optimizer, criterion, config, scheduler=None, r
             model.train()
 
             if run == None:
-                print('epoch {:d} | running training loss: {:0.5f} | running validation loss: {:0.5f} | test accuracy: {:0.2f}% | time since last update: {:0.2f}s'
+                print('epoch {:06d} | running training loss: {:0.5f} | running validation loss: {:0.5f} | test accuracy: {:06.2f}% | time since last update: {:0.2f}s'
                     .format(epoch + 1, running_loss / epoch_log, running_loss_val / epoch_log, accuracy * 100, epoch_log_time_elapsed), flush=True)
             else:
-                print('run {:d} | epoch {:d} | running training loss: {:0.5f} | running validation loss: {:0.5f} | test accuracy: {:0.2f}% | time since last update: {:0.2f}s'
+                print('run {:03d} | epoch {:06d} | running training loss: {:0.5f} | running validation loss: {:0.5f} | test accuracy: {:06.2f}% | time since last update: {:0.2f}s'
                     .format(run+1, epoch + 1, running_loss / epoch_log, running_loss_val / epoch_log, accuracy * 100, epoch_log_time_elapsed), flush=True)
             running_loss = 0.0
             running_loss_val = 0.0

@@ -49,6 +49,52 @@ def parse_weight_init_value(value):
     return None
 
 
+def parse_alpha_value(value):
+    """
+    Parse the alpha (continuous-time) parameter from various input formats.
+
+    Parameters
+    ----------
+    value : float, int, str, or np.ndarray
+        - Numeric (float/int): returned as a Python float.
+        - String that converts to a float: returned as float.
+        - String path to a .txt file: loaded via np.loadtxt and returned as a
+          1-D np.ndarray (one value per line).
+        - np.ndarray: returned as-is (must be 1-D).
+
+    Returns
+    -------
+    float or np.ndarray
+    """
+    if isinstance(value, np.ndarray):
+        if value.ndim != 1:
+            raise ValueError(f"Alpha array must be 1-D, got shape {value.shape}")
+        return value
+
+    if isinstance(value, (int, float, np.integer, np.floating)):
+        return float(value)
+
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            pass
+        path = os.path.expanduser(value)
+        if os.path.isfile(path):
+            arr = np.loadtxt(path)
+            arr = np.atleast_1d(arr)
+            if arr.ndim != 1:
+                raise ValueError(
+                    f"Alpha file '{path}' must contain a 1-D array, got shape {arr.shape}"
+                )
+            return arr
+        raise ValueError(
+            f"Cannot parse alpha value: '{value}' is not a float or a valid file path"
+        )
+
+    raise ValueError(f"Cannot parse alpha value of type {type(value)}: {value}")
+
+
 def parse_boolean_value(value):
     """
     Parse boolean value from various string formats with explicit validation.
@@ -202,6 +248,8 @@ def load_config_from_csv(params_csv, model_index):
                 config[config_key] = parse_boolean_value(value)
             elif config_key in ['init_ih_w', 'init_ih_b', 'init_hh_w', 'init_hh_b', 'init_ho_w', 'init_ho_b']:
                 config[config_key] = parse_weight_init_value(value)
+            elif config_key == 'alpha':
+                config[config_key] = parse_alpha_value(value)
             elif config_key == 'kernel_type' and isinstance(value, str) and value.lower() == 'none':
                 config[config_key] = None
             else:
@@ -364,8 +412,9 @@ Examples:
     
     # continuous time parameter
     time_group = parser.add_argument_group('Continuous Time Parameters')
-    time_group.add_argument('--alpha', type=float, default=_NOT_PROVIDED,
-                           help='Continuous time parameter (default: 1.0)')
+    time_group.add_argument('--alpha', type=str, default=_NOT_PROVIDED,
+                           help='Continuous time parameter: float scalar or path to a .txt file '
+                                'containing one value per line (default: 1.0)')
 
     # parse inputs
     args = parser.parse_args()
@@ -400,9 +449,9 @@ def create_config_from_args(args):
     # Simple parameters that can be directly copied
     simple_params = [
         'datadir', 'outdir', 'device', 'n_threads', 'task', 'time_step', 'seq_len_multi',
-        'rnn_model', 'hidden_size', 'batch_size', 'learning_rate', 'n_runs', 
-        'n_epochs', 'epoch_log', 'reg_type', 'reg_weight', 'kernel_type', 
-        'kernel_normalization', 'rec_noise', 'alpha'
+        'rnn_model', 'hidden_size', 'batch_size', 'learning_rate', 'n_runs',
+        'n_epochs', 'epoch_log', 'reg_type', 'reg_weight', 'kernel_type',
+        'kernel_normalization', 'rec_noise'
     ]
     
     for param in simple_params:
@@ -436,7 +485,12 @@ def create_config_from_args(args):
         value = getattr(args, param, _NOT_PROVIDED)
         if value is not _NOT_PROVIDED:
             config[param] = parse_boolean_value(value)
-    
+
+    # Handle alpha (scalar float or path to a .txt vector file)
+    alpha_raw = getattr(args, 'alpha', _NOT_PROVIDED)
+    if alpha_raw is not _NOT_PROVIDED:
+        config['alpha'] = parse_alpha_value(alpha_raw)
+
     return config
 
 

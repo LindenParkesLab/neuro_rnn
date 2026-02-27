@@ -424,9 +424,10 @@ def get_file_str(config):
     kernel_type = config['kernel_type']
     kernel_normalization = config['kernel_normalization']
     
-    # continuous time parameter
+    # continuous time parameter: use 'var' placeholder for per-node alpha vectors
     alpha = config['alpha']
-    
+    alpha_str = 'var' if isinstance(alpha, np.ndarray) else alpha
+
     # create name string
     file_str = f'{task}-{seq_len}-' \
                f'{rnn_model}-{hidden_size}-{batch_size}-{lr}-' \
@@ -434,7 +435,7 @@ def get_file_str(config):
                f'{mask_weights}-{n_io}-' \
                f'{reg_type}-{reg_weight}-' \
                f'{kernel_type}-{kernel_normalization}-' \
-               f'{alpha}'
+               f'{alpha_str}'
 
     return file_str
 
