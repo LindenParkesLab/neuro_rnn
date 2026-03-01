@@ -674,6 +674,8 @@ def run_training(dataset, model, optimizer, criterion, config, scheduler=None, r
 
     # output container
     training_loss = []
+    training_loss_task = []
+    training_loss_spatial = []
     running_loss = 0.0
     validation_loss = []
     running_loss_val = 0.0
@@ -722,7 +724,8 @@ def run_training(dataset, model, optimizer, criterion, config, scheduler=None, r
         outputs, _ = model(inputs_tra)
         
         # compute loss for training data
-        loss = criterion(outputs.view(-1, model.num_classes), labels_tra)
+        task_loss = criterion(outputs.view(-1, model.num_classes), labels_tra)
+        loss = task_loss.clone()
 
         # perform regularization
         if model.regularization_kernel is None:
@@ -748,6 +751,8 @@ def run_training(dataset, model, optimizer, criterion, config, scheduler=None, r
             compute_time = time.time() - t4 
         # store loss
         training_loss.append(loss.item())
+        training_loss_task.append(task_loss.item())
+        training_loss_spatial.append(reg.item())
 
         if microtiming:
             if epoch % 10 == 0:
@@ -798,13 +803,15 @@ def run_training(dataset, model, optimizer, criterion, config, scheduler=None, r
     print('Finished training in {0}'.format(timedelta(seconds=t_overall)), flush=True)
 
     training_loss = np.asarray(training_loss)
+    training_loss_task = np.asarray(training_loss_task)
+    training_loss_spatial = np.asarray(training_loss_spatial)
     validation_loss = np.asarray(validation_loss)
     test_accuracy = np.asarray(test_accuracy)
 
     if return_models:
-        return training_loss, validation_loss, test_accuracy, model_state
+        return training_loss, validation_loss, test_accuracy, model_state, training_loss_task, training_loss_spatial
     else:
-        return training_loss, validation_loss, test_accuracy
+        return training_loss, validation_loss, test_accuracy, training_loss_task, training_loss_spatial
 
 
 def infer_test_timing(env_or_timing):
@@ -1013,15 +1020,15 @@ def train_helper(run, config):
     scheduler = None
     
     # train the model
-    training_loss, validation_loss, test_accuracy, trained_models \
-        = run_training(dataset=dataset, 
-                       model=model, 
+    training_loss, validation_loss, test_accuracy, trained_models, training_loss_task, training_loss_spatial \
+        = run_training(dataset=dataset,
+                       model=model,
                        optimizer=optimizer,
-                       criterion=criterion, 
-                       config=config, 
+                       criterion=criterion,
+                       config=config,
                        scheduler=scheduler,
-                       return_models=True, 
-                       epoch_log=config['epoch_log'], 
+                       return_models=True,
+                       epoch_log=config['epoch_log'],
                        run=run)
         
     # get all outputs for final model
@@ -1033,6 +1040,8 @@ def train_helper(run, config):
     # package all outputs into a dict
     outputs = {
                 'training_loss': training_loss,
+                'training_loss_task': training_loss_task,
+                'training_loss_spatial': training_loss_spatial,
                 'validation_loss': validation_loss,
                 'test_accuracy': test_accuracy,
                 'inputs': inputs,
