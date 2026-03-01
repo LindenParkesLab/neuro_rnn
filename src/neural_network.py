@@ -787,10 +787,10 @@ def run_training(dataset, model, optimizer, criterion, config, scheduler=None, r
 
             if run == None:
                 print('epoch {:06d} | running training loss: {:0.5f} | running validation loss: {:0.5f} | test accuracy: {:06.2f}% | time since last update: {:0.2f}s'
-                    .format(epoch + 1, running_loss / epoch_log, running_loss_val / epoch_log, accuracy * 100, epoch_log_time_elapsed), flush=True)
+                    .format(epoch, running_loss / epoch_log, running_loss_val / epoch_log, accuracy * 100, epoch_log_time_elapsed), flush=True)
             else:
                 print('run {:03d} | epoch {:06d} | running training loss: {:0.5f} | running validation loss: {:0.5f} | test accuracy: {:06.2f}% | time since last update: {:0.2f}s'
-                    .format(run+1, epoch + 1, running_loss / epoch_log, running_loss_val / epoch_log, accuracy * 100, epoch_log_time_elapsed), flush=True)
+                    .format(run, epoch, running_loss / epoch_log, running_loss_val / epoch_log, accuracy * 100, epoch_log_time_elapsed), flush=True)
             running_loss = 0.0
             running_loss_val = 0.0
 

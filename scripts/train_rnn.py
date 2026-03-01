@@ -212,7 +212,7 @@ def train(config):
                     outputs, models = train_helper_with_gpu(run, config, gpu_id)
                     
                     # Save outputs and models
-                    print(f'Saving outputs and models for run {run+1}')
+                    print(f'Saving outputs and models for run {run}')
                     output_manager.save_model_data(outputs, run)
                     model_manager.save_model_states(models, run)
         
@@ -222,7 +222,7 @@ def train(config):
             for run in rem_runs:
                 outputs, models = partial_train_helper(run)
                 # save outputs and models
-                print(f'saving outputs and models for run {run+1}')
+                print(f'saving outputs and models for run {run}')
                 output_manager.save_model_data(outputs, run)
                 model_manager.save_model_states(models, run)
         
@@ -234,7 +234,7 @@ def train(config):
                 with torch.multiprocessing.get_context('spawn').Pool(processes=len(chunk), maxtasksperchild=1) as pool:
                     outputs, models = zip(*pool.map(partial_train_helper, chunk))
                 # save outputs and models
-                print(f'saving outputs and models for runs {chunk+1}')
+                print(f'saving outputs and models for runs {chunk}')
                 for idx, run in enumerate(chunk):
                     output_manager.save_model_data(outputs[idx], run)
                     model_manager.save_model_states(models[idx], run)
