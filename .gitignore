@@ -163,3 +163,10 @@ results/
 packages/
 scripts/scratch/
 neuro_rnn.code-workspace
+
+# MacOS stuff
+.DS_Store
+
+# VSCode stuff
+.vscode/
+
