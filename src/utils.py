@@ -968,6 +968,8 @@ def get_kernel_label(kernel_type='None', mask_weights=False, reg_weight=0.0):
         kernel_label = m + 'U-T'
     elif kernel_type == 'sf_axis':
         kernel_label = m + 'S-F'
+    elif kernel_type == 'myelin':
+        kernel_label = m + 'Myelin'
     elif kernel_type == 'euclidean':
         kernel_label = m + 'Eucl.'
     elif kernel_type == 'struct_conn':
