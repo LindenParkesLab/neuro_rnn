@@ -200,7 +200,9 @@ def load_config_from_csv(params_csv, model_index):
         'learning_rate': ['learning_rate', 'lr'],
         'n_runs': ['n_runs', 'num_runs'],
         'n_epochs': ['n_epochs', 'num_epochs'],
-        'epoch_log': ['epoch_log'],
+        'print_freq': ['print_freq'],
+        'log_freq': ['log_freq'],
+        'write_freq': ['write_freq'],
         'mask_weights': ['mask_weights'],
         'rec_noise': ['noise','rec_noise','node_noise','recurrent_noise'],
         
@@ -363,8 +365,12 @@ Examples:
                             help='Number of training runs (default: 10)')
     model_group.add_argument('--n_epochs', type=int, default=_NOT_PROVIDED,
                             help='Number of epochs (default: 5000)')
-    model_group.add_argument('--epoch_log', type=int, default=_NOT_PROVIDED,
-                            help='Logging frequency in epochs (default: 100)')
+    model_group.add_argument('--print_freq', type=int, default=_NOT_PROVIDED,
+                            help='Terminal print frequency in epochs (default: 100)')
+    model_group.add_argument('--log_freq', type=int, default=_NOT_PROVIDED,
+                            help='Performance logging frequency in epochs (default: 100)')
+    model_group.add_argument('--write_freq', type=int, default=_NOT_PROVIDED,
+                            help='H5 checkpoint write frequency in epochs (default: 1000)')
     model_group.add_argument('--mask_weights', type=str, default=_NOT_PROVIDED,
                             help='Whether to mask weights: True or False (default: False)')
     model_group.add_argument('--rec_noise', type=float, default=_NOT_PROVIDED,
@@ -450,7 +456,7 @@ def create_config_from_args(args):
     simple_params = [
         'datadir', 'outdir', 'device', 'n_threads', 'task', 'time_step', 'seq_len_multi',
         'rnn_model', 'hidden_size', 'batch_size', 'learning_rate', 'n_runs',
-        'n_epochs', 'epoch_log', 'reg_type', 'reg_weight', 'kernel_type',
+        'n_epochs', 'print_freq', 'log_freq', 'write_freq', 'reg_type', 'reg_weight', 'kernel_type',
         'kernel_normalization', 'rec_noise'
     ]
     
@@ -494,6 +500,35 @@ def create_config_from_args(args):
     return config
 
 
+def validate_freq_config(config):
+    """
+    Validate that print_freq, log_freq, and write_freq are consistent with n_epochs.
+
+    Rules enforced:
+      - n_epochs % print_freq == 0
+      - n_epochs % log_freq  == 0
+      - n_epochs % write_freq == 0
+      - write_freq % log_freq == 0  (can only write what has been logged)
+    """
+    n_epochs   = config['n_epochs']
+    print_freq = config['print_freq']
+    log_freq   = config['log_freq']
+    write_freq = config['write_freq']
+
+    errors = []
+    if n_epochs % print_freq != 0:
+        errors.append(f"n_epochs ({n_epochs}) must be divisible by print_freq ({print_freq})")
+    if n_epochs % log_freq != 0:
+        errors.append(f"n_epochs ({n_epochs}) must be divisible by log_freq ({log_freq})")
+    if n_epochs % write_freq != 0:
+        errors.append(f"n_epochs ({n_epochs}) must be divisible by write_freq ({write_freq})")
+    if write_freq % log_freq != 0:
+        errors.append(f"write_freq ({write_freq}) must be divisible by log_freq ({log_freq})")
+
+    if errors:
+        raise ValueError("Invalid frequency configuration:\n" + "\n".join(f"  - {e}" for e in errors))
+
+
 def build_config():
     """
     Build the full configuration dictionary from command line arguments and/or a CSV file.
@@ -515,6 +550,8 @@ def build_config():
         config = args_config
 
     config = apply_defaults(config)
+
+    validate_freq_config(config)
 
     # Validate required fields
     for required in ['datadir', 'outdir']:
@@ -552,7 +589,9 @@ def apply_defaults(config):
         'learning_rate': 0.001,
         'n_runs': 10,
         'n_epochs': 5000,
-        'epoch_log': 100,
+        'print_freq': 100,
+        'log_freq': 100,
+        'write_freq': 1000,
         'mask_weights': False,
         'reg_type': 'l2',
         'reg_weight': 0.001,

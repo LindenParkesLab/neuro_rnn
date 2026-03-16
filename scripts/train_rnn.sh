@@ -51,7 +51,9 @@ conda activate neuro_rnn
 [ ! -d "$outdir" ] && mkdir -p "$outdir"
 
 # rnn log settings
-epoch_log=100
+print_freq=100
+log_freq=100
+write_freq=1000
 
 # device settings
 device='cpu' # 'cpu' or 'cuda' or 'mps'
@@ -81,7 +83,7 @@ while IFS= read -r line || [ -n "$line" ]; do
     continue
   fi
 
-  log_file="$outdir/model-$(printf '$03i' ${model_index})_$(date '+%Y-%m-%d-%H-%M-%S').log"
+  log_file="$outdir/model-$(printf '%03i' ${model_index})_$(date '+%Y-%m-%d-%H-%M-%S').log"
 
   { # start of logging code block
 
@@ -99,7 +101,9 @@ while IFS= read -r line || [ -n "$line" ]; do
     --model_index ${model_index} \
     --datadir ${datadir} \
     --outdir ${outdir} \
-    --epoch_log ${epoch_log} \
+    --print_freq ${print_freq} \
+    --log_freq ${log_freq} \
+    --write_freq ${write_freq} \
     --device ${device} \
     --n_threads ${n_threads} 2>&1 # capture stdout and stderr
 

@@ -656,7 +656,9 @@ class CustomRNN(nn.RNNBase):
         return output, hidden
 
     
-def run_training(dataset, model, optimizer, criterion, config, scheduler=None, return_models=False, epoch_log=10, run=None):
+def run_training(dataset, model, optimizer, criterion, config, scheduler=None, return_models=False,
+                 print_freq=100, log_freq=100, write_freq=1000, run=None,
+                 checkpoint_callback=None, start_epoch=0, initial_data=None):
     microtiming = False
     t_overall = timer()
     model.train()
@@ -672,26 +674,41 @@ def run_training(dataset, model, optimizer, criterion, config, scheduler=None, r
     reg_type = config['reg_type']
     reg_weight = config['reg_weight']
 
-    # output container
-    training_loss = []
-    training_loss_task = []
-    training_loss_spatial = []
+    # output containers — pre-populate from checkpoint data when resuming
+    # track model_state whenever it is needed for return or checkpoint writes
+    track_model_state = return_models or (checkpoint_callback is not None)
+    if initial_data is not None:
+        training_loss = list(initial_data['training_loss'])
+        training_loss_task = list(initial_data['training_loss_task'])
+        training_loss_spatial = list(initial_data['training_loss_spatial'])
+        validation_loss = list(initial_data['validation_loss'])
+        test_accuracy = list(initial_data['test_accuracy'])
+        last_accuracy = test_accuracy[-1] if test_accuracy else 0.0
+        if track_model_state:
+            model_state = dict()
+    else:
+        training_loss = []
+        training_loss_task = []
+        training_loss_spatial = []
+        validation_loss = []
+        test_accuracy = []
+        last_accuracy = 0.0
+        if track_model_state:
+            model_state = dict()
+
     running_loss = 0.0
-    validation_loss = []
     running_loss_val = 0.0
-    test_accuracy = []
-    if return_models:
-        model_state = dict()
+    epoch_log_timestamp_last = timer()
 
     # Train the model
-    for epoch in range(n_epochs):
+    for epoch in range(start_epoch, n_epochs):
         # get data
         if microtiming:
             t1 = time.time()
         dataset.env.reset(seed=int(n_epochs+epoch))
         inputs, labels = dataset()
         if microtiming:
-            data_gen_time = time.time() - t1 
+            data_gen_time = time.time() - t1
         try:
             labels = fix_labels(labels, decision=int(decision / dt), trim=trim)
         except:
@@ -704,7 +721,7 @@ def run_training(dataset, model, optimizer, criterion, config, scheduler=None, r
         labels_tra = labels[:, :int(batch_size/2)]
         labels_val = labels[:, int(batch_size/2):]
         if microtiming:
-            data_split_time = time.time() - t2 
+            data_split_time = time.time() - t2
         # convert to tensor
         if microtiming:
             t3 = time.time()
@@ -714,7 +731,7 @@ def run_training(dataset, model, optimizer, criterion, config, scheduler=None, r
         labels_val = torch.from_numpy(labels_val.flatten()).type(torch.long).to(device)
         if microtiming:
             data_transfer_time = time.time() - t3
-        
+
         # zero the parameter gradients
         optimizer.zero_grad()
 
@@ -722,7 +739,7 @@ def run_training(dataset, model, optimizer, criterion, config, scheduler=None, r
         if microtiming:
             t4 = time.time()
         outputs, _ = model(inputs_tra)
-        
+
         # compute loss for training data
         task_loss = criterion(outputs.view(-1, model.num_classes), labels_tra)
         loss = task_loss.clone()
@@ -748,7 +765,7 @@ def run_training(dataset, model, optimizer, criterion, config, scheduler=None, r
         if scheduler is not None:
             scheduler.step()
         if microtiming:
-            compute_time = time.time() - t4 
+            compute_time = time.time() - t4
         # store loss
         training_loss.append(loss.item())
         training_loss_task.append(task_loss.item())
@@ -757,7 +774,7 @@ def run_training(dataset, model, optimizer, criterion, config, scheduler=None, r
         if microtiming:
             if epoch % 10 == 0:
                 print(f"Epoch {epoch}: Data gen: {data_gen_time:.3f}s, Data split: {data_split_time:.3f}, Transfer: {data_transfer_time:.3f}s, Compute: {compute_time:.3f}s", flush=True)
-        
+
         # validation
         with torch.no_grad():
             # get model outputs for validation data
@@ -767,37 +784,50 @@ def run_training(dataset, model, optimizer, criterion, config, scheduler=None, r
             # store validation loss
             validation_loss.append(loss_val.item())
 
-        # print statistics
         running_loss += loss.item()
         running_loss_val += loss_val.item()
         n_trials = 100
-        if epoch == 0:
-            epoch_log_timestamp_last = timer()
+
+        # --- performance logging (run_testing is expensive; only at log_freq or epoch 0) ---
+        should_log = (epoch == 0) or (epoch > 0 and epoch % log_freq == int(log_freq - 1))
+        if should_log:
             model.eval()
-            accuracy, _, _, _, _, _ = run_testing(dataset=dataset, model=model, n_trials=n_trials, verbose=False)
-            test_accuracy.append(accuracy)
-            if return_models:
-                model_state[epoch] = copy.deepcopy(model.state_dict())
-            model.train()
-        elif epoch % epoch_log == int(epoch_log-1):
-            epoch_log_timestamp_current = timer()
-            epoch_log_time_elapsed = epoch_log_timestamp_current - epoch_log_timestamp_last
-            epoch_log_timestamp_last = epoch_log_timestamp_current
-            model.eval()
-            accuracy, _, _, _, _, _ = run_testing(dataset=dataset, model=model, n_trials=n_trials, verbose=False)
-            test_accuracy.append(accuracy)
-            if return_models:
+            last_accuracy, _, _, _, _, _ = run_testing(dataset=dataset, model=model, n_trials=n_trials, verbose=False)
+            test_accuracy.append(last_accuracy)
+            if track_model_state:
                 model_state[epoch] = copy.deepcopy(model.state_dict())
             model.train()
 
-            if run == None:
-                print('epoch {:06d} | running training loss: {:0.5f} | running validation loss: {:0.5f} | test accuracy: {:06.2f}% | time since last update: {:0.2f}s'
-                    .format(epoch, running_loss / epoch_log, running_loss_val / epoch_log, accuracy * 100, epoch_log_time_elapsed), flush=True)
+        # --- terminal print ---
+        should_print = (epoch == 0) or (epoch > 0 and epoch % print_freq == int(print_freq - 1))
+        if should_print:
+            epoch_log_timestamp_current = timer()
+            epoch_log_time_elapsed = epoch_log_timestamp_current - epoch_log_timestamp_last
+            epoch_log_timestamp_last = epoch_log_timestamp_current
+            n_window = 1 if epoch == 0 else print_freq
+            if run is None:
+                print('epoch {:6d}  |  training loss: {:0.5f}  |  validation loss: {:0.5f}  |  test accuracy: {:6.1f}%  |  time since last update: {:2.2f}s'
+                    .format(epoch, running_loss / n_window, running_loss_val / n_window, last_accuracy * 100, epoch_log_time_elapsed), flush=True)
             else:
-                print('run {:03d} | epoch {:06d} | running training loss: {:0.5f} | running validation loss: {:0.5f} | test accuracy: {:06.2f}% | time since last update: {:0.2f}s'
-                    .format(run, epoch, running_loss / epoch_log, running_loss_val / epoch_log, accuracy * 100, epoch_log_time_elapsed), flush=True)
+                print('run {:3d}  |  epoch {:6d}  |  training loss: {:0.5f}  |  validation loss: {:0.5f}  |  test accuracy: {:6.1f}%  |  time since last update: {:2.2f}s'
+                    .format(run, epoch, running_loss / n_window, running_loss_val / n_window, last_accuracy * 100, epoch_log_time_elapsed), flush=True)
             running_loss = 0.0
             running_loss_val = 0.0
+
+        # --- checkpoint write ---
+        should_write = (checkpoint_callback is not None) and (epoch > 0) and (epoch % write_freq == int(write_freq - 1))
+        if should_write:
+            # collect all model states logged since the previous write boundary
+            prev_write = epoch - write_freq
+            state_chunk = {ep: state for ep, state in model_state.items() if ep > prev_write}
+            accumulated_data = {
+                'training_loss':         np.asarray(training_loss),
+                'training_loss_task':    np.asarray(training_loss_task),
+                'training_loss_spatial': np.asarray(training_loss_spatial),
+                'validation_loss':       np.asarray(validation_loss),
+                'test_accuracy':         np.asarray(test_accuracy),
+            }
+            checkpoint_callback(epoch, state_chunk, optimizer, scheduler, accumulated_data)
 
     t_overall = timer() - t_overall
     print('Finished training in {0}'.format(timedelta(seconds=t_overall)), flush=True)
@@ -809,7 +839,7 @@ def run_training(dataset, model, optimizer, criterion, config, scheduler=None, r
     test_accuracy = np.asarray(test_accuracy)
 
     if return_models:
-        return training_loss, validation_loss, test_accuracy, model_state, training_loss_task, training_loss_spatial
+        return training_loss, validation_loss, test_accuracy, model_state if track_model_state else {}, training_loss_task, training_loss_spatial
     else:
         return training_loss, validation_loss, test_accuracy, training_loss_task, training_loss_spatial
 
@@ -957,20 +987,20 @@ def run_testing_rest(model, n_steps=1000, noise_mean=0.5, noise_sd=0.3, smooth_n
 
 
 def train_helper(run, config):
-    
+
     # create dataset
     dataset = ngym.Dataset(config['task_no_modifier'],
                            env_kwargs=config['env_kwargs'],
-                           batch_size=config['batch_size'], 
+                           batch_size=config['batch_size'],
                            seq_len=config['seq_len'])
-    
+
     dataset.env.reset(seed=0)
     dataset.env.new_trial()
     input_size = dataset.env.observation_space.shape[0]
     n_classes = dataset.env.action_space.n
     hidden_size = config['hidden_size']
     n_trials = 100
-    
+
     # setup weight masks
     if config['mask_weights']:
         input_weight_mask = config['masks']['input_weight_mask']
@@ -978,7 +1008,7 @@ def train_helper(run, config):
     else:
         input_weight_mask = None
         output_weight_mask = None
-    
+
     # seed random seed for reproducibility across runs
     random.seed(int(run))
     np.random.seed(int(run))
@@ -988,7 +1018,7 @@ def train_helper(run, config):
         torch.cuda.manual_seed_all(int(run))
     if config['device'].type == 'mps':
         torch.mps.manual_seed(int(run))
-    
+
     # initialize the model
     model = RNN(input_size=input_size,
                 hidden_size=hidden_size,
@@ -1018,9 +1048,58 @@ def train_helper(run, config):
     optimizer = torch.optim.Adam(model.parameters(), lr=config['learning_rate'])
     criterion = nn.CrossEntropyLoss()
     scheduler = None
-    
+
+    # --- check for an existing checkpoint and resume if found ---
+    models_path  = config.get('models_path')
+    outputs_path = config.get('outputs_path')
+    start_epoch  = 0
+    initial_data = None
+
+    if models_path and outputs_path:
+        model_manager  = ModelStateManager(models_path)
+        output_manager = ModelDataManager(outputs_path)
+
+        model_epochs  = model_manager.get_run_epochs(run)
+        output_epochs = output_manager.get_run_epochs(run)
+
+        if model_epochs and output_epochs:
+            last_epoch = min(max(model_epochs), max(output_epochs))
+            if last_epoch < config['n_epochs'] - 1:
+                print(f'run {run:03d}: resuming from epoch {last_epoch + 1}', flush=True)
+                start_epoch = last_epoch + 1
+
+                # restore model weights
+                saved_state = model_manager.load_model_states(run, last_epoch)
+                model.load_state_dict(saved_state)
+
+                # restore optimizer / scheduler state and accumulated metrics
+                saved_data   = output_manager.load_model_data(run, last_epoch)
+                resume_state = saved_data.pop('_resume_state', {})
+                if resume_state.get('optimizer'):
+                    optimizer.load_state_dict(resume_state['optimizer'])
+                if scheduler is not None and resume_state.get('scheduler'):
+                    scheduler.load_state_dict(resume_state['scheduler'])
+                initial_data = saved_data  # accumulated metric arrays
+
+    # --- build checkpoint callback ---
+    checkpoint_callback = None
+    if models_path and outputs_path:
+        def checkpoint_callback(epoch, state_chunk, optimizer, scheduler, accumulated_data):
+            # save all model states logged since the previous write boundary
+            for ep, state in state_chunk.items():
+                model_manager.save_model_states(state, run=run, epoch=ep)
+            # save accumulated metrics + optimizer/scheduler state for resumption
+            checkpoint_data = {
+                **accumulated_data,
+                '_resume_state': {
+                    'optimizer': optimizer.state_dict(),
+                    'scheduler': scheduler.state_dict() if scheduler is not None else {},
+                },
+            }
+            output_manager.save_model_data(checkpoint_data, run=run, epoch=epoch)
+
     # train the model
-    training_loss, validation_loss, test_accuracy, trained_models, training_loss_task, training_loss_spatial \
+    training_loss, validation_loss, test_accuracy, _, training_loss_task, training_loss_spatial \
         = run_training(dataset=dataset,
                        model=model,
                        optimizer=optimizer,
@@ -1028,32 +1107,37 @@ def train_helper(run, config):
                        config=config,
                        scheduler=scheduler,
                        return_models=True,
-                       epoch_log=config['epoch_log'],
-                       run=run)
-        
+                       print_freq=config['print_freq'],
+                       log_freq=config['log_freq'],
+                       write_freq=config['write_freq'],
+                       run=run,
+                       checkpoint_callback=checkpoint_callback,
+                       start_epoch=start_epoch,
+                       initial_data=initial_data)
+
     # get all outputs for final model
     _, inputs, labels, hidden_activity, output_activity, info \
-        = run_testing(dataset=dataset, 
-                      model=model, 
+        = run_testing(dataset=dataset,
+                      model=model,
                       n_trials=n_trials)
-    
+
     # package all outputs into a dict
     outputs = {
-                'training_loss': training_loss,
-                'training_loss_task': training_loss_task,
+                'training_loss':         training_loss,
+                'training_loss_task':    training_loss_task,
                 'training_loss_spatial': training_loss_spatial,
-                'validation_loss': validation_loss,
-                'test_accuracy': test_accuracy,
-                'inputs': inputs,
-                'labels': labels,
-                'hidden_activity': hidden_activity,
-                'output_activity': output_activity,
-                'info': info,
-                'run': run,
-                'device': config['device']
+                'validation_loss':       validation_loss,
+                'test_accuracy':         test_accuracy,
+                'inputs':                inputs,
+                'labels':                labels,
+                'hidden_activity':       hidden_activity,
+                'output_activity':       output_activity,
+                'info':                  info,
+                'run':                   run,
+                'device':                config['device'],
                 }
-    
-    return outputs, trained_models
+
+    return outputs
 
 
 def train_helper_with_gpu(run, config, gpu_id=None):
@@ -1112,6 +1196,7 @@ class ModelStateManager:
     Methods
     -
     >>> manager.get_info()
+    >>> manager.get_run_epochs(run)
     >>> manager.save_model_states(data, run, epoch)
     >>> manager.load_model_states(run, epoch)
     >>> manager.load_key_across_runs(epoch, key)
@@ -1133,6 +1218,22 @@ class ModelStateManager:
             logged_epochs.sort()
             keys_per_epoch = list(models_file[runs[0]][f'epoch_{logged_epochs[0]}'].keys())
         return num_runs, logged_epochs, keys_per_epoch
+
+    def get_run_epochs(self, run):
+        """
+        Returns a sorted list of logged epochs for a specific run.
+        Returns an empty list if the file or run does not exist.
+
+        >>> epochs = manager.get_run_epochs(run=0)
+        """
+        if not os.path.isfile(self.filename):
+            return []
+        with h5py.File(self.filename, 'r') as models_file:
+            try:
+                run_group = models_file[f'run_{run}']
+                return sorted(int(k.replace('epoch_', '')) for k in run_group.keys())
+            except KeyError:
+                return []
 
     def save_model_states(self, data, run=None, epoch=None):
         """
@@ -1263,131 +1364,167 @@ class ModelDataManager:
     Description
     -
     A class to handle writing model performance data to, and reading them from, a file.
-    
-    It allows the user to access the data from a specific model by specifying the training run.
-    
+
+    It allows the user to access the data from a specific model by specifying the training run
+    and epoch. The file structure mirrors ModelStateManager: run_{N}/epoch_{M}/key.
+
     First initialize a new manager for the file you'd like to interact with:
     >>> manager = ModelDataManager('path/to/file.h5')
-    
+
     Then, use one of the methods below to write to or read from that file.
-    
+
     Methods
     -
     >>> manager.get_info()
-    >>> manager.save_model_data(data, run)
-    >>> manager.load_model_data(run)
-    >>> manager.load_key_across_runs(key)
+    >>> manager.get_run_epochs(run)
+    >>> manager.save_model_data(data, run, epoch)
+    >>> manager.load_model_data(run, epoch)
+    >>> manager.load_key_across_runs(key, epoch)
     """
-    
+
     def __init__(self, filename: str):
         self.filename = filename
-    
+
     def get_info(self):
         """
-        Returns the number of runs and the keys of the data items stored per run.
+        Returns the number of runs, the indices of epochs for which data exists, and
+        the keys stored per epoch.
 
-        >>> num_runs, data_keys = manager.get_info()
+        >>> num_runs, logged_epochs, keys_per_epoch = manager.get_info()
         """
         with h5py.File(self.filename, 'r') as models_file:
             runs = list(models_file.keys())
             num_runs = len(runs)
-            data_keys = list(models_file[runs[0]].keys())
-        return num_runs, data_keys
+            logged_epochs = sorted(int(v.replace('epoch_', '')) for v in models_file[runs[0]].keys())
+            keys_per_epoch = list(models_file[runs[0]][f'epoch_{logged_epochs[0]}'].keys())
+        return num_runs, logged_epochs, keys_per_epoch
 
-    def save_model_data(self, data, run=None):
+    def get_run_epochs(self, run):
+        """
+        Returns a sorted list of logged epochs for a specific run.
+        Returns an empty list if the file or run does not exist.
+
+        >>> epochs = manager.get_run_epochs(run=0)
+        """
+        if not os.path.isfile(self.filename):
+            return []
+        with h5py.File(self.filename, 'r') as models_file:
+            try:
+                run_group = models_file[f'run_{run}']
+                return sorted(int(k.replace('epoch_', '')) for k in run_group.keys())
+            except KeyError:
+                return []
+
+    def save_model_data(self, data, run=None, epoch=None):
         """
         Save model performance data to an HDF5 file.
-        
-        * To save the data from a specific run, pass that data as a dictionary: 
-        
-        >>> manager.save_model_data(run_data_dict, run=my_run)
-        
-        * To save model data for all runs after training, pass that data as a list where each item is a dictionary. 
-        
-        >>> manager.save_model_data(list_of_dicts)
+
+        * To save the data from a specific run and epoch, pass that data as a dictionary:
+
+        >>> manager.save_model_data(data_dict, run=my_run, epoch=my_epoch)
+
+        * To save model data for all epochs of a specific run, pass a dict keyed by epoch:
+
+        >>> manager.save_model_data(epoch_dict, run=my_run)
+
+        * To save model data for all runs and epochs, pass a list where each item is a
+        dict of {epoch: data_dict}:
+
+        >>> manager.save_model_data(list_of_epoch_dicts)
         """
-        
-        # Function that saves the model state of a specific run.
-        def save_data_for_run(file_path, data, run):
+
+        def save_data_for_run_and_epoch(file_path, data, run, epoch):
             with h5py.File(file_path, 'a') as models_file:
                 run_group = models_file.require_group(f'run_{run}')
+                epoch_group = run_group.require_group(f'epoch_{epoch}')
                 for key, value in data.items():
-                    if key in run_group:
-                        del run_group[key]  # Remove existing dataset to avoid conflicts
-                    # Pickle the object and store as bytes
+                    if key in epoch_group:
+                        del epoch_group[key]
                     pickled_data = pickle.dumps(value)
-                    run_group.create_dataset(key, data=np.void(pickled_data))
-                    
-                    # # Store the original type as an attribute
-                    # run_group[key].attrs['original_type'] = str(type(value))
-        
-        # List input is only valid if run is not defined.
-        if isinstance(data,list) and (not run == None):
-            raise TypeError('To save data for all runs, data must be a list.')
-        
-        # Save model data from a specific run.
-        if run is not None:
-            save_data_for_run(self.filename, data, run)
-        # Save model data from all run.
-        else:
-            run = 0
-            for run, run_data in enumerate(data):
-                save_data_for_run(self.filename, run_data, run)
+                    epoch_group.create_dataset(key, data=np.void(pickled_data))
 
-    def load_model_data(self, run=None):
+        if run is None and epoch is not None:
+            raise TypeError("If 'run' is None, 'epoch' must also be None.")
+
+        if isinstance(data, list) and run is not None:
+            raise TypeError("To save data for all runs, 'data' must be a list and 'run' must be None.")
+
+        if epoch is not None:
+            save_data_for_run_and_epoch(self.filename, data, run, epoch)
+        elif run is not None:
+            for epoch_key, epoch_data in data.items():
+                save_data_for_run_and_epoch(self.filename, epoch_data, run, epoch_key)
+        else:
+            for run_idx, run_data in enumerate(data):
+                for epoch_key, epoch_data in run_data.items():
+                    save_data_for_run_and_epoch(self.filename, epoch_data, run_idx, epoch_key)
+
+    def load_model_data(self, run=None, epoch=None):
         """
         Load model performance data from an HDF5 file.
-        
-        * To load the model data dict from a specific run:
-        
-        >>> data_dict = manager.load_model_data(run)
-        
-        * To load model data from all runs as a list where each item is a dict of data from one run: 
-        
-        >>> data_dicts_all = manager.load_model_data()
+
+        * To load the data dict from a specific run and epoch:
+
+        >>> data_dict = manager.load_model_data(run, epoch)
+
+        * To load data dicts from all logged epochs of a specific run:
+
+        >>> epoch_dicts = manager.load_model_data(run)
+
+        * To load all runs and epochs as a list, where each list item is a dict of
+        {epoch: data_dict} from one run:
+
+        >>> all_data = manager.load_model_data()
         """
-        
-        # Function that loads the model data of a specific run.
-        def load_data_for_run(file_path, run):
+
+        def load_data_for_run_and_epoch(file_path, run, epoch):
             with h5py.File(file_path, 'r') as models_file:
                 try:
-                    run_group = models_file[f'run_{run}']
-                    return {key: pickle.loads(value[()].tobytes()) for key, value in run_group.items()}
+                    epoch_group = models_file[f'run_{run}/epoch_{epoch}']
+                    return {key: pickle.loads(value[()].tobytes()) for key, value in epoch_group.items()}
                 except KeyError as e:
-                    raise ValueError(f"Specified run not found: {e}")
-        
-        n_runs, _ = self.get_info()
-        # Load model data for a specific run.
+                    raise ValueError(f"Specified run/epoch not found: {e}")
+
+        if run is None and epoch is not None:
+            raise TypeError("If 'run' is None, 'epoch' must also be None.")
+
+        if epoch is not None:
+            return load_data_for_run_and_epoch(self.filename, run, epoch)
+
+        n_runs, logged_epochs, _ = self.get_info()
         if run is not None:
-            loaded_data = load_data_for_run(self.filename, run)
-        # Load model data for all runs.
+            loaded_data = {}
+            for ep in logged_epochs:
+                loaded_data[ep] = load_data_for_run_and_epoch(self.filename, run, ep)
+            return loaded_data
         else:
             loaded_data = []
-            for run in range(n_runs):
-                loaded_data.append(load_data_for_run(self.filename, run))
-        
-        return loaded_data
+            for r in range(n_runs):
+                run_data = {}
+                for ep in logged_epochs:
+                    run_data[ep] = load_data_for_run_and_epoch(self.filename, r, ep)
+                loaded_data.append(run_data)
+            return loaded_data
 
-    def load_key_across_runs(self, key):
+    def load_key_across_runs(self, key, epoch):
         """
-        Load a specific model performance key across all runs.
+        Load a specific model performance key from a specific epoch across all runs.
         Returns a list (one entry per run).
-        
-        E.g., to load the test accuracy from all runs:
-        >>> test_accuracy_all = manager.load_key_across_runs('test_accuracy')
-        """        
-        
+
+        E.g., to load the test accuracy from all runs at epoch 4999:
+        >>> test_accuracy_all = manager.load_key_across_runs('test_accuracy', epoch=4999)
+        """
         data = []
         with h5py.File(self.filename, 'r') as models_file:
-            runs = [run for run in models_file.keys() if run.startswith('run_')]
+            runs = [r for r in models_file.keys() if r.startswith('run_')]
             for run in runs:
                 try:
-                    value = pickle.loads(models_file[f'{run}/{key}'][()].tobytes())
+                    value = pickle.loads(models_file[f'{run}/epoch_{epoch}/{key}'][()].tobytes())
                     data.append(value)
                 except KeyError:
-                    continue  # Skip if the run or key is not found 
+                    continue
         if not data:
-            raise ValueError(f"No data found for run {run} and key {key}")
+            raise ValueError(f"No data found for epoch {epoch} and key '{key}'")
         return data
 
 
