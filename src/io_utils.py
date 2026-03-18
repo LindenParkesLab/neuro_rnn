@@ -204,6 +204,9 @@ def load_config_from_csv(params_csv, model_index):
         'log_freq': ['log_freq'],
         'write_freq': ['write_freq'],
         'mask_weights': ['mask_weights'],
+        'reservoir_mode': ['reservoir_mode'],
+        'ridge_alpha': ['ridge_alpha'],
+        'spectral_radius': ['spectral_radius'],
         'rec_noise': ['noise','rec_noise','node_noise','recurrent_noise'],
         
         # weight initialization parameters
@@ -245,8 +248,8 @@ def load_config_from_csv(params_csv, model_index):
         
         if value is not None:
             # Apply appropriate parsing based on parameter type
-            if config_key in ['mask_weights', 'train_ih_w', 'train_ih_b', 'train_hh_w', 'train_hh_b', 
-                             'train_ho_w', 'train_ho_b', 'allow_self_connections']:
+            if config_key in ['mask_weights', 'train_ih_w', 'train_ih_b', 'train_hh_w', 'train_hh_b',
+                             'train_ho_w', 'train_ho_b', 'allow_self_connections', 'reservoir_mode']:
                 config[config_key] = parse_boolean_value(value)
             elif config_key in ['init_ih_w', 'init_ih_b', 'init_hh_w', 'init_hh_b', 'init_ho_w', 'init_ho_b']:
                 config[config_key] = parse_weight_init_value(value)
@@ -373,6 +376,12 @@ Examples:
                             help='H5 checkpoint write frequency in epochs (default: 1000)')
     model_group.add_argument('--mask_weights', type=str, default=_NOT_PROVIDED,
                             help='Whether to mask weights: True or False (default: False)')
+    model_group.add_argument('--reservoir_mode', type=str, default=_NOT_PROVIDED,
+                            help='Use reservoir computing with Ridge regression for output weights: True/False (default: False)')
+    model_group.add_argument('--ridge_alpha', type=float, default=_NOT_PROVIDED,
+                            help='Ridge regression regularization strength (default: 1.0)')
+    model_group.add_argument('--spectral_radius', type=float, default=_NOT_PROVIDED,
+                            help='Target spectral radius for reservoir weight matrix (default: 0.9)')
     model_group.add_argument('--rec_noise', type=float, default=_NOT_PROVIDED,
                              help='Scaling factor for added node-level (recurrent) noise (default: 0.0)')
     
@@ -457,7 +466,7 @@ def create_config_from_args(args):
         'datadir', 'outdir', 'device', 'n_threads', 'task', 'time_step', 'seq_len_multi',
         'rnn_model', 'hidden_size', 'batch_size', 'learning_rate', 'n_runs',
         'n_epochs', 'print_freq', 'log_freq', 'write_freq', 'reg_type', 'reg_weight', 'kernel_type',
-        'kernel_normalization', 'rec_noise'
+        'kernel_normalization', 'rec_noise', 'ridge_alpha', 'spectral_radius'
     ]
     
     for param in simple_params:
@@ -484,8 +493,8 @@ def create_config_from_args(args):
     
     # Handle boolean training parameters
     train_params = [
-        'train_ih_w', 'train_ih_b', 'train_hh_w', 'train_hh_b', 
-        'train_ho_w', 'train_ho_b', 'allow_self_connections'
+        'train_ih_w', 'train_ih_b', 'train_hh_w', 'train_hh_b',
+        'train_ho_w', 'train_ho_b', 'allow_self_connections', 'reservoir_mode'
     ]
     for param in train_params:
         value = getattr(args, param, _NOT_PROVIDED)
@@ -551,7 +560,8 @@ def build_config():
 
     config = apply_defaults(config)
 
-    validate_freq_config(config)
+    if not config.get('reservoir_mode', False):
+        validate_freq_config(config)
 
     # Validate required fields
     for required in ['datadir', 'outdir']:
@@ -593,6 +603,9 @@ def apply_defaults(config):
         'log_freq': 100,
         'write_freq': 1000,
         'mask_weights': False,
+        'reservoir_mode': False,
+        'ridge_alpha': 1.0,
+        'spectral_radius': 0.9,
         'reg_type': 'l2',
         'reg_weight': 0.001,
         'kernel_type': None,

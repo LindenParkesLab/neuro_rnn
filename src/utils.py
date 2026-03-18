@@ -428,6 +428,10 @@ def get_file_str(config):
     alpha = config['alpha']
     alpha_str = 'var' if isinstance(alpha, np.ndarray) else alpha
 
+    # reservoir mode suffix
+    reservoir_mode = config.get('reservoir_mode', False)
+    rc_str = f'-rc{config.get("ridge_alpha", 1.0)}' if reservoir_mode else ''
+
     # create name string
     file_str = f'{task}-{seq_len}-' \
                f'{rnn_model}-{hidden_size}-{batch_size}-{lr}-' \
@@ -435,7 +439,7 @@ def get_file_str(config):
                f'{mask_weights}-{n_io}-' \
                f'{reg_type}-{reg_weight}-' \
                f'{kernel_type}-{kernel_normalization}-' \
-               f'{alpha_str}'
+               f'{alpha_str}{rc_str}'
 
     return file_str
 

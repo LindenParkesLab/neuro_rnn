@@ -194,7 +194,9 @@ class RNN(nn.Module):
                  train_ho_b: bool = True, 
                  allow_self_connections: bool = True,
                  alpha: Union[float, np.ndarray] = 1.0,
-                 rec_noise: float = 0.05):
+                 rec_noise: float = 0.05,
+                 reservoir_mode: bool = False,
+                 spectral_radius: float = 0.9):
         
         super(RNN, self).__init__()
         
@@ -206,7 +208,9 @@ class RNN(nn.Module):
         self.alpha = alpha
         self.rec_noise = rec_noise
         self.allow_self_connections = allow_self_connections
-        
+        self.reservoir_mode = reservoir_mode
+        self.spectral_radius = spectral_radius
+
         # Create RNN layer based on type
         if type.replace('rnn-','') in ['tanh','relu','retanh','postanh','sigmoid']:
             self.rnn = CustomRNN(input_size, hidden_size, 1, 
@@ -232,9 +236,13 @@ class RNN(nn.Module):
         self._setup_weight_masks(input_weight_mask, output_weight_mask, n_repeats)
         
         # Initialize all weights and biases
-        self._initialize_all_weights(init_ih_w, init_ih_b, init_hh_w, init_hh_b, 
+        self._initialize_all_weights(init_ih_w, init_ih_b, init_hh_w, init_hh_b,
                                    init_ho_w, init_ho_b)
-        
+
+        # Rescale reservoir recurrent weights to target spectral radius
+        if reservoir_mode:
+            self._rescale_spectral_radius(spectral_radius)
+
         # Set trainable flags for all parameters
         self._set_all_trainable_flags(train_ih_w, train_ih_b, train_hh_w, train_hh_b,
                                     train_ho_w, train_ho_b)
@@ -341,6 +349,18 @@ class RNN(nn.Module):
         self.fc.weight.requires_grad_(train_ho_w)
         if self.fc.bias is not None:
             self.fc.bias.requires_grad_(train_ho_b)
+
+    def _rescale_spectral_radius(self, target_radius):
+        """Rescale hidden-to-hidden weights so the spectral radius equals target_radius."""
+        with torch.no_grad():
+            W_hh = self.rnn.weight_hh_l0
+            eigvals = torch.linalg.eigvals(W_hh)
+            current_radius = eigvals.abs().max().item()
+            if current_radius > 0:
+                self.rnn.weight_hh_l0.mul_(target_radius / current_radius)
+                print(f'RC: rescaled spectral radius from {current_radius:.4f} to {target_radius}')
+            else:
+                print(f'RC: warning — spectral radius is 0, skipping rescaling')
 
     def regularization(self, w, type='l1', matrix=None):
         """
@@ -656,12 +676,12 @@ class CustomRNN(nn.RNNBase):
         return output, hidden
 
     
-def run_training(dataset, model, optimizer, criterion, config, scheduler=None, return_models=False,
-                 print_freq=100, log_freq=100, write_freq=1000, run=None,
-                 checkpoint_callback=None, start_epoch=0, initial_data=None):
+def run_training(dataset, model, optimizer=None, criterion=None, config=None, scheduler=None,
+                 return_models=False, print_freq=100, log_freq=100, write_freq=1000, run=None,
+                 checkpoint_callback=None, start_epoch=0, initial_data=None,
+                 reservoir_mode=False):
     microtiming = False
     t_overall = timer()
-    model.train()
     device = config['device']
     dt = config['time_step']
     try:
@@ -671,8 +691,22 @@ def run_training(dataset, model, optimizer, criterion, config, scheduler=None, r
         pass
     n_epochs = config['n_epochs']
     batch_size = config['batch_size']
-    reg_type = config['reg_type']
-    reg_weight = config['reg_weight']
+    half = int(batch_size / 2)
+
+    # RC-specific setup
+    if reservoir_mode:
+        ridge_alpha = config.get('ridge_alpha', 1.0)
+        hidden_size = model.hidden_size
+        n_classes = model.num_classes
+        # scatter matrices for incremental Ridge regression (bias term included)
+        rc_A = ridge_alpha * torch.eye(hidden_size + 1, device=device, dtype=torch.float64)
+        rc_b = torch.zeros(hidden_size + 1, n_classes, device=device, dtype=torch.float64)
+        model.train()
+        # print_freq = max(1, n_epochs // 10)
+    else:
+        reg_type = config['reg_type']
+        reg_weight = config['reg_weight']
+        model.train()
 
     # output containers — pre-populate from checkpoint data when resuming
     # track model_state whenever it is needed for return or checkpoint writes
@@ -700,7 +734,9 @@ def run_training(dataset, model, optimizer, criterion, config, scheduler=None, r
     running_loss_val = 0.0
     epoch_log_timestamp_last = timer()
 
-    # Train the model
+    # Main training loop
+    if reservoir_mode:
+        print(f'RC: collecting data over {n_epochs} epochs...', flush=True)
     for epoch in range(start_epoch, n_epochs):
         # get data
         if microtiming:
@@ -716,127 +752,182 @@ def run_training(dataset, model, optimizer, criterion, config, scheduler=None, r
         # split into train and validation
         if microtiming:
             t2 = time.time()
-        inputs_tra = inputs[:, :int(batch_size/2), :]
-        inputs_val = inputs[:, int(batch_size/2):, :]
-        labels_tra = labels[:, :int(batch_size/2)]
-        labels_val = labels[:, int(batch_size/2):]
+        inputs_tra = inputs[:, :half, :]
+        labels_tra = labels[:, :half]
         if microtiming:
             data_split_time = time.time() - t2
         # convert to tensor
         if microtiming:
             t3 = time.time()
         inputs_tra = torch.from_numpy(inputs_tra).type(torch.float).to(device)
-        inputs_val = torch.from_numpy(inputs_val).type(torch.float).to(device)
         labels_tra = torch.from_numpy(labels_tra.flatten()).type(torch.long).to(device)
-        labels_val = torch.from_numpy(labels_val.flatten()).type(torch.long).to(device)
         if microtiming:
             data_transfer_time = time.time() - t3
 
-        # zero the parameter gradients
-        optimizer.zero_grad()
-
-        # get model outputs for training data
-        if microtiming:
-            t4 = time.time()
-        outputs, _ = model(inputs_tra)
-
-        # compute loss for training data
-        task_loss = criterion(outputs.view(-1, model.num_classes), labels_tra)
-        loss = task_loss.clone()
-
-        # perform regularization
-        if model.regularization_kernel is None:
-            reg = reg_weight * model.regularization(model.rnn.weight_hh_l0, type=reg_type)
+        if reservoir_mode:
+            # RC path: accumulate scatter matrices
+            with torch.no_grad():
+                _, hidden_tra = model(inputs_tra)
+                H_tra = hidden_tra.reshape(-1, hidden_size)
+                Y_oh = torch.zeros(H_tra.shape[0], n_classes, device=device)
+                Y_oh.scatter_(1, labels_tra.unsqueeze(1), 1.0)
+                H_aug = torch.cat([H_tra, torch.ones(H_tra.shape[0], 1, device=device)], dim=1).to(torch.float64)
+                Y_oh = Y_oh.to(torch.float64)
+                rc_A.addmm_(H_aug.T, H_aug)
+                rc_b.addmm_(H_aug.T, Y_oh)
         else:
-            if model.regularization_kernel.ndim == 2:
-                reg = reg_weight * model.regularization(model.rnn.weight_hh_l0, type=reg_type,
-                                                        matrix=model.regularization_kernel)
-            elif model.regularization_kernel.ndim == 3:
-                reg = reg_weight * model.regularization(model.rnn.weight_hh_l0, type=reg_type,
-                                                        matrix=model.regularization_kernel[:, :, epoch])
-        # add regularization component
-        loss += reg
+            # Gradient path: forward, loss, backward, optimize
+            inputs_val = inputs[:, half:, :]
+            labels_val = labels[:, half:]
+            inputs_val = torch.from_numpy(inputs_val).type(torch.float).to(device)
+            labels_val = torch.from_numpy(labels_val.flatten()).type(torch.long).to(device)
 
-        # perform backward pass
-        loss.backward()
-        # perform optimization
-        optimizer.step()
-        # update scheduler
-        if scheduler is not None:
-            scheduler.step()
-        if microtiming:
-            compute_time = time.time() - t4
-        # store loss
-        training_loss.append(loss.item())
-        training_loss_task.append(task_loss.item())
-        training_loss_spatial.append(reg.item())
+            optimizer.zero_grad()
 
-        if microtiming:
-            if epoch % 10 == 0:
-                print(f"Epoch {epoch}: Data gen: {data_gen_time:.3f}s, Data split: {data_split_time:.3f}, Transfer: {data_transfer_time:.3f}s, Compute: {compute_time:.3f}s", flush=True)
+            if microtiming:
+                t4 = time.time()
+            outputs, _ = model(inputs_tra)
 
-        # validation
-        with torch.no_grad():
-            # get model outputs for validation data
-            outputs_val, _ = model(inputs_val)
-            # compute loss for validation data
-            loss_val = criterion(outputs_val.view(-1, model.num_classes), labels_val)
-            # store validation loss
-            validation_loss.append(loss_val.item())
+            # compute loss for training data
+            task_loss = criterion(outputs.view(-1, model.num_classes), labels_tra)
+            loss = task_loss.clone()
 
-        running_loss += loss.item()
-        running_loss_val += loss_val.item()
-        n_trials = 100
+            # perform regularization
+            if model.regularization_kernel is None:
+                reg = reg_weight * model.regularization(model.rnn.weight_hh_l0, type=reg_type)
+            else:
+                if model.regularization_kernel.ndim == 2:
+                    reg = reg_weight * model.regularization(model.rnn.weight_hh_l0, type=reg_type,
+                                                            matrix=model.regularization_kernel)
+                elif model.regularization_kernel.ndim == 3:
+                    reg = reg_weight * model.regularization(model.rnn.weight_hh_l0, type=reg_type,
+                                                            matrix=model.regularization_kernel[:, :, epoch])
+            loss += reg
 
-        # --- performance logging (run_testing is expensive; only at log_freq or epoch 0) ---
-        should_log = (epoch == 0) or (epoch > 0 and epoch % log_freq == int(log_freq - 1))
-        if should_log:
-            model.eval()
-            last_accuracy, _, _, _, _, _ = run_testing(dataset=dataset, model=model, n_trials=n_trials, verbose=False)
-            test_accuracy.append(last_accuracy)
-            if track_model_state:
-                model_state[epoch] = copy.deepcopy(model.state_dict())
-            model.train()
+            loss.backward()
+            optimizer.step()
+            if scheduler is not None:
+                scheduler.step()
+            if microtiming:
+                compute_time = time.time() - t4
 
-        # --- terminal print ---
+            # store loss
+            training_loss.append(loss.item())
+            training_loss_task.append(task_loss.item())
+            training_loss_spatial.append(reg.item())
+
+            if microtiming:
+                if epoch % 10 == 0:
+                    print(f"Epoch {epoch}: Data gen: {data_gen_time:.3f}s, Data split: {data_split_time:.3f}, Transfer: {data_transfer_time:.3f}s, Compute: {compute_time:.3f}s", flush=True)
+
+            # validation
+            with torch.no_grad():
+                outputs_val, _ = model(inputs_val)
+                loss_val = criterion(outputs_val.view(-1, model.num_classes), labels_val)
+                validation_loss.append(loss_val.item())
+
+            running_loss += loss.item()
+            running_loss_val += loss_val.item()
+            n_trials = 100
+
+            # performance logging
+            should_log = (epoch == 0) or (epoch > 0 and epoch % log_freq == int(log_freq - 1))
+            if should_log:
+                model.eval()
+                last_accuracy, _, _, _, _, _ = run_testing(dataset=dataset, model=model, n_trials=n_trials, verbose=False)
+                test_accuracy.append(last_accuracy)
+                if track_model_state:
+                    model_state[epoch] = copy.deepcopy(model.state_dict())
+                model.train()
+
+        # terminal print
         should_print = (epoch == 0) or (epoch > 0 and epoch % print_freq == int(print_freq - 1))
         if should_print:
             epoch_log_timestamp_current = timer()
             epoch_log_time_elapsed = epoch_log_timestamp_current - epoch_log_timestamp_last
             epoch_log_timestamp_last = epoch_log_timestamp_current
-            n_window = 1 if epoch == 0 else print_freq
-            if run is None:
-                print('epoch {:6d}  |  training loss: {:0.5f}  |  validation loss: {:0.5f}  |  test accuracy: {:6.1f}%  |  time since last update: {:2.2f}s'
-                    .format(epoch, running_loss / n_window, running_loss_val / n_window, last_accuracy * 100, epoch_log_time_elapsed), flush=True)
+            if reservoir_mode:
+                if run is None:
+                    print(f'epoch {epoch:6d}  |  time since last update: {epoch_log_time_elapsed:3.2f}s', flush=True)
+                else:
+                    print(f'run {run:3d}  |  epoch {epoch:6d}  |  time since last update: {epoch_log_time_elapsed:3.2f}s', flush=True)
             else:
-                print('run {:3d}  |  epoch {:6d}  |  training loss: {:0.5f}  |  validation loss: {:0.5f}  |  test accuracy: {:6.1f}%  |  time since last update: {:2.2f}s'
-                    .format(run, epoch, running_loss / n_window, running_loss_val / n_window, last_accuracy * 100, epoch_log_time_elapsed), flush=True)
-            running_loss = 0.0
-            running_loss_val = 0.0
+                n_window = 1 if epoch == 0 else print_freq
+                if run is None:
+                    print('epoch {:6d}  |  training loss: {:0.5f}  |  validation loss: {:0.5f}  |  test accuracy: {:5.1f}%  |  time since last update: {:3.2f}s'
+                        .format(epoch, running_loss / n_window, running_loss_val / n_window, last_accuracy * 100, epoch_log_time_elapsed), flush=True)
+                else:
+                    print('run {:3d}  |  epoch {:6d}  |  training loss: {:0.5f}  |  validation loss: {:0.5f}  |  test accuracy: {:5.1f}%  |  time since last update: {:3.2f}s'
+                        .format(run, epoch, running_loss / n_window, running_loss_val / n_window, last_accuracy * 100, epoch_log_time_elapsed), flush=True)
+                running_loss = 0.0
+                running_loss_val = 0.0
 
-        # --- checkpoint write ---
-        should_write = (checkpoint_callback is not None) and (epoch > 0) and (epoch % write_freq == int(write_freq - 1))
-        if should_write:
-            # collect all model states logged since the previous write boundary
-            prev_write = epoch - write_freq
-            state_chunk = {ep: state for ep, state in model_state.items() if ep > prev_write}
-            accumulated_data = {
-                'training_loss':         np.asarray(training_loss),
-                'training_loss_task':    np.asarray(training_loss_task),
-                'training_loss_spatial': np.asarray(training_loss_spatial),
-                'validation_loss':       np.asarray(validation_loss),
-                'test_accuracy':         np.asarray(test_accuracy),
-            }
-            checkpoint_callback(epoch, state_chunk, optimizer, scheduler, accumulated_data)
+        # checkpoint write (gradient path only)
+        if not reservoir_mode:
+            should_write = (checkpoint_callback is not None) and (epoch > 0) and (epoch % write_freq == int(write_freq - 1))
+            if should_write:
+                prev_write = epoch - write_freq
+                state_chunk = {ep: state for ep, state in model_state.items() if ep > prev_write}
+                accumulated_data = {
+                    'training_loss':         np.asarray(training_loss),
+                    'training_loss_task':    np.asarray(training_loss_task),
+                    'training_loss_spatial': np.asarray(training_loss_spatial),
+                    'validation_loss':       np.asarray(validation_loss),
+                    'test_accuracy':         np.asarray(test_accuracy),
+                }
+                checkpoint_callback(epoch, state_chunk, optimizer, scheduler, accumulated_data)
+
+    # RC post-loop: solve Ridge regression and compute loss
+    if reservoir_mode:
+        print('RC: solving Ridge regression...', flush=True)
+        try:
+            W = torch.linalg.solve(rc_A, rc_b)  # (hidden+1, n_classes)
+        except torch._C._LinAlgError:
+            print('RC: rc_A is singular, falling back to lstsq...', flush=True)
+            W = torch.linalg.lstsq(rc_A, rc_b).solution
+        with torch.no_grad():
+            model.fc.weight.copy_(W[:hidden_size].T)  # (n_classes, hidden)
+            model.fc.bias.copy_(W[hidden_size])       # (n_classes,)
+
+        # compute validation loss once over a fixed number of trials
+        n_val_trials = 100
+        rc_criterion = nn.CrossEntropyLoss()
+        running_val_loss = 0.0
+        model.eval()
+        with torch.no_grad():
+            for trial in range(n_val_trials):
+                dataset.env.reset(seed=int(2 * n_epochs + trial))
+                inputs, labels = dataset()
+                try:
+                    labels = fix_labels(labels, decision=int(decision / dt), trim=trim)
+                except:
+                    pass
+
+                inputs_val = torch.from_numpy(inputs[:, half:, :]).float().to(device)
+                labels_val = torch.from_numpy(labels[:, half:].flatten()).long().to(device)
+
+                outputs_val, _ = model(inputs_val)
+                running_val_loss += rc_criterion(outputs_val.view(-1, model.num_classes), labels_val).item()
+
+        # compute test accuracy using run_testing
+        accuracy, *_ = run_testing(dataset, model, n_trials=1000, verbose=False)
+
+        training_loss = np.array([])
+        training_loss_task = np.array([])
+        training_loss_spatial = np.array([])
+        validation_loss = np.array([running_val_loss / n_val_trials])
+        test_accuracy = np.array([accuracy])
+
+        print(f'RC: validation loss: {validation_loss[0]:0.5f}  |  test accuracy: {accuracy*100:6.1f}%', flush=True)
+    else:
+        training_loss = np.asarray(training_loss)
+        training_loss_task = np.asarray(training_loss_task)
+        training_loss_spatial = np.asarray(training_loss_spatial)
+        validation_loss = np.asarray(validation_loss)
+        test_accuracy = np.asarray(test_accuracy)
 
     t_overall = timer() - t_overall
     print('Finished training in {0}'.format(timedelta(seconds=t_overall)), flush=True)
-
-    training_loss = np.asarray(training_loss)
-    training_loss_task = np.asarray(training_loss_task)
-    training_loss_spatial = np.asarray(training_loss_spatial)
-    validation_loss = np.asarray(validation_loss)
-    test_accuracy = np.asarray(test_accuracy)
 
     if return_models:
         return training_loss, validation_loss, test_accuracy, model_state if track_model_state else {}, training_loss_task, training_loss_spatial
@@ -951,7 +1042,7 @@ def trial_accuracy(outputs, labels):
     if np.all(choice[has_responded]==labels[has_responded]):
         return 1
     else:
-        0
+        return 0
 
 
 def run_testing_rest(model, n_steps=1000, noise_mean=0.5, noise_sd=0.3, smooth_noise=0, fix_input_channels=(0,), fix_input_value=1.0):
@@ -1009,6 +1100,14 @@ def train_helper(run, config):
         input_weight_mask = None
         output_weight_mask = None
 
+    # reservoir mode: freeze all weights except output layer (ridge regression trains the readout)
+    reservoir_mode = config.get('reservoir_mode', False)
+    if reservoir_mode:
+        config['train_ih_w'] = False
+        config['train_ih_b'] = False
+        config['train_hh_w'] = False
+        config['train_hh_b'] = False
+
     # seed random seed for reproducibility across runs
     random.seed(int(run))
     np.random.seed(int(run))
@@ -1041,15 +1140,20 @@ def train_helper(run, config):
                 train_ho_w=config['train_ho_w'],
                 init_ho_b=config['init_ho_b'],
                 train_ho_b=config['train_ho_b'],
-                allow_self_connections=config['allow_self_connections'])
+                allow_self_connections=config['allow_self_connections'],
+                reservoir_mode=reservoir_mode,
+                spectral_radius=config.get('spectral_radius', 0.9))
     # if config['n_gpu'] > 1:
     #     model = nn.DataParallel(model)
     model.to(config['device'])
-    optimizer = torch.optim.Adam(model.parameters(), lr=config['learning_rate'])
+    if reservoir_mode:
+        optimizer = None
+    else:
+        optimizer = torch.optim.Adam(model.parameters(), lr=config['learning_rate'])
     criterion = nn.CrossEntropyLoss()
     scheduler = None
 
-    # --- check for an existing checkpoint and resume if found ---
+    # check for an existing checkpoint and resume if found
     models_path  = config.get('models_path')
     outputs_path = config.get('outputs_path')
     start_epoch  = 0
@@ -1081,7 +1185,7 @@ def train_helper(run, config):
                     scheduler.load_state_dict(resume_state['scheduler'])
                 initial_data = saved_data  # accumulated metric arrays
 
-    # --- build checkpoint callback ---
+    # build checkpoint callback
     checkpoint_callback = None
     if models_path and outputs_path:
         def checkpoint_callback(epoch, state_chunk, optimizer, scheduler, accumulated_data):
@@ -1092,7 +1196,7 @@ def train_helper(run, config):
             checkpoint_data = {
                 **accumulated_data,
                 '_resume_state': {
-                    'optimizer': optimizer.state_dict(),
+                    'optimizer': optimizer.state_dict() if optimizer is not None else {},
                     'scheduler': scheduler.state_dict() if scheduler is not None else {},
                 },
             }
@@ -1113,7 +1217,12 @@ def train_helper(run, config):
                        run=run,
                        checkpoint_callback=checkpoint_callback,
                        start_epoch=start_epoch,
-                       initial_data=initial_data)
+                       initial_data=initial_data,
+                       reservoir_mode=reservoir_mode)
+    # save model state for RC (no checkpoint_callback during RC training)
+    if reservoir_mode and models_path and outputs_path:
+        last_epoch = config['n_epochs'] - 1
+        model_manager.save_model_states(model.state_dict(), run=run, epoch=last_epoch)
 
     # get all outputs for final model
     _, inputs, labels, hidden_activity, output_activity, info \
