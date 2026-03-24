@@ -1078,6 +1078,9 @@ def run_testing_rest(model, n_steps=1000, noise_mean=0.5, noise_sd=0.3, smooth_n
 
 
 def train_helper(run, config):
+    
+    # add short pause to avoid i/o issues for short training runs
+    time.sleep(np.random.uniform(0, 5))
 
     # create dataset
     dataset = ngym.Dataset(config['task_no_modifier'],
@@ -1359,16 +1362,24 @@ class ModelStateManager:
         """
         
         # Function that saves the model state of a specific run and epoch.
-        def save_state_for_run_and_epoch(file_path, state, run, epoch):
-            with h5py.File(file_path, 'a') as models_file:
-                run_group = models_file.require_group(f'run_{run}')
-                epoch_group = run_group.require_group(f'epoch_{epoch}')
-                for key, value in state.items():
-                    if key in epoch_group:
-                        del epoch_group[key]  # Remove existing dataset to avoid conflicts
-                    if torch.is_tensor(value):
-                        value = value.cpu().numpy()
-                    epoch_group.create_dataset(key, data=value)
+        def save_state_for_run_and_epoch(file_path, state, run, epoch, max_retries=10):
+            for attempt in range(max_retries):
+                try:
+                    with h5py.File(file_path, 'a') as models_file:
+                        run_group = models_file.require_group(f'run_{run}')
+                        epoch_group = run_group.require_group(f'epoch_{epoch}')
+                        for key, value in state.items():
+                            if key in epoch_group:
+                                del epoch_group[key]  # Remove existing dataset to avoid conflicts
+                            if torch.is_tensor(value):
+                                value = value.cpu().numpy()
+                            epoch_group.create_dataset(key, data=value)
+                    return
+                except BlockingIOError:
+                    if attempt < max_retries - 1:
+                        time.sleep(np.random.uniform(0.5, 2.0))
+                    else:
+                        raise
 
         # Check that run and epoch are args are compatible.
         if (run == None and (not epoch == None)):
