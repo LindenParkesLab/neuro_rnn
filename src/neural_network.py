@@ -365,16 +365,20 @@ class RNN(nn.Module):
     def regularization(self, w, type='l1', matrix=None):
         """
         Compute regularization term for weights.
-        
+
         Parameters
         ----------
         w : torch.Tensor
             Weight tensor to regularize
         type : str, default='l1'
-            Type of regularization ('l1' or 'l2')
+            Type of regularization ('l1', 'l2', 'l2s', or 'pearson').
+            'l2s' is L2 scaled by the number of nodes (hidden_size).
         matrix : torch.Tensor, optional
-            Spatial regularization matrix. If None, applies uniform regularization.
-            
+            Spatial regularization matrix. For 'l1'/'l2'/'l2s', used as
+            element-wise penalty mask. For 'pearson', used as the dissimilarity
+            kernel — the Pearson correlation between w and (1 - matrix) is
+            maximized, combined with a uniform L2 penalty on w.
+
         Returns
         -------
         torch.Tensor
@@ -388,6 +392,19 @@ class RNN(nn.Module):
             return torch.square(w).sum()
         elif type == 'l2' and matrix is not None:
             return torch.mul(torch.square(w), matrix).sum()
+        elif type == 'l2s' and matrix is None:
+            return torch.square(w).sum() / w.shape[0]
+        elif type == 'l2s' and matrix is not None:
+            return torch.mul(torch.square(w), matrix).sum() / w.shape[0]
+        elif type == 'pearson':
+            if matrix is None:
+                raise ValueError("Pearson regularization requires a spatial matrix.")
+            similarity = 1.0 - matrix
+            off_diag = ~torch.eye(w.shape[0], dtype=torch.bool, device=w.device)
+            w_flat = w[off_diag]
+            s_flat = similarity[off_diag]
+            corr = torch.corrcoef(torch.stack([w_flat, s_flat]))[0, 1]
+            return (1.0 - corr) + torch.square(w).sum() / w.shape[0]
         else:
             raise ValueError(f"Unknown regularization type: {type}")
 
@@ -706,6 +723,14 @@ def run_training(dataset, model, optimizer=None, criterion=None, config=None, sc
     else:
         reg_type = config['reg_type']
         reg_weight = config['reg_weight']
+        spatial_only_epochs = config.get('spatial_only_epochs', 0)
+        if spatial_only_epochs > 0 and model.regularization_kernel is None:
+            raise ValueError('spatial_only_epochs > 0 requires a spatial embedding (regularization_kernel), '
+                             'but none is set.')
+        if reg_type == 'pearson' and model.regularization_kernel is None:
+            raise ValueError("reg_type='pearson' requires a regularization_kernel.")
+        if reg_type == 'pearson' and model.regularization_kernel is not None and model.regularization_kernel.ndim == 3:
+            raise ValueError("reg_type='pearson' does not support 3D time-varying kernels.")
         model.train()
 
     # output containers — pre-populate from checkpoint data when resuming
@@ -732,6 +757,7 @@ def run_training(dataset, model, optimizer=None, criterion=None, config=None, sc
 
     running_loss = 0.0
     running_loss_val = 0.0
+    running_loss_spatial = 0.0
     epoch_log_timestamp_last = timer()
 
     # Main training loop
@@ -790,7 +816,10 @@ def run_training(dataset, model, optimizer=None, criterion=None, config=None, sc
 
             # compute loss for training data
             task_loss = criterion(outputs.view(-1, model.num_classes), labels_tra)
-            loss = task_loss.clone()
+            if epoch >= spatial_only_epochs:
+                loss = task_loss.clone()
+            else:
+                loss = torch.tensor(0.0, device=device)
 
             # perform regularization
             if model.regularization_kernel is None:
@@ -828,6 +857,7 @@ def run_training(dataset, model, optimizer=None, criterion=None, config=None, sc
 
             running_loss += loss.item()
             running_loss_val += loss_val.item()
+            running_loss_spatial += reg.item()
             n_trials = 100
 
             # performance logging
@@ -854,13 +884,14 @@ def run_training(dataset, model, optimizer=None, criterion=None, config=None, sc
             else:
                 n_window = 1 if epoch == 0 else print_freq
                 if run is None:
-                    print('epoch {:6d}  |  training loss: {:0.5f}  |  validation loss: {:0.5f}  |  test accuracy: {:5.1f}%  |  time since last update: {:3.2f}s'
-                        .format(epoch, running_loss / n_window, running_loss_val / n_window, last_accuracy * 100, epoch_log_time_elapsed), flush=True)
+                    print('epoch {:6d}  |  training loss: {:0.5f}  |  spatial loss: {:0.8f}  |  validation loss: {:0.5f}  |  test accuracy: {:5.1f}%  |  time since last update: {:3.2f}s'
+                        .format(epoch, running_loss / n_window, running_loss_spatial / n_window, running_loss_val / n_window, last_accuracy * 100, epoch_log_time_elapsed), flush=True)
                 else:
-                    print('run {:3d}  |  epoch {:6d}  |  training loss: {:0.5f}  |  validation loss: {:0.5f}  |  test accuracy: {:5.1f}%  |  time since last update: {:3.2f}s'
-                        .format(run, epoch, running_loss / n_window, running_loss_val / n_window, last_accuracy * 100, epoch_log_time_elapsed), flush=True)
+                    print('run {:3d}  |  epoch {:6d}  |  training loss: {:0.5f}  |  spatial loss: {:0.8f}  |  validation loss: {:0.5f}  |  test accuracy: {:5.1f}%  |  time since last update: {:3.2f}s'
+                        .format(run, epoch, running_loss / n_window, running_loss_spatial / n_window, running_loss_val / n_window, last_accuracy * 100, epoch_log_time_elapsed), flush=True)
                 running_loss = 0.0
                 running_loss_val = 0.0
+                running_loss_spatial = 0.0
 
         # checkpoint write (gradient path only)
         if not reservoir_mode:
@@ -1553,15 +1584,23 @@ class ModelDataManager:
         >>> manager.save_model_data(list_of_epoch_dicts)
         """
 
-        def save_data_for_run_and_epoch(file_path, data, run, epoch):
-            with h5py.File(file_path, 'a') as models_file:
-                run_group = models_file.require_group(f'run_{run}')
-                epoch_group = run_group.require_group(f'epoch_{epoch}')
-                for key, value in data.items():
-                    if key in epoch_group:
-                        del epoch_group[key]
-                    pickled_data = pickle.dumps(value)
-                    epoch_group.create_dataset(key, data=np.void(pickled_data))
+        def save_data_for_run_and_epoch(file_path, data, run, epoch, max_retries=10):
+            for attempt in range(max_retries):
+                try:
+                    with h5py.File(file_path, 'a') as models_file:
+                        run_group = models_file.require_group(f'run_{run}')
+                        epoch_group = run_group.require_group(f'epoch_{epoch}')
+                        for key, value in data.items():
+                            if key in epoch_group:
+                                del epoch_group[key]
+                            pickled_data = pickle.dumps(value)
+                            epoch_group.create_dataset(key, data=np.void(pickled_data))
+                    return
+                except BlockingIOError:
+                    if attempt < max_retries - 1:
+                        time.sleep(np.random.uniform(0.5, 2.0))
+                    else:
+                        raise
 
         if run is None and epoch is not None:
             raise TypeError("If 'run' is None, 'epoch' must also be None.")

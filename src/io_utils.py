@@ -206,6 +206,7 @@ def load_config_from_csv(params_csv, model_index):
         'mask_weights': ['mask_weights'],
         'reservoir_mode': ['reservoir_mode'],
         'ridge_alpha': ['ridge_alpha'],
+        'spatial_only_epochs': ['spatial_only_epochs'],
         'spectral_radius': ['spectral_radius'],
         'rec_noise': ['noise','rec_noise','node_noise','recurrent_noise'],
         
@@ -380,6 +381,8 @@ Examples:
                             help='Use reservoir computing with Ridge regression for output weights: True/False (default: False)')
     model_group.add_argument('--ridge_alpha', type=float, default=_NOT_PROVIDED,
                             help='Ridge regression regularization strength (default: 1.0)')
+    model_group.add_argument('--spatial_only_epochs', type=int, default=_NOT_PROVIDED,
+                            help='Number of initial epochs to train with spatial loss only before including task loss (default: 0)')
     model_group.add_argument('--spectral_radius', type=float, default=_NOT_PROVIDED,
                             help='Target spectral radius for reservoir weight matrix (default: 0.9)')
     model_group.add_argument('--rec_noise', type=float, default=_NOT_PROVIDED,
@@ -417,7 +420,7 @@ Examples:
     # regularization parameters
     reg_group = parser.add_argument_group('Regularization Parameters')
     reg_group.add_argument('--reg_type', type=str, default=_NOT_PROVIDED,
-                          help='Regularization type (default: l2)')
+                          help='Regularization type: l1, l2, l2s, or pearson (default: l2)')
     reg_group.add_argument('--reg_weight', type=float, default=_NOT_PROVIDED,
                           help='Regularization weight (default: 0.001)')
     reg_group.add_argument('--kernel_type', type=str, default=_NOT_PROVIDED,
@@ -466,7 +469,7 @@ def create_config_from_args(args):
         'datadir', 'outdir', 'device', 'n_threads', 'task', 'time_step', 'seq_len_multi',
         'rnn_model', 'hidden_size', 'batch_size', 'learning_rate', 'n_runs',
         'n_epochs', 'print_freq', 'log_freq', 'write_freq', 'reg_type', 'reg_weight', 'kernel_type',
-        'kernel_normalization', 'rec_noise', 'ridge_alpha', 'spectral_radius'
+        'kernel_normalization', 'rec_noise', 'ridge_alpha', 'spectral_radius', 'spatial_only_epochs'
     ]
     
     for param in simple_params:
@@ -605,6 +608,7 @@ def apply_defaults(config):
         'mask_weights': False,
         'reservoir_mode': False,
         'ridge_alpha': 1.0,
+        'spatial_only_epochs': 0,
         'spectral_radius': 0.9,
         'reg_type': 'l2',
         'reg_weight': 0.001,
