@@ -371,8 +371,10 @@ class RNN(nn.Module):
         w : torch.Tensor
             Weight tensor to regularize
         type : str, default='l1'
-            Type of regularization ('l1', 'l2', 'l2s', or 'pearson').
+            Type of regularization ('l1', 'l2', 'l2s', 'pearson', or 'pearson_l2s').
             'l2s' is L2 scaled by the number of nodes (hidden_size).
+            'pearson' is correlation only (1 - r).
+            'pearson_l2s' is correlation + scaled L2 ((1 - r) + ||W||^2 / n).
         matrix : torch.Tensor, optional
             Spatial regularization matrix. For 'l1'/'l2'/'l2s', used as
             element-wise penalty mask. For 'pearson', used as the dissimilarity
@@ -396,7 +398,7 @@ class RNN(nn.Module):
             return torch.square(w).sum() / w.shape[0]
         elif type == 'l2s' and matrix is not None:
             return torch.mul(torch.square(w), matrix).sum() / w.shape[0]
-        elif type == 'pearson':
+        elif type in ('pearson', 'pearson_l2s'):
             if matrix is None:
                 raise ValueError("Pearson regularization requires a spatial matrix.")
             similarity = 1.0 - matrix
@@ -404,7 +406,10 @@ class RNN(nn.Module):
             w_flat = w[off_diag]
             s_flat = similarity[off_diag]
             corr = torch.corrcoef(torch.stack([w_flat, s_flat]))[0, 1]
-            return (1.0 - corr) + torch.square(w).sum() / w.shape[0]
+            if type == 'pearson':
+                return 1.0 - corr
+            else:
+                return (1.0 - corr) + torch.square(w).sum() / w.shape[0]
         else:
             raise ValueError(f"Unknown regularization type: {type}")
 
@@ -727,10 +732,10 @@ def run_training(dataset, model, optimizer=None, criterion=None, config=None, sc
         if spatial_only_epochs > 0 and model.regularization_kernel is None:
             raise ValueError('spatial_only_epochs > 0 requires a spatial embedding (regularization_kernel), '
                              'but none is set.')
-        if reg_type == 'pearson' and model.regularization_kernel is None:
-            raise ValueError("reg_type='pearson' requires a regularization_kernel.")
-        if reg_type == 'pearson' and model.regularization_kernel is not None and model.regularization_kernel.ndim == 3:
-            raise ValueError("reg_type='pearson' does not support 3D time-varying kernels.")
+        if reg_type in ('pearson', 'pearson_l2s') and model.regularization_kernel is None:
+            raise ValueError(f"reg_type='{reg_type}' requires a regularization_kernel.")
+        if reg_type in ('pearson', 'pearson_l2s') and model.regularization_kernel is not None and model.regularization_kernel.ndim == 3:
+            raise ValueError(f"reg_type='{reg_type}' does not support 3D time-varying kernels.")
         model.train()
 
     # output containers — pre-populate from checkpoint data when resuming

@@ -420,7 +420,7 @@ Examples:
     # regularization parameters
     reg_group = parser.add_argument_group('Regularization Parameters')
     reg_group.add_argument('--reg_type', type=str, default=_NOT_PROVIDED,
-                          help='Regularization type: l1, l2, l2s, or pearson (default: l2)')
+                          help='Regularization type: l1, l2, l2s, pearson, or pearson_l2s (default: l2)')
     reg_group.add_argument('--reg_weight', type=float, default=_NOT_PROVIDED,
                           help='Regularization weight (default: 0.001)')
     reg_group.add_argument('--kernel_type', type=str, default=_NOT_PROVIDED,
