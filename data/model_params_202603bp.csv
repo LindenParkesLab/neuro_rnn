@@ -2,10 +2,14 @@ task,seq_len_multi,time_step,alpha,rec_noise,init_hh_w,rnn_model,hidden_size,bat
 GoNogo-v0-Del_200_100_Dec_300,5,50,0.1,0.05,-0.01 0.01,rnn-tanh,100,32,0.001,100000,l2s,0,None,mean,False,28
 GoNogo-v0-Del_200_100_Dec_300,5,50,0.1,0.05,-0.01 0.01,rnn-tanh,100,32,0.001,100000,l2s,0,None,mean,True,28
 GoNogo-v0-Del_200_100_Dec_300,5,50,0.1,0.05,-0.01 0.01,rnn-tanh,100,32,0.001,100000,l2s,0.002,None,mean,True,28
+GoNogo-v0-Del_200_100_Dec_300,5,50,0.1,0.05,-0.01 0.01,rnn-tanh,100,32,0.001,100000,pearson_l2s,0.002,sf_axis,mean,True,28
+GoNogo-v0-Del_200_100_Dec_300,5,50,0.1,0.05,-0.01 0.01,rnn-tanh,100,32,0.001,100000,pearson_l2s,0.002,euclidean,mean,True,28
 GoNogo-v0-Del_200_100_Dec_300,5,50,0.1,0.05,-0.01 0.01,rnn-tanh,100,32,0.001,100000,pearson,0.002,sf_axis,mean,True,28
 GoNogo-v0-Del_200_100_Dec_300,5,50,0.1,0.05,-0.01 0.01,rnn-tanh,100,32,0.001,100000,pearson,0.002,euclidean,mean,True,28
 DelayMatchSampleDistractor1D-v0,5,50,0.1,0.05,-0.01 0.01,rnn-tanh,100,32,0.001,100000,l2s,0,None,mean,False,28
 DelayMatchSampleDistractor1D-v0,5,50,0.1,0.05,-0.01 0.01,rnn-tanh,100,32,0.001,100000,l2s,0,None,mean,True,28
 DelayMatchSampleDistractor1D-v0,5,50,0.1,0.05,-0.01 0.01,rnn-tanh,100,32,0.001,100000,l2s,0.002,None,mean,True,28
+DelayMatchSampleDistractor1D-v0,5,50,0.1,0.05,-0.01 0.01,rnn-tanh,100,32,0.001,100000,pearson_l2s,0.002,sf_axis,mean,True,28
+DelayMatchSampleDistractor1D-v0,5,50,0.1,0.05,-0.01 0.01,rnn-tanh,100,32,0.001,100000,pearson_l2s,0.002,euclidean,mean,True,28
 DelayMatchSampleDistractor1D-v0,5,50,0.1,0.05,-0.01 0.01,rnn-tanh,100,32,0.001,100000,pearson,0.002,sf_axis,mean,True,28
 DelayMatchSampleDistractor1D-v0,5,50,0.1,0.05,-0.01 0.01,rnn-tanh,100,32,0.001,100000,pearson,0.002,euclidean,mean,True,28
