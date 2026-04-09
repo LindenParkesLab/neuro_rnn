@@ -424,9 +424,18 @@ def get_file_str(config):
     kernel_type = config['kernel_type']
     kernel_normalization = config['kernel_normalization']
     
-    # continuous time parameter
+    # continuous time parameter: use 'var' placeholder for per-node alpha vectors
     alpha = config['alpha']
-    
+    alpha_str = 'var' if isinstance(alpha, np.ndarray) else alpha
+
+    # spatial-only pretraining suffix
+    spatial_only_epochs = config.get('spatial_only_epochs', 0)
+    so_str = f'-so{spatial_only_epochs}' if spatial_only_epochs > 0 else ''
+
+    # reservoir mode suffix
+    reservoir_mode = config.get('reservoir_mode', False)
+    rc_str = f'-rc{config.get("ridge_alpha", 1.0)}' if reservoir_mode else ''
+
     # create name string
     file_str = f'{task}-{seq_len}-' \
                f'{rnn_model}-{hidden_size}-{batch_size}-{lr}-' \
@@ -434,7 +443,7 @@ def get_file_str(config):
                f'{mask_weights}-{n_io}-' \
                f'{reg_type}-{reg_weight}-' \
                f'{kernel_type}-{kernel_normalization}-' \
-               f'{alpha}'
+               f'{alpha_str}{so_str}{rc_str}'
 
     return file_str
 
@@ -955,35 +964,41 @@ def get_task_label(task):
     return task_label
 
 
-def get_kernel_label(kernel_type='None', mask_weights=False, reg_weight=0.0):
+def get_kernel_label(kernel_type='None', mask_weights=False, reg_weight=0.0, spatial_only_delay=0):
     if mask_weights:
         m = 'Masked '
     else:
         m = 'Unmasked '
     rnn_str = ''
+    if spatial_only_delay == 0:
+        delay_label = ''
+    else:
+        delay_label = ' (delayed)'
     if kernel_type == 'sa_axis':
-        kernel_label = m + 'S-A'
+        kernel_label = m + 'S-A' + delay_label 
     elif kernel_type == 'ut_axis':
-        kernel_label = m + 'U-T'
+        kernel_label = m + 'U-T' + delay_label 
     elif kernel_type == 'sf_axis':
-        kernel_label = m + 'S-F'
+        kernel_label = m + 'S-F' + delay_label 
+    elif kernel_type == 'myelin':
+        kernel_label = m + 'Myelin' + delay_label 
     elif kernel_type == 'euclidean':
-        kernel_label = m + 'Eucl.'
+        kernel_label = m + 'Eucl.' + delay_label 
     elif kernel_type == 'struct_conn':
-        kernel_label = m + 'SC'
+        kernel_label = m + 'SC' + delay_label 
     elif kernel_type == 'sphere_euclidean':
-        kernel_label = m + 'Sph. Eucl.'
+        kernel_label = m + 'Sph. Eucl.' + delay_label 
     elif kernel_type == 'rand_uniform':
-        kernel_label = m + 'Rand. Uniform'
+        kernel_label = m + 'Rand. Uniform' + delay_label 
     elif kernel_type == 'rand_normal':
-        kernel_label = m + 'Rand. Normal'
+        kernel_label = m + 'Rand. Normal' + delay_label 
     elif kernel_type == 'None':
         if reg_weight == 0:
             r = 'Unreg. '
         else:
             r = 'Reg. '
         # r = f''
-        kernel_label = m + rnn_str + r
+        kernel_label = m + rnn_str + r + delay_label 
     else:
         kernel_label = 'unknown'
     return kernel_label
@@ -993,10 +1008,15 @@ def load_params_csv(model_params_csv):
     import pandas as pd
     df = pd.read_csv(model_params_csv, keep_default_na = False, na_values = ['NaN'])
     kernel_labels = []
-    for row in np.arange(len(df)):
-        kernel_labels.append(get_kernel_label(kernel_type = df.kernel_type.iloc[row], \
-                                                mask_weights = df.mask_weights.iloc[row], \
-                                                reg_weight = df.reg_weight.iloc[row]))
+    for row in df.itertuples():
+        kernel_labels.append(
+            get_kernel_label(
+                kernel_type = getattr(row, 'kernel_type', 'None'),
+                mask_weights = getattr(row, 'mask_weights', False),
+                reg_weight = getattr(row, 'reg_weight', 0),
+                spatial_only_delay = getattr(row, 'spatial_only_epochs', 0)
+            )
+        )
     df['kernel_label'] = kernel_labels
     return df
 
@@ -1012,10 +1032,15 @@ def get_params_dataframe(params_dataframe: str | pd.DataFrame, rows: list = [], 
     # assign kernel and task labels if not already done
     if 'kernel_label' not in df.keys():
         kernel_labels = []
-        for row in range(len(df)):
-            kernel_labels.append(get_kernel_label(kernel_type=df.kernel_type.iloc[row], \
-                                                        mask_weights=df.mask_weights.iloc[row], \
-                                                        reg_weight=df.reg_weight.iloc[row]))
+        for row in df.itertuples():
+            kernel_labels.append(
+                get_kernel_label(
+                    kernel_type = getattr(row, 'kernel_type', 'None'),
+                    mask_weights = getattr(row, 'mask_weights', False),
+                    reg_weight = getattr(row, 'reg_weight', 0),
+                    spatial_only_delay = getattr(row, 'spatial_only_epochs', 0)
+                )
+            )
         df['kernel_label'] = kernel_labels
     
     if 'task_label' not in df.keys():
@@ -1076,7 +1101,8 @@ def get_params_dataframe(params_dataframe: str | pd.DataFrame, rows: list = [], 
             'seq_len': this.seq_len,
             'kernel_type': this.kernel_type,
             'kernel_normalization': this.kernel_normalization,
-            'alpha': this.alpha, 
+            'alpha': this.alpha,
+            'spatial_only_epochs': getattr(this, 'spatial_only_epochs', 0),
         }
 
         # get data file name

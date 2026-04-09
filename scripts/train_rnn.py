@@ -88,6 +88,7 @@ def train(config):
     # RNN model and training parameters
     hidden_size = config['hidden_size']
     n_runs = config['n_runs']
+    n_epochs = config['n_epochs']
     mask_weights = config['mask_weights']
 
     # regularization parameters
@@ -133,21 +134,37 @@ def train(config):
 
     output_manager = ModelDataManager(outputs_path)
     model_manager = ModelStateManager(models_path)
-    
-    # check if outputs exist
+
+    # expose file paths in config so train_helper can build checkpoint callbacks
+    config['models_path']  = models_path
+    config['outputs_path'] = outputs_path
+
+    # check which runs are complete, partial, or not yet started
     if os.path.isfile(models_path) and os.path.isfile(outputs_path):
-        print('found existing output files! checking for missing runs... ')
-        n_compl_models, _, _ = model_manager.get_info()
-        n_compl_outputs, _ = output_manager.get_info()
-        n_compl_runs = np.min((n_compl_models,n_compl_outputs))
-        print(f'found outputs for {n_compl_runs} runs')
-        if n_compl_runs == n_runs:
+        print('found existing output files! checking for missing/incomplete runs...')
+        complete_runs = set()
+        for run in range(n_runs):
+            model_epochs  = model_manager.get_run_epochs(run)
+            output_epochs = output_manager.get_run_epochs(run)
+            if model_epochs and output_epochs:
+                last_epoch = min(max(model_epochs), max(output_epochs))
+                if last_epoch == n_epochs - 1:
+                    complete_runs.add(run)
+        n_complete = len(complete_runs)
+        n_partial  = sum(
+            1 for r in range(n_runs)
+            if r not in complete_runs
+            and model_manager.get_run_epochs(r)
+            and output_manager.get_run_epochs(r)
+        )
+        print(f'found {n_complete} completed runs, {n_partial} partial runs')
+        if n_complete == n_runs:
             all_done = True
             print('training already completed! skipping...')
         else:
             all_done = False
-            rem_runs = np.arange(n_compl_runs,n_runs)
-            print(f'will train {len(rem_runs)} more runs')
+            rem_runs = np.array([r for r in range(n_runs) if r not in complete_runs])
+            print(f'will train {len(rem_runs)} more runs ({n_partial} resuming, {len(rem_runs) - n_partial} new)')
     else:
         all_done = False
         rem_runs = np.arange(n_runs)
@@ -187,14 +204,12 @@ def train(config):
                     
                     # Run this chunk in parallel
                     with torch.multiprocessing.get_context('spawn').Pool(processes=len(chunk), maxtasksperchild=1) as pool:
-                        results = pool.map(partial_train_with_gpu, run_gpu_pairs)
-                        outputs, models = zip(*results)
-                    
-                    # Save outputs and models
-                    print(f'Saving outputs and models for runs {chunk+1}')
+                        outputs_list = pool.map(partial_train_with_gpu, run_gpu_pairs)
+
+                    # Save outputs
+                    print(f'Saving outputs for runs {chunk+1}')
                     for idx, run in enumerate(chunk):
-                        output_manager.save_model_data(outputs[idx], run)
-                        model_manager.save_model_states(models[idx], run)
+                        output_manager.save_model_data(outputs_list[idx], run=run, epoch=n_epochs - 1)
             
             else:
                 # Single GPU or sequential processing
@@ -209,22 +224,20 @@ def train(config):
                 from src.neural_network import train_helper_with_gpu
                 for i, run in enumerate(rem_runs):
                     gpu_id = gpu_assignments[i] if gpu_assignments[i] is not None else None
-                    outputs, models = train_helper_with_gpu(run, config, gpu_id)
-                    
-                    # Save outputs and models
-                    print(f'Saving outputs and models for run {run+1}')
-                    output_manager.save_model_data(outputs, run)
-                    model_manager.save_model_states(models, run)
+                    outputs = train_helper_with_gpu(run, config, gpu_id)
+
+                    # Save outputs
+                    print(f'Saving outputs for run {run}')
+                    output_manager.save_model_data(outputs, run=run, epoch=n_epochs - 1)
         
         elif device.type == 'mps' or (device.type == 'cpu' and n_threads == 1):
             print(f'Running in serial on {device.type}...')
             # Original serial processing
             for run in rem_runs:
-                outputs, models = partial_train_helper(run)
-                # save outputs and models
-                print(f'saving outputs and models for run {run+1}')
-                output_manager.save_model_data(outputs, run)
-                model_manager.save_model_states(models, run)
+                outputs = partial_train_helper(run)
+                # save outputs
+                print(f'saving outputs for run {run}')
+                output_manager.save_model_data(outputs, run=run, epoch=n_epochs - 1)
         
         else:
             print(f'Running in parallel on {device.type} using {n_threads} threads...')
@@ -232,15 +245,15 @@ def train(config):
             proc_chunks = np.array_split(rem_runs, np.ceil(len(rem_runs)/n_threads))
             for chunk in proc_chunks:
                 with torch.multiprocessing.get_context('spawn').Pool(processes=len(chunk), maxtasksperchild=1) as pool:
-                    outputs, models = zip(*pool.map(partial_train_helper, chunk))
-                # save outputs and models
-                print(f'saving outputs and models for runs {chunk+1}')
+                    outputs_list = pool.map(partial_train_helper, chunk)
+                # save outputs
+                print(f'saving outputs for runs {chunk}')
                 for idx, run in enumerate(chunk):
-                    output_manager.save_model_data(outputs[idx], run)
-                    model_manager.save_model_states(models[idx], run)
+                    output_manager.save_model_data(outputs_list[idx], run=run, epoch=n_epochs - 1)
         
-        # save config
-        np.save(config_path, config)
+        # save config (exclude internal runtime keys)
+        config_to_save = {k: v for k, v in config.items() if k not in ('models_path', 'outputs_path')}
+        np.save(config_path, config_to_save)
 
 
 if __name__ == '__main__':

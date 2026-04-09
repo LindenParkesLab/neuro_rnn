@@ -49,6 +49,52 @@ def parse_weight_init_value(value):
     return None
 
 
+def parse_alpha_value(value):
+    """
+    Parse the alpha (continuous-time) parameter from various input formats.
+
+    Parameters
+    ----------
+    value : float, int, str, or np.ndarray
+        - Numeric (float/int): returned as a Python float.
+        - String that converts to a float: returned as float.
+        - String path to a .txt file: loaded via np.loadtxt and returned as a
+          1-D np.ndarray (one value per line).
+        - np.ndarray: returned as-is (must be 1-D).
+
+    Returns
+    -------
+    float or np.ndarray
+    """
+    if isinstance(value, np.ndarray):
+        if value.ndim != 1:
+            raise ValueError(f"Alpha array must be 1-D, got shape {value.shape}")
+        return value
+
+    if isinstance(value, (int, float, np.integer, np.floating)):
+        return float(value)
+
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            pass
+        path = os.path.expanduser(value)
+        if os.path.isfile(path):
+            arr = np.loadtxt(path)
+            arr = np.atleast_1d(arr)
+            if arr.ndim != 1:
+                raise ValueError(
+                    f"Alpha file '{path}' must contain a 1-D array, got shape {arr.shape}"
+                )
+            return arr
+        raise ValueError(
+            f"Cannot parse alpha value: '{value}' is not a float or a valid file path"
+        )
+
+    raise ValueError(f"Cannot parse alpha value of type {type(value)}: {value}")
+
+
 def parse_boolean_value(value):
     """
     Parse boolean value from various string formats with explicit validation.
@@ -154,8 +200,14 @@ def load_config_from_csv(params_csv, model_index):
         'learning_rate': ['learning_rate', 'lr'],
         'n_runs': ['n_runs', 'num_runs'],
         'n_epochs': ['n_epochs', 'num_epochs'],
-        'epoch_log': ['epoch_log'],
+        'print_freq': ['print_freq'],
+        'log_freq': ['log_freq'],
+        'write_freq': ['write_freq'],
         'mask_weights': ['mask_weights'],
+        'reservoir_mode': ['reservoir_mode'],
+        'ridge_alpha': ['ridge_alpha'],
+        'spatial_only_epochs': ['spatial_only_epochs'],
+        'spectral_radius': ['spectral_radius'],
         'rec_noise': ['noise','rec_noise','node_noise','recurrent_noise'],
         
         # weight initialization parameters
@@ -197,11 +249,13 @@ def load_config_from_csv(params_csv, model_index):
         
         if value is not None:
             # Apply appropriate parsing based on parameter type
-            if config_key in ['mask_weights', 'train_ih_w', 'train_ih_b', 'train_hh_w', 'train_hh_b', 
-                             'train_ho_w', 'train_ho_b', 'allow_self_connections']:
+            if config_key in ['mask_weights', 'train_ih_w', 'train_ih_b', 'train_hh_w', 'train_hh_b',
+                             'train_ho_w', 'train_ho_b', 'allow_self_connections', 'reservoir_mode']:
                 config[config_key] = parse_boolean_value(value)
             elif config_key in ['init_ih_w', 'init_ih_b', 'init_hh_w', 'init_hh_b', 'init_ho_w', 'init_ho_b']:
                 config[config_key] = parse_weight_init_value(value)
+            elif config_key == 'alpha':
+                config[config_key] = parse_alpha_value(value)
             elif config_key == 'kernel_type' and isinstance(value, str) and value.lower() == 'none':
                 config[config_key] = None
             else:
@@ -315,10 +369,22 @@ Examples:
                             help='Number of training runs (default: 10)')
     model_group.add_argument('--n_epochs', type=int, default=_NOT_PROVIDED,
                             help='Number of epochs (default: 5000)')
-    model_group.add_argument('--epoch_log', type=int, default=_NOT_PROVIDED,
-                            help='Logging frequency in epochs (default: 100)')
+    model_group.add_argument('--print_freq', type=int, default=_NOT_PROVIDED,
+                            help='Terminal print frequency in epochs (default: 100)')
+    model_group.add_argument('--log_freq', type=int, default=_NOT_PROVIDED,
+                            help='Performance logging frequency in epochs (default: 100)')
+    model_group.add_argument('--write_freq', type=int, default=_NOT_PROVIDED,
+                            help='H5 checkpoint write frequency in epochs (default: 1000)')
     model_group.add_argument('--mask_weights', type=str, default=_NOT_PROVIDED,
                             help='Whether to mask weights: True or False (default: False)')
+    model_group.add_argument('--reservoir_mode', type=str, default=_NOT_PROVIDED,
+                            help='Use reservoir computing with Ridge regression for output weights: True/False (default: False)')
+    model_group.add_argument('--ridge_alpha', type=float, default=_NOT_PROVIDED,
+                            help='Ridge regression regularization strength (default: 1.0)')
+    model_group.add_argument('--spatial_only_epochs', type=int, default=_NOT_PROVIDED,
+                            help='Number of initial epochs to train with spatial loss only before including task loss (default: 0)')
+    model_group.add_argument('--spectral_radius', type=float, default=_NOT_PROVIDED,
+                            help='Target spectral radius for reservoir weight matrix (default: 0.9)')
     model_group.add_argument('--rec_noise', type=float, default=_NOT_PROVIDED,
                              help='Scaling factor for added node-level (recurrent) noise (default: 0.0)')
     
@@ -354,7 +420,7 @@ Examples:
     # regularization parameters
     reg_group = parser.add_argument_group('Regularization Parameters')
     reg_group.add_argument('--reg_type', type=str, default=_NOT_PROVIDED,
-                          help='Regularization type (default: l2)')
+                          help='Regularization type: l1, l2, l2s, pearson, or pearson_l2s (default: l2)')
     reg_group.add_argument('--reg_weight', type=float, default=_NOT_PROVIDED,
                           help='Regularization weight (default: 0.001)')
     reg_group.add_argument('--kernel_type', type=str, default=_NOT_PROVIDED,
@@ -364,8 +430,9 @@ Examples:
     
     # continuous time parameter
     time_group = parser.add_argument_group('Continuous Time Parameters')
-    time_group.add_argument('--alpha', type=float, default=_NOT_PROVIDED,
-                           help='Continuous time parameter (default: 1.0)')
+    time_group.add_argument('--alpha', type=str, default=_NOT_PROVIDED,
+                           help='Continuous time parameter: float scalar or path to a .txt file '
+                                'containing one value per line (default: 1.0)')
 
     # parse inputs
     args = parser.parse_args()
@@ -400,9 +467,9 @@ def create_config_from_args(args):
     # Simple parameters that can be directly copied
     simple_params = [
         'datadir', 'outdir', 'device', 'n_threads', 'task', 'time_step', 'seq_len_multi',
-        'rnn_model', 'hidden_size', 'batch_size', 'learning_rate', 'n_runs', 
-        'n_epochs', 'epoch_log', 'reg_type', 'reg_weight', 'kernel_type', 
-        'kernel_normalization', 'rec_noise', 'alpha'
+        'rnn_model', 'hidden_size', 'batch_size', 'learning_rate', 'n_runs',
+        'n_epochs', 'print_freq', 'log_freq', 'write_freq', 'reg_type', 'reg_weight', 'kernel_type',
+        'kernel_normalization', 'rec_noise', 'ridge_alpha', 'spectral_radius', 'spatial_only_epochs'
     ]
     
     for param in simple_params:
@@ -429,15 +496,49 @@ def create_config_from_args(args):
     
     # Handle boolean training parameters
     train_params = [
-        'train_ih_w', 'train_ih_b', 'train_hh_w', 'train_hh_b', 
-        'train_ho_w', 'train_ho_b', 'allow_self_connections'
+        'train_ih_w', 'train_ih_b', 'train_hh_w', 'train_hh_b',
+        'train_ho_w', 'train_ho_b', 'allow_self_connections', 'reservoir_mode'
     ]
     for param in train_params:
         value = getattr(args, param, _NOT_PROVIDED)
         if value is not _NOT_PROVIDED:
             config[param] = parse_boolean_value(value)
-    
+
+    # Handle alpha (scalar float or path to a .txt vector file)
+    alpha_raw = getattr(args, 'alpha', _NOT_PROVIDED)
+    if alpha_raw is not _NOT_PROVIDED:
+        config['alpha'] = parse_alpha_value(alpha_raw)
+
     return config
+
+
+def validate_freq_config(config):
+    """
+    Validate that print_freq, log_freq, and write_freq are consistent with n_epochs.
+
+    Rules enforced:
+      - n_epochs % print_freq == 0
+      - n_epochs % log_freq  == 0
+      - n_epochs % write_freq == 0
+      - write_freq % log_freq == 0  (can only write what has been logged)
+    """
+    n_epochs   = config['n_epochs']
+    print_freq = config['print_freq']
+    log_freq   = config['log_freq']
+    write_freq = config['write_freq']
+
+    errors = []
+    if n_epochs % print_freq != 0:
+        errors.append(f"n_epochs ({n_epochs}) must be divisible by print_freq ({print_freq})")
+    if n_epochs % log_freq != 0:
+        errors.append(f"n_epochs ({n_epochs}) must be divisible by log_freq ({log_freq})")
+    if n_epochs % write_freq != 0:
+        errors.append(f"n_epochs ({n_epochs}) must be divisible by write_freq ({write_freq})")
+    if write_freq % log_freq != 0:
+        errors.append(f"write_freq ({write_freq}) must be divisible by log_freq ({log_freq})")
+
+    if errors:
+        raise ValueError("Invalid frequency configuration:\n" + "\n".join(f"  - {e}" for e in errors))
 
 
 def build_config():
@@ -461,6 +562,9 @@ def build_config():
         config = args_config
 
     config = apply_defaults(config)
+
+    if not config.get('reservoir_mode', False):
+        validate_freq_config(config)
 
     # Validate required fields
     for required in ['datadir', 'outdir']:
@@ -498,8 +602,14 @@ def apply_defaults(config):
         'learning_rate': 0.001,
         'n_runs': 10,
         'n_epochs': 5000,
-        'epoch_log': 100,
+        'print_freq': 100,
+        'log_freq': 100,
+        'write_freq': 1000,
         'mask_weights': False,
+        'reservoir_mode': False,
+        'ridge_alpha': 1.0,
+        'spatial_only_epochs': 0,
+        'spectral_radius': 0.9,
         'reg_type': 'l2',
         'reg_weight': 0.001,
         'kernel_type': None,
