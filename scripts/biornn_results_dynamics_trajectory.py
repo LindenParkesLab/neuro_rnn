@@ -4,7 +4,7 @@ Iterates over models × runs × sampled epochs, computes metrics at each checkpo
 and saves results as a pickle file for downstream plotting.
 
 Usage:
-    python scripts/results_training_trajectory.py \
+    python scripts/biornn_results_dynamics_trajectory.py \
         --model_params model_params_202603bp \
         --rows 2 3 4 5 6 7 10 11 12 13 14 15 \
         --n_epochs 10 \
@@ -123,6 +123,85 @@ def compute_weight_kernel_similarity(W_hh, kernel_similarity):
     }
 
 
+def compute_losses(rnn, dataset, n_trials, reg_type, reg_weight):
+    """Compute loss components at a checkpoint.
+
+    Returns a dict with:
+        task_loss: cross-entropy loss (mean over trials)
+        l2_component: reg_weight * sum(W_hh^2) / hidden_size (only for pearson_l2s)
+        pearson_component: reg_weight * (1 - corr) (only for pearson/pearson_l2s)
+        total_spatial_loss: reg_weight * regularization(W_hh, ...)
+        total_loss: task_loss + total_spatial_loss
+    """
+    import torch.nn as nn
+
+    W_hh = rnn.rnn.weight_hh_l0
+    hidden_size = W_hh.shape[0]
+    kernel = rnn.regularization_kernel  # may be None
+
+    # task loss: run a batch through the model
+    criterion = nn.CrossEntropyLoss()
+    task_losses = []
+    env = dataset.env
+    env.reset(seed=0)
+    for _ in range(n_trials):
+        env.new_trial()
+        obs = torch.tensor(env.ob[np.newaxis, :, :], dtype=torch.float32,
+                           device=W_hh.device)
+        gt = torch.tensor(env.gt[np.newaxis, :], dtype=torch.long,
+                          device=W_hh.device)
+        with torch.no_grad():
+            outputs, _ = rnn(obs)
+            tl = criterion(outputs.view(-1, rnn.num_classes), gt.view(-1))
+        task_losses.append(tl.item())
+    task_loss = float(np.mean(task_losses))
+
+    # spatial loss components
+    result = {
+        'task_loss': task_loss,
+        'l2_component': None,
+        'pearson_component': None,
+        'total_spatial_loss': None,
+        'total_loss': None,
+    }
+
+    with torch.no_grad():
+        if reg_weight == 0 or (kernel is None and reg_type in ('pearson', 'pearson_l2s')):
+            result['total_spatial_loss'] = 0.0
+            result['total_loss'] = task_loss
+            return result
+
+        # total spatial loss using the model's own method
+        if kernel is not None:
+            matrix = kernel if kernel.ndim == 2 else None
+            total_spatial = reg_weight * rnn.regularization(W_hh, type=reg_type, matrix=matrix)
+        else:
+            total_spatial = reg_weight * rnn.regularization(W_hh, type=reg_type)
+        result['total_spatial_loss'] = total_spatial.item()
+
+        # decompose for pearson_l2s
+        if reg_type == 'pearson_l2s' and kernel is not None:
+            # L2 component: reg_weight * sum(W^2) / hidden_size (unweighted by matrix)
+            l2_val = reg_weight * torch.square(W_hh).sum() / hidden_size
+            result['l2_component'] = l2_val.item()
+
+            # Pearson component: reg_weight * (1 - corr)
+            similarity = 1.0 - kernel
+            off_diag = ~torch.eye(hidden_size, dtype=torch.bool, device=W_hh.device)
+            w_flat = W_hh[off_diag]
+            s_flat = similarity[off_diag]
+            corr = torch.corrcoef(torch.stack([w_flat, s_flat]))[0, 1]
+            pearson_val = reg_weight * (1.0 - corr)
+            result['pearson_component'] = pearson_val.item()
+
+        elif reg_type == 'pearson' and kernel is not None:
+            result['pearson_component'] = result['total_spatial_loss']
+
+        result['total_loss'] = task_loss + result['total_spatial_loss']
+
+    return result
+
+
 def create_dataset_and_rnn_shell(model_info, state_template, device):
     """Create the dataset and an uninitialized RNN for a given model config.
 
@@ -169,10 +248,12 @@ def create_dataset_and_rnn_shell(model_info, state_template, device):
 
 def process_one_run(run_idx, epoch_states, sampled_epochs, model_info,
                     rnn_template, dataset, has_kernel, kernel_sim,
+                    reg_type, reg_weight,
                     n_trials, n_pc, fmri_rest_nsteps,
                     fmri_task_ts, fmri_rest_ts, n_fmri_subj, skip_fmri, device):
     """Process all epochs for a single run. Designed to run in a worker process."""
     torch.set_num_threads(1)
+    warnings.simplefilter(action='ignore', category=UserWarning)
 
     rnn = copy.deepcopy(rnn_template)
     run_result = {'epochs': {}}
@@ -191,6 +272,10 @@ def process_one_run(run_idx, epoch_states, sampled_epochs, model_info,
                 compute_weight_kernel_similarity(W_hh, kernel_sim)
         else:
             epoch_result['weight_kernel_similarity'] = None
+
+        # losses
+        epoch_result['losses'] = compute_losses(
+            rnn, dataset, n_trials, reg_type, reg_weight)
 
         # task inference
         accuracy, _, _, hidden_activity, _, _ = run_testing(
@@ -525,6 +610,10 @@ def main():
         # ---- Parallel inference across runs ----
         print(f'  Running inference (n_jobs={args.n_jobs})...')
         t0 = time.time()
+        # get reg params for this model
+        reg_type = this.reg_type if hasattr(this, 'reg_type') else 'l2'
+        reg_weight = this.reg_weight if hasattr(this, 'reg_weight') else 0.0
+
         results = Parallel(n_jobs=args.n_jobs)(
             delayed(process_one_run)(
                 run_idx,
@@ -535,6 +624,8 @@ def main():
                 dataset,
                 has_kernel,
                 kernel_sim,
+                reg_type,
+                reg_weight,
                 args.n_trials,
                 args.n_pc,
                 fmri_rest_nsteps,
