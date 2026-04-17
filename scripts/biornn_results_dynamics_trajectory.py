@@ -442,6 +442,22 @@ def main():
 
     # ---- Main loop ----
     all_results = []
+    outfile = os.path.join(outdir, f'training_trajectory_{args.model_params}.pkl')
+
+    def save_checkpoint():
+        output = {
+            'model_params_name': args.model_params,
+            'model_params': model_params,
+            'args': vars(args),
+            'fmri_intersubj_baselines': {
+                'task': fmri_task_baseline,
+                'rest': fmri_rest_baseline,
+            },
+            'fmri_subjects': fmri_subjnames,
+            'results': all_results,
+        }
+        with open(outfile, 'wb') as f:
+            pickle.dump(output, f)
 
     for model_idx in range(n_models):
         this = model_params.iloc[model_idx]
@@ -457,6 +473,7 @@ def main():
         if not os.path.isfile(file_path_models):
             print(f'  Model file not found, skipping: {this.file_str_models}')
             all_results.append(None)
+            save_checkpoint()
             continue
 
         state_manager = ModelStateManager(file_path_models)
@@ -537,23 +554,11 @@ def main():
         del all_state_dicts
         all_results.append(model_result)
 
-    # ---- Assemble output ----
-    output = {
-        'model_params_name': args.model_params,
-        'model_params': model_params,
-        'args': vars(args),
-        'fmri_intersubj_baselines': {
-            'task': fmri_task_baseline,
-            'rest': fmri_rest_baseline,
-        },
-        'fmri_subjects': fmri_subjnames,
-        'results': all_results,
-    }
+        # save after each model so partial results survive crashes
+        save_checkpoint()
+        print(f'  Saved checkpoint ({model_idx+1}/{n_models} models complete)')
 
-    outfile = os.path.join(outdir, f'training_trajectory_{args.model_params}.pkl')
-    with open(outfile, 'wb') as f:
-        pickle.dump(output, f)
-    print(f'\nResults saved to: {outfile}')
+    print(f'\nAll results saved to: {outfile}')
 
 
 if __name__ == '__main__':
