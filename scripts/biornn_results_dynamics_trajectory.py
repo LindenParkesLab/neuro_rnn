@@ -346,7 +346,7 @@ def get_paths(model_params_name):
             datadir = '/Users/ahmad/software/snaplab_github/neuro_rnn/data'
             modeldir = os.path.join('/Users/ahmad/data/rutgers/neuro_rnn/results/pytorch/model', model_params_name)
             # modeldir = os.path.join('/Volumes/Sabrent_2TB/rutgers/neuro_rnn/data', model_params_name)
-            fmridir = '/Volumes/Sabrent_2TB/rutgers/HCP/fmri'
+            fmridir = '/Users/ahmad/data/rutgers/hcp'
     elif sys.platform == 'linux':
         if username == 'ab2792':
             datadir = '/home/ab2792/software/snaplab_github/neuro_rnn/data'
@@ -398,7 +398,8 @@ def load_kernels(datadir, hidden_size=100):
 
 def load_fmri_data(datadir, fmridir, n_fmri_subj, hidden_size=100):
     """Load task and resting-state fMRI data for a common set of subjects."""
-    tfmri_file = os.path.join(os.path.expanduser('~'), 'data/rutgers/hcp/hcpya_tfmri.pkl')
+    tfmri_file = os.path.join(
+        fmridir, 'hcpya_tfmri.pkl')
     fmri_data_file = os.path.join(
         fmridir, 'HCP_YA_Schaefer2018_200Parcels_7Networks_order_Tian_Subcortex_S1_rest.npy')
     fmri_data_df_file = os.path.join(
