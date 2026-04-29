@@ -8,6 +8,7 @@ Usage:
         --model_params model_params_202603bp \
         --rows 2 3 4 5 6 7 10 11 12 13 14 15 \
         --n_epochs 10 \
+        --max_epoch 30000 \
         --n_trials 100 \
         --n_fmri_subj 100 \
         --n_pc 5 \
@@ -50,8 +51,11 @@ warnings.simplefilter(action='ignore', category=UserWarning)
 # ---------------------------------------------------------------------------
 
 def subsample_epochs(logged_epochs, n_epochs):
-    """Select n_epochs evenly spaced checkpoints, always including first and last."""
-    if n_epochs >= len(logged_epochs):
+    """Select n_epochs evenly spaced checkpoints, always including first and last.
+
+    If n_epochs is None or -1, all logged epochs are returned.
+    """
+    if n_epochs is None or n_epochs == -1 or n_epochs >= len(logged_epochs):
         return logged_epochs[:]
     indices = np.round(np.linspace(0, len(logged_epochs) - 1, n_epochs)).astype(int)
     return [logged_epochs[i] for i in sorted(set(indices))]
@@ -202,6 +206,38 @@ def compute_losses(rnn, dataset, n_trials, reg_type, reg_weight):
     return result
 
 
+def get_node_subsets(state_dict, hidden_size):
+    """Derive leave-one-out node subsets from I/O masks in a state dict.
+
+    Returns a dict mapping subset name → array of node indices.
+    Always includes 'all'.  If masks are present, also includes
+    'no_input', 'no_output', and 'no_bystander'.
+    """
+    all_idx = np.arange(hidden_size)
+    subsets = {'all': all_idx}
+
+    if 'input_weight_mask' not in state_dict:
+        return subsets
+
+    iw = state_dict['input_weight_mask']
+    if hasattr(iw, 'numpy'):
+        iw = iw.numpy()
+    input_mask = iw[:, 0].astype(bool) if iw.ndim == 2 else iw.astype(bool)
+
+    ow = state_dict['output_weight_mask']
+    if hasattr(ow, 'numpy'):
+        ow = ow.numpy()
+    output_mask = ow[0, :].astype(bool) if ow.ndim == 2 else ow.astype(bool)
+
+    bystander_mask = ~(input_mask | output_mask)
+
+    subsets['no_input'] = np.where(~input_mask)[0]
+    subsets['no_output'] = np.where(~output_mask)[0]
+    subsets['no_bystander'] = np.where(~bystander_mask)[0]
+
+    return subsets
+
+
 def create_dataset_and_rnn_shell(model_info, state_template, device):
     """Create the dataset and an uninitialized RNN for a given model config.
 
@@ -250,7 +286,8 @@ def process_one_run(run_idx, epoch_states, sampled_epochs, model_info,
                     rnn_template, dataset, has_kernel, kernel_sim,
                     reg_type, reg_weight,
                     n_trials, n_pc, fmri_rest_nsteps,
-                    fmri_task_ts, fmri_rest_ts, n_fmri_subj, skip_fmri, device):
+                    fmri_task_ts, fmri_rest_ts, n_fmri_subj, skip_fmri,
+                    node_subsets, device):
     """Process all epochs for a single run. Designed to run in a worker process."""
     torch.set_num_threads(1)
     warnings.simplefilter(action='ignore', category=UserWarning)
@@ -282,35 +319,55 @@ def process_one_run(run_idx, epoch_states, sampled_epochs, model_info,
             dataset=dataset, model=rnn, n_trials=n_trials, verbose=False)
         epoch_result['accuracy'] = accuracy
 
-        # task PCA
-        pca_task, ve_task = fit_pca(hidden_activity, n_components=n_pc)
-        epoch_result['rnn_task_ve_total'] = ve_task['total']
-
-        # rest inference
+        # rest inference (needed for all subsets below)
         _, hidden_activity_rest, _ = run_testing_rest(
             rnn, smooth_noise=0, noise_mean=1, noise_sd=0.1,
             n_steps=fmri_rest_nsteps, fix_input_channels=[])
 
-        # rest PCA
-        pca_rest, ve_rest = fit_pca(hidden_activity_rest, n_components=n_pc)
-        epoch_result['rnn_rest_ve_total'] = ve_rest['total']
+        # PCA + fMRI projection for each node subset
+        epoch_result['node_subsets'] = {}
+        for subset_name, node_idx in node_subsets.items():
+            sub = {}
 
-        # fMRI projection
-        if not skip_fmri:
-            fmri_task_ve = np.zeros((n_pc, n_fmri_subj))
-            fmri_rest_ve = np.zeros((n_pc, n_fmri_subj))
-            for si in range(n_fmri_subj):
-                ve_t = pca_projection(
-                    fmri_task_ts[:, :, si], pca_task, centering_mean='data')
-                fmri_task_ve[:, si] = ve_t['each']
-                ve_r = pca_projection(
-                    fmri_rest_ts[:, :, si], pca_rest, centering_mean='data')
-                fmri_rest_ve[:, si] = ve_r['each']
-            epoch_result['fmri_task_ve'] = fmri_task_ve
-            epoch_result['fmri_rest_ve'] = fmri_rest_ve
-        else:
-            epoch_result['fmri_task_ve'] = None
-            epoch_result['fmri_rest_ve'] = None
+            # slice hidden activity to this subset of nodes
+            ha_task_sub = [arr[:, node_idx] for arr in hidden_activity]
+            ha_rest_sub = hidden_activity_rest[:, node_idx]
+
+            # task PCA
+            pca_task, ve_task = fit_pca(ha_task_sub, n_components=n_pc)
+            sub['rnn_task_ve_total'] = ve_task['total']
+
+            # rest PCA
+            pca_rest, ve_rest = fit_pca(ha_rest_sub, n_components=n_pc)
+            sub['rnn_rest_ve_total'] = ve_rest['total']
+
+            # fMRI projection (same node indices select matching parcels)
+            if not skip_fmri:
+                fmri_task_ve = np.zeros((n_pc, n_fmri_subj))
+                fmri_rest_ve = np.zeros((n_pc, n_fmri_subj))
+                for si in range(n_fmri_subj):
+                    ve_t = pca_projection(
+                        fmri_task_ts[:, node_idx, si], pca_task,
+                        centering_mean='data')
+                    fmri_task_ve[:, si] = ve_t['each']
+                    ve_r = pca_projection(
+                        fmri_rest_ts[:, node_idx, si], pca_rest,
+                        centering_mean='data')
+                    fmri_rest_ve[:, si] = ve_r['each']
+                sub['fmri_task_ve'] = fmri_task_ve
+                sub['fmri_rest_ve'] = fmri_rest_ve
+            else:
+                sub['fmri_task_ve'] = None
+                sub['fmri_rest_ve'] = None
+
+            epoch_result['node_subsets'][subset_name] = sub
+
+        # keep top-level keys for backward compatibility ('all' subset)
+        all_sub = epoch_result['node_subsets']['all']
+        epoch_result['rnn_task_ve_total'] = all_sub['rnn_task_ve_total']
+        epoch_result['rnn_rest_ve_total'] = all_sub['rnn_rest_ve_total']
+        epoch_result['fmri_task_ve'] = all_sub['fmri_task_ve']
+        epoch_result['fmri_rest_ve'] = all_sub['fmri_rest_ve']
 
         run_result['epochs'][epoch] = epoch_result
 
@@ -447,6 +504,13 @@ def load_fmri_data(datadir, fmridir, n_fmri_subj, hidden_size=100):
 
     fmri_rest_nsteps = fmri_rest_ts.shape[0]
 
+    # global signal regression (per subject)
+    for ts in (fmri_task_ts, fmri_rest_ts):
+        for si in range(ts.shape[2]):
+            gs = ts[:, :, si].mean(axis=1, keepdims=True)  # (timepoints, 1)
+            beta = (gs.T @ ts[:, :, si]) / (gs.T @ gs)     # (1, nodes)
+            ts[:, :, si] -= gs * beta
+
     print(f'fMRI subjects selected: {n_fmri_subj}')
     print(f'fMRI task shape: {fmri_task_ts.shape}')
     print(f'fMRI rest shape: {fmri_rest_ts.shape}')
@@ -465,8 +529,9 @@ def main():
                         help='Model params CSV name (without .csv extension)')
     parser.add_argument('--rows', nargs='+', type=int, default=None,
                         help='Row indices to select from model params CSV')
-    parser.add_argument('--n_epochs', type=int, default=10,
-                        help='Number of evenly spaced epoch checkpoints to evaluate')
+    parser.add_argument('--n_epochs', type=int, default=None,
+                        help='Number of evenly spaced epoch checkpoints to evaluate '
+                             '(default: None = use all available; -1 also means all)')
     parser.add_argument('--n_trials', type=int, default=100,
                         help='Number of test trials per run')
     parser.add_argument('--n_fmri_subj', type=int, default=100,
@@ -475,6 +540,8 @@ def main():
                         help='Number of PCA components')
     parser.add_argument('--n_jobs', type=int, default=-1,
                         help='Number of parallel jobs for inference (-1 = all cores)')
+    parser.add_argument('--max_epoch', type=int, default=None,
+                        help='Only analyse epochs up to this value (inclusive)')
     parser.add_argument('--max_runs', type=int, default=100,
                         help='Maximum number of runs per model')
     parser.add_argument('--outdir', default=None,
@@ -564,6 +631,8 @@ def main():
 
         state_manager = ModelStateManager(file_path_models)
         n_runs_available, logged_epochs, _ = state_manager.get_info()
+        if args.max_epoch is not None:
+            logged_epochs = [e for e in logged_epochs if e <= args.max_epoch]
         n_runs = min(n_runs_available, args.max_runs)
         sampled_epochs = subsample_epochs(logged_epochs, args.n_epochs)
         print(f'  Runs: {n_runs}, Logged epochs: {len(logged_epochs)}, '
@@ -598,6 +667,13 @@ def main():
         dataset, rnn_template = create_dataset_and_rnn_shell(
             this, state_template, device)
 
+        # ---- Determine node subsets for leave-one-out analysis ----
+        node_subsets = get_node_subsets(state_template, hidden_size)
+        if len(node_subsets) > 1:
+            print(f'  Node subsets: {", ".join(f"{k} ({len(v)} nodes)" for k, v in node_subsets.items())}')
+        else:
+            print(f'  Node subsets: all ({hidden_size} nodes, no I/O masks)')
+
         model_result = {
             'task': this.task_no_modifier,
             'task_label': task_label,
@@ -605,6 +681,7 @@ def main():
             'kernel_type': kernel_type,
             'sampled_epochs': sampled_epochs,
             'n_runs': n_runs,
+            'node_subsets': {k: v.tolist() for k, v in node_subsets.items()},
             'runs': [None] * n_runs,
         }
 
@@ -634,6 +711,7 @@ def main():
                 fmri_rest_ts,
                 args.n_fmri_subj,
                 args.skip_fmri,
+                node_subsets,
                 device,
             )
             for run_idx in range(n_runs)
