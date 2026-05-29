@@ -15,3 +15,4 @@ DelayMatchSampleDistractor1D-v0,5,50,0.1,0.05,-0.01 0.01,rnn-tanh,100,32,0.001,1
 DelayMatchSampleDistractor1D-v0,5,50,0.1,0.05,-0.01 0.01,rnn-tanh,100,32,0.001,100000,pearson_l2s,0.002,euclidean,mean,True,100
 DelayMatchSampleDistractor1D-v0,5,50,0.1,0.05,-0.01 0.01,rnn-tanh,100,32,0.001,100000,pearson_l2s,0.002,sa_axis,mean,True,100
 DelayMatchSampleDistractor1D-v0,5,50,0.1,0.05,-0.01 0.01,rnn-tanh,100,32,0.001,100000,pearson_l2s,0.002,ut_axis,mean,True,100
+DelayMatchSampleDistractor1D-v0,5,50,0.1,0.05,-0.01 0.01,rnn-tanh,100,32,0.001,100000,pearson_l2s,0.002,struct_conn,mean,True,100
