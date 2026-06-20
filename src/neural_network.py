@@ -371,15 +371,18 @@ class RNN(nn.Module):
         w : torch.Tensor
             Weight tensor to regularize
         type : str, default='l1'
-            Type of regularization ('l1', 'l2', 'l2s', 'pearson', or 'pearson_l2s').
+            Type of regularization ('l1', 'l2', 'l2s', 'pearson', 'pearson_l2s',
+            'pearson_abs', or 'pearson_abs_l2s').
             'l2s' is L2 scaled by the number of nodes (hidden_size).
             'pearson' is correlation only (1 - r).
             'pearson_l2s' is correlation + scaled L2 ((1 - r) + ||W||^2 / n).
+            'pearson_abs'/'pearson_abs_l2s' are the same but correlate the weight
+            *magnitude* |w| with (1 - matrix), leaving weight sign (E/I) free.
         matrix : torch.Tensor, optional
             Spatial regularization matrix. For 'l1'/'l2'/'l2s', used as
-            element-wise penalty mask. For 'pearson', used as the dissimilarity
-            kernel — the Pearson correlation between w and (1 - matrix) is
-            maximized, combined with a uniform L2 penalty on w.
+            element-wise penalty mask. For 'pearson'/'pearson_abs', used as the
+            dissimilarity kernel — the Pearson correlation between w (or |w|) and
+            (1 - matrix) is maximized, combined with a uniform L2 penalty on w.
 
         Returns
         -------
@@ -398,18 +401,21 @@ class RNN(nn.Module):
             return torch.square(w).sum() / w.shape[0]
         elif type == 'l2s' and matrix is not None:
             return torch.mul(torch.square(w), matrix).sum() / w.shape[0]
-        elif type in ('pearson', 'pearson_l2s'):
+        elif type in ('pearson', 'pearson_l2s', 'pearson_abs', 'pearson_abs_l2s'):
             if matrix is None:
                 raise ValueError("Pearson regularization requires a spatial matrix.")
             similarity = 1.0 - matrix
             off_diag = ~torch.eye(w.shape[0], dtype=torch.bool, device=w.device)
             w_flat = w[off_diag]
             s_flat = similarity[off_diag]
+            # 'pearson_abs*' variants correlate connection *magnitude* with the
+            # spatial similarity, leaving weight sign (E/I) unconstrained.
+            if type in ('pearson_abs', 'pearson_abs_l2s'):
+                w_flat = torch.abs(w_flat)
             corr = torch.corrcoef(torch.stack([w_flat, s_flat]))[0, 1]
-            if type == 'pearson':
-                return 1.0 - corr
-            else:
+            if type in ('pearson_l2s', 'pearson_abs_l2s'):
                 return (1.0 - corr) + torch.square(w).sum() / w.shape[0]
+            return 1.0 - corr
         else:
             raise ValueError(f"Unknown regularization type: {type}")
 
@@ -732,9 +738,9 @@ def run_training(dataset, model, optimizer=None, criterion=None, config=None, sc
         if spatial_only_epochs > 0 and model.regularization_kernel is None:
             raise ValueError('spatial_only_epochs > 0 requires a spatial embedding (regularization_kernel), '
                              'but none is set.')
-        if reg_type in ('pearson', 'pearson_l2s') and model.regularization_kernel is None:
+        if reg_type in ('pearson', 'pearson_l2s', 'pearson_abs', 'pearson_abs_l2s') and model.regularization_kernel is None:
             raise ValueError(f"reg_type='{reg_type}' requires a regularization_kernel.")
-        if reg_type in ('pearson', 'pearson_l2s') and model.regularization_kernel is not None and model.regularization_kernel.ndim == 3:
+        if reg_type in ('pearson', 'pearson_l2s', 'pearson_abs', 'pearson_abs_l2s') and model.regularization_kernel is not None and model.regularization_kernel.ndim == 3:
             raise ValueError(f"reg_type='{reg_type}' does not support 3D time-varying kernels.")
         model.train()
 
