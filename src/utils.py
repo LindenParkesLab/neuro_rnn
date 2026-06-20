@@ -10,6 +10,22 @@ import os
 import multiprocessing
 import argparse
 
+def set_font_size(font_size=12):
+    """Set global matplotlib font (Arial) and sizes consistently across figures."""
+    import matplotlib.pyplot as plt
+    plt.rcParams.update({
+        'font.family': 'sans-serif',
+        'font.sans-serif': ['Arial'],
+        'font.size': font_size,
+        'axes.titlesize': font_size + 1,
+        'axes.labelsize': font_size,
+        'xtick.labelsize': font_size - 1,
+        'ytick.labelsize': font_size - 1,
+        'legend.fontsize': font_size,
+        'figure.titlesize': font_size + 2,
+    })
+
+
 def normalize_x(x, method='rescale'):
     """
     Normalize a distance matrix using various methods.

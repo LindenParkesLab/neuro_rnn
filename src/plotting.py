@@ -474,7 +474,8 @@ def plot_iodata(
         end_points = None
 
     # set plotting theme
-    rc_defaults = {'figure.titlesize': 12, 'axes.labelsize': 11,
+    rc_defaults = {'font.family': 'sans-serif', 'font.sans-serif': ['Arial'],
+                   'figure.titlesize': 12, 'axes.labelsize': 11,
                    'xtick.labelsize': 11, 'ytick.labelsize': 11,
                    'legend.fontsize': 8, 'legend.loc': 'best',
                    'lines.linewidth': 1, 'savefig.format': 'png'}
@@ -537,5 +538,7 @@ def plot_iodata(
 
     plt.close()
 
-    # reset rc defaults
+    # reset rc defaults (keep Arial as the default font)
     mpl.rcdefaults()
+    from src import use_arial
+    use_arial()
