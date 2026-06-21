@@ -78,49 +78,15 @@ def train_helper_with_gpu_assignment(run_gpu_pair, config):
     return train_helper_with_gpu(run, config, gpu_id)
 
 
-def train(config):
-    # get config params
-    datadir = config['datadir']
+def train_single(config):
+    """Train one model config (a normal model, or one spin-permuted null geometry)
+    to its own output files. Body factored out of train() so the null path can
+    call it once per permutation."""
     outdir = config['outdir']
     device = config['device']
     n_threads = config['n_threads']
-
-    # RNN model and training parameters
-    hidden_size = config['hidden_size']
     n_runs = config['n_runs']
     n_epochs = config['n_epochs']
-    mask_weights = config['mask_weights']
-
-    # regularization parameters
-    kernel_type = config['kernel_type']
-    kernel_normalization = config['kernel_normalization']
-
-    # setup output dir
-    if not os.path.exists(outdir):
-        os.makedirs(outdir)
-
-    # weight masks
-    if mask_weights:
-        centroids = pd.read_csv(os.path.join(datadir, 'schaefer{0}_centroids.csv'.format(hidden_size * 2)))
-        centroids = centroids[:hidden_size]  # pull out left hemisphere
-        roi_names = list(centroids['ROI Name'])
-        input_system = 'Vis'
-        output_system = 'Default'
-        masks = utils.get_weight_masks_schaefer(roi_names=roi_names, input_system=input_system, output_system=output_system)
-        n_io = '{0}-{1}'.format(np.sum(masks['input_weight_mask']), np.sum(masks['output_weight_mask']))
-        config['masks'] = masks
-        config['centroids'] = centroids
-    else:
-        n_io = 'na'
-    config['n_io'] = n_io
-
-    # setup regularization kernel
-    regularization_kernel, distance_matrix = utils.load_embedding(kernel_type=kernel_type,
-                                                                  datadir=datadir,
-                                                                  hidden_size=hidden_size,
-                                                                  kernel_normalization=kernel_normalization)
-    config['distance_matrix'] = distance_matrix
-    config['regularization_kernel'] = regularization_kernel
 
     # get file name
     file_str = utils.get_file_str(config)
@@ -254,6 +220,67 @@ def train(config):
         # save config (exclude internal runtime keys)
         config_to_save = {k: v for k, v in config.items() if k not in ('models_path', 'outputs_path')}
         np.save(config_path, config_to_save)
+
+
+def train(config):
+    # get config params
+    datadir = config['datadir']
+    outdir = config['outdir']
+    device = config['device']
+    n_threads = config['n_threads']
+
+    # RNN model and training parameters
+    hidden_size = config['hidden_size']
+    n_runs = config['n_runs']
+    n_epochs = config['n_epochs']
+    mask_weights = config['mask_weights']
+
+    # regularization parameters
+    kernel_type = config['kernel_type']
+    kernel_normalization = config['kernel_normalization']
+
+    # setup output dir
+    if not os.path.exists(outdir):
+        os.makedirs(outdir)
+
+    # weight masks
+    if mask_weights:
+        centroids = pd.read_csv(os.path.join(datadir, 'schaefer{0}_centroids.csv'.format(hidden_size * 2)))
+        centroids = centroids[:hidden_size]  # pull out left hemisphere
+        roi_names = list(centroids['ROI Name'])
+        input_system = 'Vis'
+        output_system = 'Default'
+        masks = utils.get_weight_masks_schaefer(roi_names=roi_names, input_system=input_system, output_system=output_system)
+        n_io = '{0}-{1}'.format(np.sum(masks['input_weight_mask']), np.sum(masks['output_weight_mask']))
+        config['masks'] = masks
+        config['centroids'] = centroids
+    else:
+        n_io = 'na'
+    config['n_io'] = n_io
+
+    # setup regularization kernel
+    regularization_kernel, distance_matrix = utils.load_embedding(kernel_type=kernel_type,
+                                                                  datadir=datadir,
+                                                                  hidden_size=hidden_size,
+                                                                  kernel_normalization=kernel_normalization)
+    config['distance_matrix'] = distance_matrix
+    config['regularization_kernel'] = regularization_kernel
+
+    # fan out into spin-permuted (SA-matched) null geometries, or train the single model
+    null_perms = int(config.get('null_perms', 0) or 0)
+    if null_perms and regularization_kernel is not None:
+        from src.spatial_null import spin_permutations
+        sphere = np.loadtxt(os.path.join(datadir, f'schaefer{hidden_size * 2}_LH_sphere_coords.txt'))
+        perms = spin_permutations(sphere, null_perms, seed=int(config.get('null_seed', 0) or 0))
+        base_K, base_D = regularization_kernel, distance_matrix
+        for p, perm in enumerate(perms):
+            print(f'\n=== null permutation {p + 1}/{null_perms} ===')
+            cfg = dict(config, null_index=p,
+                       regularization_kernel=base_K[np.ix_(perm, perm)],
+                       distance_matrix=(None if base_D is None else base_D[np.ix_(perm, perm)]))
+            train_single(cfg)
+    else:
+        train_single(config)
 
 
 if __name__ == '__main__':

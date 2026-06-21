@@ -230,7 +230,9 @@ def load_config_from_csv(params_csv, model_index):
         'reg_weight': ['reg_weight', 'regularization_weight'],
         'kernel_type': ['kernel_type'],
         'kernel_normalization': ['kernel_normalization'],
-        
+        'null_perms': ['null_perms'],
+        'null_seed': ['null_seed'],
+
         # continuous time parameter
         'alpha': ['alpha'],
         
@@ -615,6 +617,8 @@ def apply_defaults(config):
         'reg_weight': 0.001,
         'kernel_type': None,
         'kernel_normalization': 'mean',
+        'null_perms': 0,
+        'null_seed': 0,
         'rec_noise': 0.0,
         'alpha': 1.0,
         'init_ih_w': None,

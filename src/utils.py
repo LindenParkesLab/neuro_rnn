@@ -452,6 +452,9 @@ def get_file_str(config):
     reservoir_mode = config.get('reservoir_mode', False)
     rc_str = f'-rc{config.get("ridge_alpha", 1.0)}' if reservoir_mode else ''
 
+    # spatial-null permutation suffix (set when fanning out into spin surrogates)
+    null_str = f'-null{config["null_index"]}' if config.get('null_index') is not None else ''
+
     # create name string
     file_str = f'{task}-{seq_len}-' \
                f'{rnn_model}-{hidden_size}-{batch_size}-{lr}-' \
@@ -459,7 +462,7 @@ def get_file_str(config):
                f'{mask_weights}-{n_io}-' \
                f'{reg_type}-{reg_weight}-' \
                f'{kernel_type}-{kernel_normalization}-' \
-               f'{alpha_str}{so_str}{rc_str}'
+               f'{alpha_str}{so_str}{rc_str}{null_str}'
 
     return file_str
 
