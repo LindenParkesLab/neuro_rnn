@@ -105,11 +105,15 @@ def train_single(config):
     config['models_path']  = models_path
     config['outputs_path'] = outputs_path
 
+    # run indices to train (explicit null_run_ids if set, else the contiguous
+    # [null_run, null_run + n_runs); see _run_ids)
+    runs = _run_ids(config)
+
     # check which runs are complete, partial, or not yet started
     if os.path.isfile(models_path) and os.path.isfile(outputs_path):
         print('found existing output files! checking for missing/incomplete runs...')
         complete_runs = set()
-        for run in range(n_runs):
+        for run in runs:
             model_epochs  = model_manager.get_run_epochs(run)
             output_epochs = output_manager.get_run_epochs(run)
             if model_epochs and output_epochs:
@@ -118,22 +122,22 @@ def train_single(config):
                     complete_runs.add(run)
         n_complete = len(complete_runs)
         n_partial  = sum(
-            1 for r in range(n_runs)
+            1 for r in runs
             if r not in complete_runs
             and model_manager.get_run_epochs(r)
             and output_manager.get_run_epochs(r)
         )
         print(f'found {n_complete} completed runs, {n_partial} partial runs')
-        if n_complete == n_runs:
+        if n_complete == len(runs):
             all_done = True
             print('training already completed! skipping...')
         else:
             all_done = False
-            rem_runs = np.array([r for r in range(n_runs) if r not in complete_runs])
+            rem_runs = np.array([r for r in runs if r not in complete_runs])
             print(f'will train {len(rem_runs)} more runs ({n_partial} resuming, {len(rem_runs) - n_partial} new)')
     else:
         all_done = False
-        rem_runs = np.arange(n_runs)
+        rem_runs = np.array(runs)
     
     if not all_done:
         # Print GPU environment info for debugging
@@ -222,6 +226,114 @@ def train_single(config):
         np.save(config_path, config_to_save)
 
 
+def _run_ids(config):
+    """Explicit list of run indices to train for one model file.
+
+    If ``null_run_ids`` is set (a non-empty list), those exact run indices are
+    trained -- e.g. 5 runs chosen to span the real VE distribution for the
+    mixed-effects null, so each spin geometry is evaluated over a representative
+    bracket of training draws rather than a contiguous block (the run index seeds
+    init / curriculum, so run r reuses the real model's run-r training draw).
+    Otherwise falls back to the contiguous range [null_run, null_run + n_runs),
+    which leaves ordinary models and the fixed-init null unchanged.
+    """
+    ids = config.get('null_run_ids', None)
+    if ids:
+        ids = [int(r) for r in ids]
+        # null_run_ids takes precedence over the null_run/n_runs range. Make that
+        # explicit rather than silent: n_runs must match, and a non-zero null_run
+        # (which would also mis-tag the output filenames) is rejected.
+        n_runs = int(config.get('n_runs', len(ids)) or len(ids))
+        if n_runs != len(ids):
+            raise ValueError(
+                f'null_run_ids has {len(ids)} entries but n_runs={n_runs}; set n_runs={len(ids)}')
+        if int(config.get('null_run', 0) or 0) != 0:
+            raise ValueError(
+                f"null_run={config.get('null_run')} is set alongside null_run_ids; leave null_run=0 "
+                f"when using explicit run ids (else the -nr filename tag would not match runs {ids})")
+        return ids
+    start = int(config.get('null_run', 0) or 0)
+    return list(range(start, start + int(config['n_runs'])))
+
+
+def _incomplete_runs(models_path, outputs_path, model_manager, output_manager, runs, n_epochs):
+    """Runs still needing training for one model file (resume-aware).
+
+    ``runs`` is the explicit list of run indices to check.
+    """
+    if os.path.isfile(models_path) and os.path.isfile(outputs_path):
+        complete = set()
+        for run in runs:
+            me = model_manager.get_run_epochs(run)
+            oe = output_manager.get_run_epochs(run)
+            if me and oe and min(max(me), max(oe)) == n_epochs - 1:
+                complete.add(run)
+        return [r for r in runs if r not in complete]
+    return list(runs)
+
+
+def _null_train_job(job):
+    """Module-level worker: train one (permutation, run) job and return
+    (perm_index, run, outputs). Module-level so it is picklable under 'spawn'."""
+    perm_index, run, cfg = job
+    return perm_index, run, train_helper(run, cfg)
+
+
+def train_null_parallel(config, perms):
+    """Train the spin-null ensemble by flattening every (permutation, run) pair
+    into a single parallel pool, so a many-core CPU stays saturated even when the
+    runs-per-permutation count is smaller than the available threads.
+
+    Each permutation still writes to its own '-null{p}' files (identical layout to
+    the sequential path); only the scheduling differs. Saving stays in the parent
+    process, so final-output writes remain serialized.
+    """
+    outdir = config['outdir']
+    n_threads = config['n_threads']
+    n_epochs = config['n_epochs']
+    run_ids = _run_ids(config)          # explicit null_run_ids or contiguous range
+    base_K, base_D = config['regularization_kernel'], config['distance_matrix']
+
+    # per-permutation setup: permuted kernel, file paths, managers, runs left to do
+    perm_ctx, flat_jobs = [], []
+    for p, perm in enumerate(perms):
+        cfg = dict(config, null_index=p,
+                   regularization_kernel=base_K[np.ix_(perm, perm)],
+                   distance_matrix=(None if base_D is None else base_D[np.ix_(perm, perm)]))
+        file_str = utils.get_file_str(cfg)
+        outputs_path = os.path.join(outdir, file_str + '_outputs.h5')
+        models_path = os.path.join(outdir, file_str + '_models.h5')
+        config_path = os.path.join(outdir, file_str + '_config.npy')
+        cfg['models_path'] = models_path
+        cfg['outputs_path'] = outputs_path
+        om = ModelDataManager(outputs_path)
+        mm = ModelStateManager(models_path)
+        rem = _incomplete_runs(models_path, outputs_path, mm, om, run_ids, n_epochs)
+        perm_ctx.append({'cfg': cfg, 'om': om, 'config_path': config_path})
+        flat_jobs.extend((p, run, cfg) for run in rem)
+
+    n_done = len(perms) * len(run_ids) - len(flat_jobs)
+    print(f'\nnull ensemble: {len(perms)} permutations x {len(run_ids)} runs '
+          f'({n_done} complete, {len(flat_jobs)} to train) over {n_threads} threads')
+
+    # train in thread-width chunks; route each result to its permutation's file
+    n_chunks = int(np.ceil(len(flat_jobs) / n_threads)) if flat_jobs else 0
+    for ci in range(n_chunks):
+        chunk = flat_jobs[ci * n_threads:(ci + 1) * n_threads]
+        print(f'  chunk {ci + 1}/{n_chunks}: {len(chunk)} (perm, run) jobs...')
+        with torch.multiprocessing.get_context('spawn').Pool(
+                processes=len(chunk), maxtasksperchild=1) as pool:
+            results = pool.map(_null_train_job, chunk)
+        for perm_index, run, outputs in results:
+            perm_ctx[perm_index]['om'].save_model_data(outputs, run=run, epoch=n_epochs - 1)
+
+    # save each permutation's config (exclude runtime-only keys)
+    for ctx in perm_ctx:
+        cfg_to_save = {k: v for k, v in ctx['cfg'].items()
+                       if k not in ('models_path', 'outputs_path')}
+        np.save(ctx['config_path'], cfg_to_save)
+
+
 def train(config):
     # get config params
     datadir = config['datadir']
@@ -272,13 +384,18 @@ def train(config):
         from src.spatial_null import spin_permutations
         sphere = np.loadtxt(os.path.join(datadir, f'schaefer{hidden_size * 2}_LH_sphere_coords.txt'))
         perms = spin_permutations(sphere, null_perms, seed=int(config.get('null_seed', 0) or 0))
-        base_K, base_D = regularization_kernel, distance_matrix
-        for p, perm in enumerate(perms):
-            print(f'\n=== null permutation {p + 1}/{null_perms} ===')
-            cfg = dict(config, null_index=p,
-                       regularization_kernel=base_K[np.ix_(perm, perm)],
-                       distance_matrix=(None if base_D is None else base_D[np.ix_(perm, perm)]))
-            train_single(cfg)
+        if device.type == 'cpu' and n_threads and n_threads > 1:
+            # flatten (permutation x run) into one pool so all threads stay busy
+            train_null_parallel(config, perms)
+        else:
+            # serial / single-GPU path: train each permutation in turn
+            base_K, base_D = regularization_kernel, distance_matrix
+            for p, perm in enumerate(perms):
+                print(f'\n=== null permutation {p + 1}/{null_perms} ===')
+                cfg = dict(config, null_index=p,
+                           regularization_kernel=base_K[np.ix_(perm, perm)],
+                           distance_matrix=(None if base_D is None else base_D[np.ix_(perm, perm)]))
+                train_single(cfg)
     else:
         train_single(config)
 

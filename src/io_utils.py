@@ -232,6 +232,8 @@ def load_config_from_csv(params_csv, model_index):
         'kernel_normalization': ['kernel_normalization'],
         'null_perms': ['null_perms'],
         'null_seed': ['null_seed'],
+        'null_run': ['null_run'],
+        'null_run_ids': ['null_run_ids'],
 
         # continuous time parameter
         'alpha': ['alpha'],
@@ -260,6 +262,9 @@ def load_config_from_csv(params_csv, model_index):
                 config[config_key] = parse_alpha_value(value)
             elif config_key == 'kernel_type' and isinstance(value, str) and value.lower() == 'none':
                 config[config_key] = None
+            elif config_key == 'null_run_ids':
+                # space-separated run indices, e.g. "12 34 50 71 88" (or a single int)
+                config[config_key] = [int(x) for x in str(value).split()]
             else:
                 # Convert numpy scalar types to native Python types for PyTorch/stdlib compatibility
                 if isinstance(value, np.integer):
@@ -619,6 +624,8 @@ def apply_defaults(config):
         'kernel_normalization': 'mean',
         'null_perms': 0,
         'null_seed': 0,
+        'null_run': 0,   # run-index offset; pins a fixed-init null ensemble to one representative run
+        'null_run_ids': None,  # explicit run indices (overrides null_run/n_runs) for a spanning mixed-effects null
         'rec_noise': 0.0,
         'alpha': 1.0,
         'init_ih_w': None,
