@@ -371,15 +371,18 @@ class RNN(nn.Module):
         w : torch.Tensor
             Weight tensor to regularize
         type : str, default='l1'
-            Type of regularization ('l1', 'l2', 'l2s', 'pearson', or 'pearson_l2s').
+            Type of regularization ('l1', 'l2', 'l2s', 'pearson', 'pearson_l2s',
+            'pearson_abs', or 'pearson_abs_l2s').
             'l2s' is L2 scaled by the number of nodes (hidden_size).
             'pearson' is correlation only (1 - r).
             'pearson_l2s' is correlation + scaled L2 ((1 - r) + ||W||^2 / n).
+            'pearson_abs'/'pearson_abs_l2s' are the same but correlate the weight
+            *magnitude* |w| with (1 - matrix), leaving weight sign (E/I) free.
         matrix : torch.Tensor, optional
             Spatial regularization matrix. For 'l1'/'l2'/'l2s', used as
-            element-wise penalty mask. For 'pearson', used as the dissimilarity
-            kernel — the Pearson correlation between w and (1 - matrix) is
-            maximized, combined with a uniform L2 penalty on w.
+            element-wise penalty mask. For 'pearson'/'pearson_abs', used as the
+            dissimilarity kernel — the Pearson correlation between w (or |w|) and
+            (1 - matrix) is maximized, combined with a uniform L2 penalty on w.
 
         Returns
         -------
@@ -398,18 +401,21 @@ class RNN(nn.Module):
             return torch.square(w).sum() / w.shape[0]
         elif type == 'l2s' and matrix is not None:
             return torch.mul(torch.square(w), matrix).sum() / w.shape[0]
-        elif type in ('pearson', 'pearson_l2s'):
+        elif type in ('pearson', 'pearson_l2s', 'pearson_abs', 'pearson_abs_l2s'):
             if matrix is None:
                 raise ValueError("Pearson regularization requires a spatial matrix.")
             similarity = 1.0 - matrix
             off_diag = ~torch.eye(w.shape[0], dtype=torch.bool, device=w.device)
             w_flat = w[off_diag]
             s_flat = similarity[off_diag]
+            # 'pearson_abs*' variants correlate connection *magnitude* with the
+            # spatial similarity, leaving weight sign (E/I) unconstrained.
+            if type in ('pearson_abs', 'pearson_abs_l2s'):
+                w_flat = torch.abs(w_flat)
             corr = torch.corrcoef(torch.stack([w_flat, s_flat]))[0, 1]
-            if type == 'pearson':
-                return 1.0 - corr
-            else:
+            if type in ('pearson_l2s', 'pearson_abs_l2s'):
                 return (1.0 - corr) + torch.square(w).sum() / w.shape[0]
+            return 1.0 - corr
         else:
             raise ValueError(f"Unknown regularization type: {type}")
 
@@ -698,6 +704,32 @@ class CustomRNN(nn.RNNBase):
         return output, hidden
 
     
+# Trial-RNG seeds. Disjoint bands keep training / validation / test batteries from
+# ever sharing a seed, and every value stays < 2**32 (numpy RandomState limit).
+#
+# IMPORTANT: this env regenerates its *entire* batch from the current seed, so calling
+# `dataset.seed()` before every batch collapses the batch into identical trials
+# (effective batch size 1 -- a severe training bug). Training therefore seeds the env
+# ONCE per run (see run_training) and lets the continuous stream advance one batch per
+# epoch -- giving diverse batches while remaining:
+#   - reproducible: the stream is a deterministic function of `run`;
+#   - n_epochs-independent: the trial at epoch e depends on (run, e), not on n_epochs;
+#   - run-paired: a model and its spin-null counterpart (same run) see identical trials
+#     at every epoch (the kernel/perm never enters the seed).
+# Different runs (base + run) see different curricula, so run-to-run training noise --
+# including curriculum -- enters the variance-components null's sigma_train.
+_TRAIN_TRIAL_SEED_BASE = 0                  # per-run training stream: seed = base + run
+_VAL_TRIAL_SEED_BASE   = 2_000_000_000      # reservoir-mode validation battery (fixed)
+_TEST_TRIAL_SEED_BASE  = 3_000_000_000      # held-out test battery (fixed across runs & epochs)
+
+
+def _n_unique_trials(inputs):
+    """Number of distinct trials in a batch (inputs: [seq_len, batch, n_inputs])."""
+    b = inputs.shape[1]
+    flat = np.ascontiguousarray(np.round(inputs, 6).transpose(1, 0, 2)).reshape(b, -1)
+    return len(np.unique(flat, axis=0))
+
+
 def run_training(dataset, model, optimizer=None, criterion=None, config=None, scheduler=None,
                  return_models=False, print_freq=100, log_freq=100, write_freq=1000, run=None,
                  checkpoint_callback=None, start_epoch=0, initial_data=None,
@@ -732,9 +764,9 @@ def run_training(dataset, model, optimizer=None, criterion=None, config=None, sc
         if spatial_only_epochs > 0 and model.regularization_kernel is None:
             raise ValueError('spatial_only_epochs > 0 requires a spatial embedding (regularization_kernel), '
                              'but none is set.')
-        if reg_type in ('pearson', 'pearson_l2s') and model.regularization_kernel is None:
+        if reg_type in ('pearson', 'pearson_l2s', 'pearson_abs', 'pearson_abs_l2s') and model.regularization_kernel is None:
             raise ValueError(f"reg_type='{reg_type}' requires a regularization_kernel.")
-        if reg_type in ('pearson', 'pearson_l2s') and model.regularization_kernel is not None and model.regularization_kernel.ndim == 3:
+        if reg_type in ('pearson', 'pearson_l2s', 'pearson_abs', 'pearson_abs_l2s') and model.regularization_kernel is not None and model.regularization_kernel.ndim == 3:
             raise ValueError(f"reg_type='{reg_type}' does not support 3D time-varying kernels.")
         model.train()
 
@@ -765,6 +797,29 @@ def run_training(dataset, model, optimizer=None, criterion=None, config=None, sc
     running_loss_spatial = 0.0
     epoch_log_timestamp_last = timer()
 
+    # Seed the trial stream ONCE per run (continuous stream -> diverse batches; see the
+    # _TRAIN_TRIAL_SEED_BASE note). Per-batch reseeding would collapse each batch to
+    # identical trials, so we never reseed inside the loop.
+    run_seed = _TRAIN_TRIAL_SEED_BASE + (0 if run is None else int(run))
+    dataset.seed(run_seed)
+
+    # Separate env for in-loop evaluation, so test/validation seeding never perturbs the
+    # training stream (run_testing reseeds whatever env it is given). Fall back to the
+    # training dataset only if a standalone env cannot be built.
+    try:
+        test_dataset = ngym.Dataset(config['task_no_modifier'], env_kwargs=config['env_kwargs'],
+                                    batch_size=config['batch_size'], seq_len=config['seq_len'])
+    except Exception:
+        test_dataset = dataset
+
+    # Resume: fast-forward the stream to start_epoch (exactly one batch per epoch). RNG
+    # state save/restore is not viable here (trials draw from several RNGs), so we replay;
+    # this runs only on resume and is verified-reproducible.
+    if start_epoch > 0:
+        print(f'fast-forwarding trial stream by {start_epoch} epochs (resume)...', flush=True)
+        for _ in range(int(start_epoch)):
+            dataset()
+
     # Main training loop
     if reservoir_mode:
         print(f'RC: collecting data over {n_epochs} epochs...', flush=True)
@@ -772,8 +827,15 @@ def run_training(dataset, model, optimizer=None, criterion=None, config=None, sc
         # get data
         if microtiming:
             t1 = time.time()
-        dataset.env.reset(seed=int(n_epochs+epoch))
+        # one batch from the continuous per-run stream (seeded once before the loop)
         inputs, labels = dataset()
+        if epoch == start_epoch:   # guard against the degenerate-batch regression
+            _nuniq = _n_unique_trials(inputs)
+            if _nuniq < max(2, inputs.shape[1] // 2):
+                raise RuntimeError(
+                    f'Degenerate training batch: only {_nuniq}/{inputs.shape[1]} unique trials. '
+                    'Seed the env ONCE per run (continuous stream), not per batch -- per-batch '
+                    'reseeding collapses the batch to identical trials (effective batch size 1).')
         if microtiming:
             data_gen_time = time.time() - t1
         try:
@@ -869,7 +931,11 @@ def run_training(dataset, model, optimizer=None, criterion=None, config=None, sc
             should_log = (epoch == 0) or (epoch > 0 and epoch % log_freq == int(log_freq - 1))
             if should_log:
                 model.eval()
-                last_accuracy, _, _, _, _, _ = run_testing(dataset=dataset, model=model, n_trials=n_trials, verbose=False)
+                # fixed held-out battery (same trials every log point & every run) so the
+                # logged accuracy curve reflects only the model, not test-trial sampling noise.
+                # Uses a SEPARATE env so it never perturbs the training stream.
+                last_accuracy, _, _, _, _, _ = run_testing(dataset=test_dataset, model=model, n_trials=n_trials,
+                                                           verbose=False, test_seed=_TEST_TRIAL_SEED_BASE)
                 test_accuracy.append(last_accuracy)
                 if track_model_state:
                     model_state[epoch] = copy.deepcopy(model.state_dict())
@@ -931,9 +997,9 @@ def run_training(dataset, model, optimizer=None, criterion=None, config=None, sc
         running_val_loss = 0.0
         model.eval()
         with torch.no_grad():
+            test_dataset.seed(_VAL_TRIAL_SEED_BASE)  # fixed validation battery (seeded once -> diverse)
             for trial in range(n_val_trials):
-                dataset.env.reset(seed=int(2 * n_epochs + trial))
-                inputs, labels = dataset()
+                inputs, labels = test_dataset()
                 try:
                     labels = fix_labels(labels, decision=int(decision / dt), trim=trim)
                 except:
@@ -945,8 +1011,8 @@ def run_training(dataset, model, optimizer=None, criterion=None, config=None, sc
                 outputs_val, _ = model(inputs_val)
                 running_val_loss += rc_criterion(outputs_val.view(-1, model.num_classes), labels_val).item()
 
-        # compute test accuracy using run_testing
-        accuracy, *_ = run_testing(dataset, model, n_trials=1000, verbose=False)
+        # compute test accuracy using run_testing (fixed held-out battery, separate env)
+        accuracy, *_ = run_testing(test_dataset, model, n_trials=1000, verbose=False, test_seed=_TEST_TRIAL_SEED_BASE)
 
         training_loss = np.array([])
         training_loss_task = np.array([])
@@ -989,7 +1055,7 @@ def infer_test_timing(env_or_timing):
     return timing
 
 
-def run_testing(dataset, model, n_trials=1000, verbose=True):
+def run_testing(dataset, model, n_trials=1000, verbose=True, test_seed=None):
     if next(model.parameters()).is_cuda:
         device = torch.device('cuda')
     elif next(model.parameters()).is_mps:
@@ -1000,6 +1066,10 @@ def run_testing(dataset, model, n_trials=1000, verbose=True):
     # Environment
     env = dataset.env
     env.timing = infer_test_timing(env)
+    # test_seed set -> deterministic, reproducible test battery (env.seed() actually
+    # controls trial generation; env.reset(seed=) does not). None -> legacy behaviour.
+    if test_seed is not None:
+        env.seed(int(test_seed))
     env.reset() #no_step=True)
 
     # compute test performance
@@ -1010,7 +1080,8 @@ def run_testing(dataset, model, n_trials=1000, verbose=True):
     info = pd.DataFrame()
     with torch.no_grad():
         for trial in range(n_trials):
-            env.reset(seed=int(3*trial))
+            if test_seed is None:
+                env.reset(seed=int(3*trial))   # legacy stochastic trials
             env.new_trial()
             ob, gt = env.ob, env.gt
             # print(ob.shape, gt.shape)
@@ -1081,17 +1152,18 @@ def trial_accuracy(outputs, labels):
         return 0
 
 
-def run_testing_rest(model, n_steps=1000, noise_mean=0.5, noise_sd=0.3, smooth_noise=0, fix_input_channels=(0,), fix_input_value=1.0):
+def run_testing_rest(model, n_steps=1000, noise_mean=0.5, noise_sd=0.3, smooth_noise=0, fix_input_channels=(0,), fix_input_value=1.0, seed=None):
     if next(model.parameters()).is_cuda:
         device = torch.device('cuda')
     elif next(model.parameters()).is_mps:
         device = torch.device('mps')
     else:
         device = torch.device('cpu')
-    
-    # create noise input
+
+    # create noise input (seed set -> deterministic resting-state input)
     n_inputs = model.input_size
-    inputs = np.random.normal(noise_mean, noise_sd, (n_steps,n_inputs))
+    rng = np.random.RandomState(int(seed)) if seed is not None else np.random
+    inputs = rng.normal(noise_mean, noise_sd, (n_steps,n_inputs))
     if fix_input_channels is not None:
         for i in fix_input_channels:
             inputs[:,i] = np.ones((n_steps,)) * fix_input_value
@@ -1222,6 +1294,16 @@ def train_helper(run, config):
                     optimizer.load_state_dict(resume_state['optimizer'])
                 if scheduler is not None and resume_state.get('scheduler'):
                     scheduler.load_state_dict(resume_state['scheduler'])
+                # restore RNG states so rec-noise (and any global draws) continue exactly as
+                # in an uninterrupted run; the trial stream is fast-forwarded in run_training.
+                if resume_state.get('torch_rng') is not None:
+                    torch.set_rng_state(resume_state['torch_rng'])
+                if resume_state.get('torch_cuda_rng') is not None and torch.cuda.is_available():
+                    torch.cuda.set_rng_state_all(resume_state['torch_cuda_rng'])
+                if resume_state.get('numpy_rng') is not None:
+                    np.random.set_state(resume_state['numpy_rng'])
+                if resume_state.get('python_rng') is not None:
+                    random.setstate(resume_state['python_rng'])
                 initial_data = saved_data  # accumulated metric arrays
 
     # build checkpoint callback
@@ -1237,6 +1319,13 @@ def train_helper(run, config):
                 '_resume_state': {
                     'optimizer': optimizer.state_dict() if optimizer is not None else {},
                     'scheduler': scheduler.state_dict() if scheduler is not None else {},
+                    # RNG states captured *after* this epoch so a resumed run bit-reproduces
+                    # an uninterrupted one: rec-noise (torch) plus the numpy/python globals.
+                    # The trial-env stream is handled separately by fast-forward in run_training.
+                    'torch_rng':      torch.get_rng_state(),
+                    'torch_cuda_rng': (torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None),
+                    'numpy_rng':      np.random.get_state(),
+                    'python_rng':     random.getstate(),
                 },
             }
             output_manager.save_model_data(checkpoint_data, run=run, epoch=epoch)
@@ -1366,6 +1455,20 @@ class ModelStateManager:
             logged_epochs.sort()
             keys_per_epoch = list(models_file[runs[0]][f'epoch_{logged_epochs[0]}'].keys())
         return num_runs, logged_epochs, keys_per_epoch
+
+    def get_run_ids(self):
+        """Sorted list of run indices actually stored in the file, e.g.
+        ``[14, 24, 32, 57, 87]``.
+
+        Unlike ``get_info()``'s count, this returns the real indices, so callers
+        work with non-contiguous run sets (e.g. a spanning mixed-effects null).
+        Returns an empty list if the file does not exist.
+        """
+        if not os.path.isfile(self.filename):
+            return []
+        with h5py.File(self.filename, 'r') as models_file:
+            return sorted(int(k.replace('run_', '')) for k in models_file.keys()
+                          if k.startswith('run_'))
 
     def get_run_epochs(self, run):
         """

@@ -230,7 +230,11 @@ def load_config_from_csv(params_csv, model_index):
         'reg_weight': ['reg_weight', 'regularization_weight'],
         'kernel_type': ['kernel_type'],
         'kernel_normalization': ['kernel_normalization'],
-        
+        'null_perms': ['null_perms'],
+        'null_seed': ['null_seed'],
+        'null_run': ['null_run'],
+        'null_run_ids': ['null_run_ids'],
+
         # continuous time parameter
         'alpha': ['alpha'],
         
@@ -258,6 +262,9 @@ def load_config_from_csv(params_csv, model_index):
                 config[config_key] = parse_alpha_value(value)
             elif config_key == 'kernel_type' and isinstance(value, str) and value.lower() == 'none':
                 config[config_key] = None
+            elif config_key == 'null_run_ids':
+                # space-separated run indices, e.g. "12 34 50 71 88" (or a single int)
+                config[config_key] = [int(x) for x in str(value).split()]
             else:
                 # Convert numpy scalar types to native Python types for PyTorch/stdlib compatibility
                 if isinstance(value, np.integer):
@@ -420,7 +427,8 @@ Examples:
     # regularization parameters
     reg_group = parser.add_argument_group('Regularization Parameters')
     reg_group.add_argument('--reg_type', type=str, default=_NOT_PROVIDED,
-                          help='Regularization type: l1, l2, l2s, pearson, or pearson_l2s (default: l2)')
+                          help='Regularization type: l1, l2, l2s, pearson, pearson_l2s, '
+                               'pearson_abs, or pearson_abs_l2s (default: l2)')
     reg_group.add_argument('--reg_weight', type=float, default=_NOT_PROVIDED,
                           help='Regularization weight (default: 0.001)')
     reg_group.add_argument('--kernel_type', type=str, default=_NOT_PROVIDED,
@@ -614,6 +622,10 @@ def apply_defaults(config):
         'reg_weight': 0.001,
         'kernel_type': None,
         'kernel_normalization': 'mean',
+        'null_perms': 0,
+        'null_seed': 0,
+        'null_run': 0,   # run-index offset; pins a fixed-init null ensemble to one representative run
+        'null_run_ids': None,  # explicit run indices (overrides null_run/n_runs) for a spanning mixed-effects null
         'rec_noise': 0.0,
         'alpha': 1.0,
         'init_ih_w': None,

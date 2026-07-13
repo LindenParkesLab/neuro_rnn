@@ -1,5 +1,6 @@
 import numpy as np
 import bct
+from scipy import stats
 
 
 def threshold_adj(A, q=0.8, abs=True, fill_diag=True, binarize=True):
@@ -54,3 +55,108 @@ def get_norm_rc(A, n_perms=1000, directed=True, weighted=True):
         return R, R_perm, R_norm, p_val
     else:
         return R
+
+
+def _dist_stats(x, q=0.8):
+    """Return (mean, skewness, top-quartile mean) of a 1D node-level vector."""
+    x = np.asarray(x, dtype=float)
+    valid = x[np.isfinite(x)]
+    mean = float(np.nanmean(x)) if valid.size else np.nan
+    skew = float(stats.skew(valid)) if valid.size > 2 else np.nan
+    if valid.size:
+        thr = np.quantile(valid, q)
+        topq = float(np.nanmean(x[x >= thr]))
+    else:
+        topq = np.nan
+    return mean, skew, topq
+
+
+def compute_topology_metrics(A_raw, q=0.8, rc_perms=1000):
+    """Compute segregation + centrality/hub metrics on a weighted directed graph.
+
+    The raw (signed) weight matrix ``A_raw`` is reduced to an absolute-valued,
+    zero-diagonal, weighted graph keeping the top ``1 - q`` quantile of edges
+    (via :func:`threshold_adj`, matching the existing convention).  Returns a
+    flat dict of scalar metrics.  Rich-club normalization uses ``rc_perms``
+    permutations; set ``rc_perms=0`` (or None) to skip it.
+    """
+    A_raw = np.nan_to_num(np.asarray(A_raw, dtype=float),
+                          nan=0.0, posinf=0.0, neginf=0.0)
+    A = threshold_adj(A_raw.copy(), q=q, abs=True, fill_diag=True, binarize=False)
+
+    out = {}
+
+    # ---- Segregation ----
+    ci, Q = bct.modularity_dir(A)
+    out['modularity_q'] = float(Q)
+    out['n_communities'] = int(len(np.unique(ci)))
+    out['clustering_mean'] = float(np.nanmean(bct.clustering_coef_wd(A)))
+    out['participation_mean'] = float(np.nanmean(bct.participation_coef(A, ci)))
+
+    # ---- Centrality / hubs ----
+    _, _, degree = bct.degrees_dir(A)
+    # degree-distribution skewness (skew of histogram counts; existing convention)
+    _, counts = np.unique(degree, return_counts=True)
+    out['degree_skewness'] = float(stats.skew(counts)) if counts.size > 2 else np.nan
+    dthr = np.quantile(degree, q)
+    high_deg = degree >= dthr
+    out['degree_topq_mean'] = float(np.nanmean(degree[high_deg]))
+
+    strength = bct.strengths_dir(A)                 # total (in + out) strength
+    out['strength_in_mean'] = float(np.nanmean(np.sum(A, axis=0)))
+    out['strength_out_mean'] = float(np.nanmean(np.sum(A, axis=1)))
+    s_mean, s_skew, _ = _dist_stats(strength, q=q)
+    out['strength_mean'] = s_mean
+    out['strength_skewness'] = s_skew
+    # mean strength of high-degree (hub) nodes, matching existing convention
+    out['strength_topq_mean'] = float(np.nanmean(strength[high_deg]))
+
+    # weighted betweenness on the connection-length matrix (invert weights)
+    bw = bct.betweenness_wei(bct.invert(A))
+    b_mean, b_skew, _ = _dist_stats(bw, q=q)
+    out['betweenness_mean'] = b_mean
+    out['betweenness_skewness'] = b_skew
+
+    # ---- Rich club (normalized, directed weighted) ----
+    if rc_perms and rc_perms > 0:
+        try:
+            _, _, R_norm, _ = get_norm_rc(A, n_perms=rc_perms,
+                                          directed=True, weighted=True)
+            R_norm = np.asarray(R_norm, dtype=float)
+            R_norm[~np.isfinite(R_norm)] = np.nan
+            out['rich_club_norm_mean'] = float(np.nanmean(R_norm))
+        except Exception:
+            out['rich_club_norm_mean'] = np.nan
+    else:
+        out['rich_club_norm_mean'] = np.nan
+
+    return out
+
+
+def compute_reference_similarity(A_rnn_raw, ref_mat):
+    """Matrix-level similarity between an RNN graph and a reference matrix.
+
+    Both are reduced to absolute, symmetrized, zero-diagonal form, then compared
+    over off-diagonal edges (spearman, cosine) and node-strength profiles
+    (spearman).  References (spatial kernel, fMRI FC) are symmetric; the RNN is
+    symmetrized so the comparison is apples-to-apples.
+    """
+    def _prep(M):
+        M = np.abs(np.nan_to_num(np.asarray(M, dtype=float),
+                                 nan=0.0, posinf=0.0, neginf=0.0))
+        M = (M + M.T) / 2.0
+        np.fill_diagonal(M, 0.0)
+        return M
+
+    A = _prep(A_rnn_raw)
+    R = _prep(ref_mat)
+    off = ~np.eye(A.shape[0], dtype=bool)
+    a, r = A[off], R[off]
+
+    denom = np.linalg.norm(a) * np.linalg.norm(r)
+    return {
+        'edge_spearman': float(stats.spearmanr(a, r).correlation),
+        'edge_cosine': float(np.dot(a, r) / denom) if denom > 0 else np.nan,
+        'strength_spearman': float(
+            stats.spearmanr(np.sum(A, axis=1), np.sum(R, axis=1)).correlation),
+    }
