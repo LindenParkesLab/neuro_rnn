@@ -10,6 +10,22 @@ import os
 import multiprocessing
 import argparse
 
+def set_font_size(font_size=12):
+    """Set global matplotlib font (Arial) and sizes consistently across figures."""
+    import matplotlib.pyplot as plt
+    plt.rcParams.update({
+        'font.family': 'sans-serif',
+        'font.sans-serif': ['Arial'],
+        'font.size': font_size,
+        'axes.titlesize': font_size + 1,
+        'axes.labelsize': font_size,
+        'xtick.labelsize': font_size - 1,
+        'ytick.labelsize': font_size - 1,
+        'legend.fontsize': font_size,
+        'figure.titlesize': font_size + 2,
+    })
+
+
 def normalize_x(x, method='rescale'):
     """
     Normalize a distance matrix using various methods.
@@ -436,6 +452,14 @@ def get_file_str(config):
     reservoir_mode = config.get('reservoir_mode', False)
     rc_str = f'-rc{config.get("ridge_alpha", 1.0)}' if reservoir_mode else ''
 
+    # fixed-init run-offset suffix: pins a null ensemble to one representative run
+    # index (null_run). Absent / 0 -> no suffix, so ordinary models are unchanged.
+    null_run = config.get('null_run', 0) or 0
+    nr_str = f'-nr{int(null_run)}' if null_run else ''
+
+    # spatial-null permutation suffix (set when fanning out into spin surrogates)
+    null_str = f'-null{config["null_index"]}' if config.get('null_index') is not None else ''
+
     # create name string
     file_str = f'{task}-{seq_len}-' \
                f'{rnn_model}-{hidden_size}-{batch_size}-{lr}-' \
@@ -443,7 +467,7 @@ def get_file_str(config):
                f'{mask_weights}-{n_io}-' \
                f'{reg_type}-{reg_weight}-' \
                f'{kernel_type}-{kernel_normalization}-' \
-               f'{alpha_str}{so_str}{rc_str}'
+               f'{alpha_str}{so_str}{rc_str}{nr_str}{null_str}'
 
     return file_str
 
@@ -1103,6 +1127,8 @@ def get_params_dataframe(params_dataframe: str | pd.DataFrame, rows: list = [], 
             'kernel_normalization': this.kernel_normalization,
             'alpha': this.alpha,
             'spatial_only_epochs': getattr(this, 'spatial_only_epochs', 0),
+            'null_run': getattr(this, 'null_run', 0),
+            'null_run_ids': getattr(this, 'null_run_ids', None),
         }
 
         # get data file name

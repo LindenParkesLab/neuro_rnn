@@ -1,4 +1,5 @@
 import sys, os, platform
+import urllib.request
 from src.utils import get_p_val_string, compute_pc_var, get_my_colors
 
 import numpy as np
@@ -7,13 +8,158 @@ import scipy as sp
 import math
 from scipy import stats
 
+import nibabel as nib
 import seaborn as sns
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import matplotlib.patheffects as pe
+from nilearn import datasets, plotting as nilearn_plotting
 from sklearn.decomposition import PCA
 
 from src.utils import get_my_colors
+
+CBIG_BASE_URL = (
+    'https://raw.githubusercontent.com/ThomasYeoLab/CBIG/master/'
+    'stable_projects/brain_parcellation/Schaefer2018_LocalGlobal/'
+    'Parcellations/FreeSurfer5.3/fsaverage5/label'
+)
+
+
+def _get_schaefer_annot(n_parcels=200, yeo_networks=7, data_dir=None):
+    """Download Schaefer FreeSurfer .annot files if not already cached."""
+    if data_dir is None:
+        data_dir = os.path.join(os.path.expanduser('~'), 'nilearn_data', 'schaefer_2018')
+    annot_dir = os.path.join(data_dir, 'fsaverage5')
+    os.makedirs(annot_dir, exist_ok=True)
+
+    paths = {}
+    for hemi in ('lh', 'rh'):
+        fname = f'{hemi}.Schaefer2018_{n_parcels}Parcels_{yeo_networks}Networks_order.annot'
+        local_path = os.path.join(annot_dir, fname)
+        if not os.path.isfile(local_path):
+            url = f'{CBIG_BASE_URL}/{fname}'
+            print(f'Downloading {fname} ...')
+            urllib.request.urlretrieve(url, local_path)
+        paths[hemi] = local_path
+    return paths['lh'], paths['rh']
+
+
+def _roi_to_vtx(roi_data, annot_file):
+    """Map parcel-level data to vertex-level using a FreeSurfer .annot file."""
+    labels, ctab, surf_names = nib.freesurfer.read_annot(annot_file)
+    vtx_data = np.zeros(labels.shape)
+    unique_labels = np.unique(labels)
+    if unique_labels[0] == 0:
+        unique_labels = unique_labels[1:]
+    for i in unique_labels:
+        vtx_data[labels == i] = roi_data[i - 1]
+    return vtx_data
+
+
+def plot_surface(data, hemi='lh', n_parcels=200, yeo_networks=7,
+                 cmap='coolwarm', cblim=None, title=None,
+                 figsize=(3.5, 2), data_dir=None):
+    """Plot parcel-level data on an fsaverage5 inflated surface.
+
+    Parameters
+    ----------
+    data : array-like, shape (n_parcels_per_hemi,) or (n_parcels,)
+        Parcel-level values. For hemi='lh' with n_parcels=200, pass 100
+        values corresponding to the left-hemisphere parcels.
+        For hemi='both', pass the full 200-parcel vector (LH then RH).
+    hemi : str
+        'lh' for left hemisphere only, 'rh' for right only, 'both' for both.
+    n_parcels : int
+        Total number of Schaefer parcels (both hemispheres), default 200.
+    yeo_networks : int
+        Yeo network resolution (7 or 17), default 7.
+    cmap : str
+        Matplotlib colormap name. Default 'coolwarm' (diverging).
+    cblim : tuple or None
+        (vmin, vmax) for the colorbar. If None, auto-determined; for
+        diverging colormaps, symmetrized around zero.
+    title : str or None
+        Optional title for the figure.
+    figsize : tuple
+        Figure size (width, height).
+    data_dir : str or None
+        Directory for caching atlas files. Defaults to ~/nilearn_data/schaefer_2018.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+    """
+    data = np.asarray(data, dtype=float)
+    lh_annot, rh_annot = _get_schaefer_annot(n_parcels, yeo_networks, data_dir)
+    fsaverage = datasets.fetch_surf_fsaverage(mesh='fsaverage5')
+    half = n_parcels // 2
+
+    # determine which hemispheres to plot
+    if hemi == 'both':
+        hemis = ['lh', 'rh']
+        vtx = {
+            'lh': _roi_to_vtx(data[:half], lh_annot),
+            'rh': _roi_to_vtx(data[half:], rh_annot),
+        }
+    elif hemi == 'lh':
+        hemis = ['lh']
+        vtx = {'lh': _roi_to_vtx(data[:half], lh_annot)}
+    else:
+        hemis = ['rh']
+        vtx = {'rh': _roi_to_vtx(data[:half], rh_annot)}
+
+    # color limits
+    if cblim is not None:
+        vmin, vmax = cblim
+    else:
+        vmax = np.nanmax(np.abs(data))
+        if cmap in ('coolwarm', 'RdBu_r', 'RdYlBu_r', 'bwr', 'seismic'):
+            vmin = -vmax
+        else:
+            vmin = np.nanmin(data)
+
+    # layout: 2 rows (lateral, medial) x n_hemis columns
+    n_cols = len(hemis)
+    fig, axes = plt.subplots(2, n_cols, figsize=figsize,
+                             subplot_kw={'projection': '3d'},
+                             gridspec_kw={'hspace': 0.0, 'wspace': 0.0})
+    if n_cols == 1:
+        axes = axes.reshape(2, 1)
+
+    hemi_map = {'lh': ('left', 'infl_left', 'sulc_left'),
+                'rh': ('right', 'infl_right', 'sulc_right')}
+
+    for col, h in enumerate(hemis):
+        hemi_label, surf_key, sulc_key = hemi_map[h]
+        for row, view in enumerate(['lateral', 'medial']):
+            ax = axes[row, col]
+            nilearn_plotting.plot_surf_roi(
+                fsaverage[surf_key], roi_map=vtx[h],
+                hemi=hemi_label, view=view,
+                vmin=vmin, vmax=vmax,
+                bg_map=fsaverage[sulc_key], bg_on_data=True,
+                axes=ax, darkness=0.5,
+                cmap=cmap, colorbar=False,
+            )
+            # bring the medial camera closer so both views appear the same size
+            if view == 'medial':
+                ax._dist = ax._dist * 0.85
+
+    # colorbar
+    im = plt.imshow(np.array([[vmin, vmax]]), cmap=cmap, vmin=vmin, vmax=vmax)
+    im.set_visible(False)
+    cb_ax = fig.add_axes([0.82, 0.25, 0.03, 0.5])
+    fig.colorbar(im, cax=cb_ax)
+
+    if title is not None:
+        fig.suptitle(title, fontsize=10, y=0.95)
+
+    fig.subplots_adjust(left=-0.15, right=0.8, bottom=-0.05, top=1.05,
+                        wspace=0.0, hspace=0.0)
+    plt.show()
+
+    return fig
+
 
 def my_reg_plot(x, y, xlabel, ylabel, ax, c='gray', annotate='pearson', regr_line=True, kde=True, fontsize=8):
     if len(x.shape) > 1 and len(y.shape) > 1:
@@ -142,7 +288,7 @@ def plot_activity(hidden_activity, info, config, condition='choice', n_component
     if n_components == 0:
         for value in pd.unique(info[condition]):
             activity_to_plot = hidden_activity[info[condition] == value].mean(axis=0)
-            t_plot = np.arange(hidden_activity.shape[1]) * config['dt']
+            t_plot = np.arange(hidden_activity.shape[1]) * config['time_step']
             ax.plot(t_plot, activity_to_plot, 'o-', label=str(value), color=cmap[value])
     else:
         for trial in np.arange(n_trials):
@@ -192,7 +338,7 @@ def plot_activity_variance(hidden_activity, config, n_components=3, normalize=Tr
 
     cmap = sns.color_palette("Set1")
     f, ax = plt.subplots(1, 1, figsize=(5, 1.5))
-    t_plot = np.arange(hidden_activity.shape[1]) * config['dt']
+    t_plot = np.arange(hidden_activity.shape[1]) * config['time_step']
     if mean:
         ax.plot(t_plot, hidden_activity_pc_var.mean(axis=1), 'o-', label='mean', color=cmap[0])
     else:
@@ -328,7 +474,8 @@ def plot_iodata(
         end_points = None
 
     # set plotting theme
-    rc_defaults = {'figure.titlesize': 12, 'axes.labelsize': 11,
+    rc_defaults = {'font.family': 'sans-serif', 'font.sans-serif': ['Arial'],
+                   'figure.titlesize': 12, 'axes.labelsize': 11,
                    'xtick.labelsize': 11, 'ytick.labelsize': 11,
                    'legend.fontsize': 8, 'legend.loc': 'best',
                    'lines.linewidth': 1, 'savefig.format': 'png'}
@@ -391,5 +538,7 @@ def plot_iodata(
 
     plt.close()
 
-    # reset rc defaults
+    # reset rc defaults (keep Arial as the default font)
     mpl.rcdefaults()
+    from src import use_arial
+    use_arial()
