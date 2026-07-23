@@ -1,2 +1,0 @@
-task,seq_len_multi,time_step,alpha,rec_noise,init_ih_w,rnn_model,hidden_size,batch_size,n_epochs,kernel_type,kernel_normalization,mask_weights,n_runs,spectral_radius,ridge_alpha
-PerceptualDecisionMaking-v0-Del_300_200,10,100,1,0.05,-0.7 0.7,rnn-tanh,100,32,500,None,mean,False,10,0.95,0.1

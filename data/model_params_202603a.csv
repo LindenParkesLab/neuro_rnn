@@ -1,9 +1,0 @@
-task,seq_len_multi,time_step,alpha,rec_noise,init_hh_w,rnn_model,hidden_size,batch_size,learning_rate,n_epochs,reg_type,reg_weight,kernel_type,kernel_normalization,mask_weights,n_runs
-GoNogo-v0-Del_200_100_Dec_300,5,20,0.2,0.05,-0.1 0.1,rnn-tanh,100,32,0.001,100000,l2,0,None,mean,False,28
-GoNogo-v0-Del_200_100_Dec_300,5,20,0.2,0.05,-0.1 0.1,rnn-tanh,100,32,0.001,100000,l2,0,None,mean,True,28
-GoNogo-v0-Del_200_100_Dec_300,5,20,0.2,0.05,-0.1 0.1,rnn-tanh,100,32,0.001,100000,l2,0.002,sf_axis,mean,True,28
-GoNogo-v0-Del_200_100_Dec_300,5,20,0.2,0.05,-0.1 0.1,rnn-tanh,100,32,0.001,100000,l2,0.002,euclidean,mean,True,28
-DelayMatchSampleDistractor1D-v0,5,20,0.2,0.05,-0.1 0.1,rnn-tanh,100,32,0.001,100000,l2,0,None,mean,False,28
-DelayMatchSampleDistractor1D-v0,5,20,0.2,0.05,-0.1 0.1,rnn-tanh,100,32,0.001,100000,l2,0,None,mean,True,28
-DelayMatchSampleDistractor1D-v0,5,20,0.2,0.05,-0.1 0.1,rnn-tanh,100,32,0.001,100000,l2,0.002,sf_axis,mean,True,28
-DelayMatchSampleDistractor1D-v0,5,20,0.2,0.05,-0.1 0.1,rnn-tanh,100,32,0.001,100000,l2,0.002,euclidean,mean,True,28

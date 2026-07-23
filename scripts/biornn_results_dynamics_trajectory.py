@@ -1,7 +1,16 @@
-"""Compute weight–kernel similarity and fMRI variance explained across training epochs.
+"""Compute weight–kernel similarity, fMRI variance explained, and network topology
+across training epochs.
 
 Iterates over models × runs × sampled epochs, computes metrics at each checkpoint,
 and saves results as a pickle file for downstream plotting.
+
+Topology metrics (segregation + centrality/hubs) are computed twice per checkpoint:
+on the whole-network recurrent weight matrix ('topology') and on the bystander/
+intermediate nodes only ('topology_bystander', excluding input and output nodes),
+each anchored against the spatial kernel and group task/rest fMRI functional
+connectivity (reference metric vectors + per-epoch matrix-level similarity). Select
+a single kernel type (e.g. Euclidean bioRNNs) via --rows; the code itself is
+kernel-type-agnostic.
 
 Usage:
     python scripts/biornn_results_dynamics_trajectory.py \
@@ -13,6 +22,7 @@ Usage:
         --n_fmri_subj 100 \
         --n_pc 5 \
         --n_jobs -1 \
+        --rc_perms 1000 \
         --outdir /path/to/output/
 """
 
@@ -27,12 +37,13 @@ import warnings
 import numpy as np
 import pandas as pd
 from scipy import stats
-from scipy.spatial import distance
 from sklearn.decomposition import PCA
 from joblib import Parallel, delayed
 import torch
 
 import src.utils as utils
+from src.fmri_io import get_paths, load_kernels, load_fmri_data
+from src.topology import compute_topology_metrics, compute_reference_similarity
 from src.neural_network import (
     ModelStateManager,
     RNN,
@@ -111,19 +122,31 @@ def pca_projection(data, pca_fitted, centering_mean='data'):
 
 
 def compute_weight_kernel_similarity(W_hh, kernel_similarity):
-    """Compute similarity metrics between learned weights and spatial kernel."""
+    """Compute similarity metrics between learned weights and spatial kernel.
+
+    Both signed and magnitude-based (``*_abs``) variants are returned. The signed
+    metrics align the raw weight (sign = E/I) with the kernel; the ``*_abs``
+    metrics align connection *magnitude* |W| with the kernel, leaving sign free.
+    The ``*_abs`` variants give a common, sign-free readout for comparing models
+    trained with different objectives (e.g. ``pearson_l2s`` vs ``pearson_abs_l2s``).
+    """
     include_mask = ~np.eye(W_hh.shape[0], dtype=np.bool_)
     w_vec = W_hh[include_mask]
     k_vec = kernel_similarity[include_mask]
+    w_abs = np.abs(w_vec)
 
     r_spearman, _ = stats.spearmanr(w_vec, k_vec)
+    r_spearman_abs, _ = stats.spearmanr(w_abs, k_vec)
     eucl_dist = np.linalg.norm(w_vec - k_vec)
     cos_sim = np.dot(w_vec, k_vec) / (np.linalg.norm(w_vec) * np.linalg.norm(k_vec))
+    cos_sim_abs = np.dot(w_abs, k_vec) / (np.linalg.norm(w_abs) * np.linalg.norm(k_vec))
 
     return {
         'spearman': r_spearman,
+        'spearman_abs': r_spearman_abs,
         'euclidean': eucl_dist,
         'cosine': cos_sim,
+        'cosine_abs': cos_sim_abs,
     }
 
 
@@ -132,8 +155,8 @@ def compute_losses(rnn, dataset, n_trials, reg_type, reg_weight):
 
     Returns a dict with:
         task_loss: cross-entropy loss (mean over trials)
-        l2_component: reg_weight * sum(W_hh^2) / hidden_size (only for pearson_l2s)
-        pearson_component: reg_weight * (1 - corr) (only for pearson/pearson_l2s)
+        l2_component: reg_weight * sum(W_hh^2) / hidden_size (only for *_l2s)
+        pearson_component: reg_weight * (1 - corr) (only for pearson* types)
         total_spatial_loss: reg_weight * regularization(W_hh, ...)
         total_loss: task_loss + total_spatial_loss
     """
@@ -170,7 +193,7 @@ def compute_losses(rnn, dataset, n_trials, reg_type, reg_weight):
     }
 
     with torch.no_grad():
-        if reg_weight == 0 or (kernel is None and reg_type in ('pearson', 'pearson_l2s')):
+        if reg_weight == 0 or (kernel is None and reg_type in ('pearson', 'pearson_l2s', 'pearson_abs', 'pearson_abs_l2s')):
             result['total_spatial_loss'] = 0.0
             result['total_loss'] = task_loss
             return result
@@ -183,22 +206,24 @@ def compute_losses(rnn, dataset, n_trials, reg_type, reg_weight):
             total_spatial = reg_weight * rnn.regularization(W_hh, type=reg_type)
         result['total_spatial_loss'] = total_spatial.item()
 
-        # decompose for pearson_l2s
-        if reg_type == 'pearson_l2s' and kernel is not None:
+        # decompose for pearson_l2s / pearson_abs_l2s
+        if reg_type in ('pearson_l2s', 'pearson_abs_l2s') and kernel is not None:
             # L2 component: reg_weight * sum(W^2) / hidden_size (unweighted by matrix)
             l2_val = reg_weight * torch.square(W_hh).sum() / hidden_size
             result['l2_component'] = l2_val.item()
 
-            # Pearson component: reg_weight * (1 - corr)
+            # Pearson component: reg_weight * (1 - corr); abs variant correlates |W|
             similarity = 1.0 - kernel
             off_diag = ~torch.eye(hidden_size, dtype=torch.bool, device=W_hh.device)
             w_flat = W_hh[off_diag]
+            if reg_type == 'pearson_abs_l2s':
+                w_flat = torch.abs(w_flat)
             s_flat = similarity[off_diag]
             corr = torch.corrcoef(torch.stack([w_flat, s_flat]))[0, 1]
             pearson_val = reg_weight * (1.0 - corr)
             result['pearson_component'] = pearson_val.item()
 
-        elif reg_type == 'pearson' and kernel is not None:
+        elif reg_type in ('pearson', 'pearson_abs') and kernel is not None:
             result['pearson_component'] = result['total_spatial_loss']
 
         result['total_loss'] = task_loss + result['total_spatial_loss']
@@ -207,11 +232,11 @@ def compute_losses(rnn, dataset, n_trials, reg_type, reg_weight):
 
 
 def get_node_subsets(state_dict, hidden_size):
-    """Derive leave-one-out node subsets from I/O masks in a state dict.
+    """Node subsets used for VE: the full network and the bystander nodes only.
 
-    Returns a dict mapping subset name → array of node indices.
-    Always includes 'all'.  If masks are present, also includes
-    'no_input', 'no_output', and 'no_bystander'.
+    Returns a dict mapping subset name → array of node indices. Always includes
+    'all'. If I/O masks are present, also includes 'bystander' (intermediate
+    nodes: neither input nor output).
     """
     all_idx = np.arange(hidden_size)
     subsets = {'all': all_idx}
@@ -230,10 +255,7 @@ def get_node_subsets(state_dict, hidden_size):
     output_mask = ow[0, :].astype(bool) if ow.ndim == 2 else ow.astype(bool)
 
     bystander_mask = ~(input_mask | output_mask)
-
-    subsets['no_input'] = np.where(~input_mask)[0]
-    subsets['no_output'] = np.where(~output_mask)[0]
-    subsets['no_bystander'] = np.where(~bystander_mask)[0]
+    subsets['bystander'] = np.where(bystander_mask)[0]
 
     return subsets
 
@@ -282,18 +304,57 @@ def create_dataset_and_rnn_shell(model_info, state_template, device):
     return dataset, rnn
 
 
+def _topology_for_subset(W_hh, idx, ref_matrices, rc_perms):
+    """Topology metrics + reference similarity for a node subset.
+
+    `idx=None` uses the full network; otherwise the recurrent matrix and each
+    reference matrix are restricted to the `idx` nodes before computing metrics.
+    """
+    if idx is None:
+        W_sub = W_hh
+        slice_ref = lambda mat: mat
+    else:
+        ix = np.ix_(idx, idx)
+        W_sub = W_hh[ix]
+        slice_ref = lambda mat: mat[ix]
+    return {
+        'metrics': compute_topology_metrics(W_sub, rc_perms=rc_perms),
+        'reference_similarity': {
+            name: (compute_reference_similarity(W_sub, slice_ref(mat))
+                   if mat is not None else None)
+            for name, mat in ref_matrices.items()
+        },
+    }
+
+
+def _bystander_node_idx(node_subsets):
+    """Intermediate (bystander) node indices: neither input nor output.
+
+    Returns an empty array if I/O masks were unavailable (only 'all' present).
+    """
+    by = node_subsets.get('bystander')
+    return np.asarray(by, dtype=int) if by is not None else np.array([], dtype=int)
+
+
 def process_one_run(run_idx, epoch_states, sampled_epochs, model_info,
                     rnn_template, dataset, has_kernel, kernel_sim,
                     reg_type, reg_weight,
                     n_trials, n_pc, fmri_rest_nsteps,
                     fmri_task_ts, fmri_rest_ts, n_fmri_subj, skip_fmri,
-                    node_subsets, device):
+                    node_subsets, compute_topology, topo_subsets, rc_perms, ref_matrices,
+                    device, test_seed=0):
     """Process all epochs for a single run. Designed to run in a worker process."""
     torch.set_num_threads(1)
     warnings.simplefilter(action='ignore', category=UserWarning)
+    warnings.simplefilter(action='ignore', category=RuntimeWarning)
+    warnings.simplefilter(action='ignore', category=FutureWarning)
 
     rnn = copy.deepcopy(rnn_template)
     run_result = {'epochs': {}}
+    # fixed eval battery (identical task test-trials + resting-state noise for every
+    # epoch/run/model) when test_seed >= 0 -> deterministic, comparable trajectories;
+    # a negative test_seed keeps the legacy stochastic evaluation.
+    eval_seed = None if (test_seed is None or test_seed < 0) else int(test_seed)
 
     for epoch in sampled_epochs:
         state = epoch_states[epoch]
@@ -302,13 +363,32 @@ def process_one_run(run_idx, epoch_states, sampled_epochs, model_info,
 
         epoch_result = {}
 
+        # raw recurrent weights for this checkpoint (used below)
+        W_hh = rnn.rnn.weight_hh_l0.detach().cpu().numpy()
+
         # weight-kernel similarity
         if has_kernel:
-            W_hh = rnn.rnn.weight_hh_l0.detach().cpu().numpy()
             epoch_result['weight_kernel_similarity'] = \
                 compute_weight_kernel_similarity(W_hh, kernel_sim)
         else:
             epoch_result['weight_kernel_similarity'] = None
+
+        # network topology + reference anchoring, computed twice: for the full
+        # network ('topology') and for the bystander/intermediate nodes only
+        # ('topology_bystander', excluding input and output nodes).
+        if compute_topology:
+            do_full = topo_subsets in ('both', 'all')
+            do_by = topo_subsets in ('both', 'bystanders')
+            epoch_result['topology'] = (
+                _topology_for_subset(W_hh, None, ref_matrices, rc_perms)
+                if do_full else None)
+            bystander_idx = _bystander_node_idx(node_subsets)
+            epoch_result['topology_bystander'] = (
+                _topology_for_subset(W_hh, bystander_idx, ref_matrices, rc_perms)
+                if (do_by and bystander_idx.size > 2) else None)
+        else:
+            epoch_result['topology'] = None
+            epoch_result['topology_bystander'] = None
 
         # losses
         epoch_result['losses'] = compute_losses(
@@ -316,13 +396,13 @@ def process_one_run(run_idx, epoch_states, sampled_epochs, model_info,
 
         # task inference
         accuracy, _, _, hidden_activity, _, _ = run_testing(
-            dataset=dataset, model=rnn, n_trials=n_trials, verbose=False)
+            dataset=dataset, model=rnn, n_trials=n_trials, verbose=False, test_seed=eval_seed)
         epoch_result['accuracy'] = accuracy
 
         # rest inference (needed for all subsets below)
         _, hidden_activity_rest, _ = run_testing_rest(
-            rnn, smooth_noise=0, noise_mean=1, noise_sd=0.1,
-            n_steps=fmri_rest_nsteps, fix_input_channels=[])
+            rnn, smooth_noise=0, noise_mean=0.5, noise_sd=0.3,
+            n_steps=fmri_rest_nsteps, fix_input_channels=[], seed=eval_seed)
 
         # PCA + fMRI projection for each node subset
         epoch_result['node_subsets'] = {}
@@ -392,133 +472,6 @@ def compute_fmri_intersubj_baseline(fmri_ts, n_subj, n_pc):
 
 
 # ---------------------------------------------------------------------------
-# Path setup (mirrors notebook/existing scripts)
-# ---------------------------------------------------------------------------
-
-def get_paths(model_params_name):
-    """Return datadir, modeldir, fmridir based on platform/user."""
-    username = os.getenv('USER')
-    if sys.platform == 'darwin':
-        if username == 'ahmad':
-            datadir = '/Users/ahmad/software/snaplab_github/neuro_rnn/data'
-            modeldir = os.path.join('/Users/ahmad/data/rutgers/neuro_rnn/results/pytorch/model', model_params_name)
-            # modeldir = os.path.join('/Volumes/Sabrent_2TB/rutgers/neuro_rnn/data', model_params_name)
-            fmridir = '/Users/ahmad/data/rutgers/hcp'
-    elif sys.platform == 'linux':
-        if username == 'ab2792':
-            datadir = '/home/ab2792/software/snaplab_github/neuro_rnn/data'
-            modeldir = '/home/ab2792/data/neuro_rnn/results/pytorch/model'
-            fmridir = '/home/ab2792/data/HCP/fmri'
-        elif username == 'lindenmp':
-            datadir = '/home/lindenmp/research_projects/neuro_rnn/data'
-            modeldir = '/media/lindenmp/storage_ssd/research_projects/neuro_rnn/results/model_cpu'
-            fmridir = '/media/lindenmp/storage_ssd/research_projects/neuro_rnn/data/fmri'
-    return datadir, modeldir, fmridir
-
-
-# ---------------------------------------------------------------------------
-# Load spatial kernels
-# ---------------------------------------------------------------------------
-
-def load_kernels(datadir, hidden_size=100):
-    """Load and normalize spatial kernel distance/similarity matrices."""
-    eucl_kernel_file = os.path.join(datadir, 'schaefer200_centroids.csv')
-    sa_kernel_file = os.path.join(datadir, 'schaefer200_sa-axis.npy')
-    ut_kernel_file = os.path.join(datadir, 'schaefer200_ut-axis.npy')
-    sf_kernel_file = os.path.join(datadir, 'schaefer200_cyto.npy')
-
-    centroids = pd.read_csv(eucl_kernel_file)[:hidden_size]
-    dist = distance.squareform(distance.pdist(centroids.set_index('ROI Name'), 'euclidean'))
-    dist_eucl = utils.normalize_x(dist)
-
-    sa_axis = np.load(sa_kernel_file)[:hidden_size]
-    dist_sa = utils.normalize_x(utils.get_brainmap_distance(sa_axis))
-
-    ut_axis = np.load(ut_kernel_file)[:hidden_size]
-    dist_ut = utils.normalize_x(utils.get_brainmap_distance(ut_axis))
-
-    sf_axis = np.load(sf_kernel_file)[:hidden_size]
-    dist_sf = utils.normalize_x(utils.get_brainmap_distance(sf_axis))
-
-    kernel_similarity_matrices = {
-        'euclidean': 1 - dist_eucl,
-        'sa_axis': 1 - dist_sa,
-        'ut_axis': 1 - dist_ut,
-        'sf_axis': 1 - dist_sf,
-    }
-    return kernel_similarity_matrices
-
-
-# ---------------------------------------------------------------------------
-# Load fMRI data
-# ---------------------------------------------------------------------------
-
-def load_fmri_data(datadir, fmridir, n_fmri_subj, hidden_size=100):
-    """Load task and resting-state fMRI data for a common set of subjects."""
-    tfmri_file = os.path.join(
-        fmridir, 'hcpya_tfmri.pkl')
-    fmri_data_file = os.path.join(
-        fmridir, 'HCP_YA_Schaefer2018_200Parcels_7Networks_order_Tian_Subcortex_S1_rest.npy')
-    fmri_data_df_file = os.path.join(
-        fmridir, 'HCP_YA_Schaefer2018_200Parcels_7Networks_order_Tian_Subcortex_S1_rest_df.csv')
-
-    n_nodes = hidden_size
-
-    # task fMRI
-    with open(tfmri_file, 'rb') as f:
-        tfmri = pickle.load(f)
-    fmri_task_key = 'tfMRIWMLR'
-    fmri_task_parc = 'Schaefer2007'
-    fmri_task_subjnames = list(tfmri.keys())
-
-    # rest fMRI
-    fmri_rest_data_df = pd.read_csv(fmri_data_df_file)
-    use_rest = pd.concat([
-        fmri_rest_data_df.rfMRI_available,
-        fmri_rest_data_df.rfMRI_REST1_LR,
-        fmri_rest_data_df.rfMRI_REST1_RL,
-        fmri_rest_data_df.rfMRI_REST2_LR,
-        fmri_rest_data_df.rfMRI_REST2_RL,
-    ], axis=1).to_numpy().all(axis=1)
-    fmri_rest_data_df = fmri_rest_data_df.iloc[use_rest]
-    fmri_rest_subjnames = [str(x) for x in fmri_rest_data_df.Subject]
-    fmri_rest_data_raw = np.load(fmri_data_file)[:, 16:116, 0, use_rest]
-
-    # common subjects
-    common = [s for s in fmri_task_subjnames if s in set(fmri_rest_subjnames)]
-    rng = np.random.default_rng(seed=42)
-    selected = [common[i] for i in rng.choice(len(common), size=n_fmri_subj, replace=False)]
-
-    task_bool = [s in set(selected) for s in fmri_task_subjnames]
-    rest_bool = [s in set(selected) for s in fmri_rest_subjnames]
-
-    # assemble task fMRI array
-    fmri_task_nsteps = min(
-        tfmri[s][fmri_task_parc][fmri_task_key].shape[0] for s in selected)
-    fmri_task_ts = np.zeros((fmri_task_nsteps, n_nodes, n_fmri_subj))
-    for i, s in enumerate(selected):
-        fmri_task_ts[:, :, i] = tfmri[s][fmri_task_parc][fmri_task_key][:fmri_task_nsteps, :n_nodes]
-
-    # assemble rest fMRI array
-    fmri_rest_ts = fmri_rest_data_raw[:, :, rest_bool]
-
-    fmri_rest_nsteps = fmri_rest_ts.shape[0]
-
-    # global signal regression (per subject)
-    for ts in (fmri_task_ts, fmri_rest_ts):
-        for si in range(ts.shape[2]):
-            gs = ts[:, :, si].mean(axis=1, keepdims=True)  # (timepoints, 1)
-            beta = (gs.T @ ts[:, :, si]) / (gs.T @ gs)     # (1, nodes)
-            ts[:, :, si] -= gs * beta
-
-    print(f'fMRI subjects selected: {n_fmri_subj}')
-    print(f'fMRI task shape: {fmri_task_ts.shape}')
-    print(f'fMRI rest shape: {fmri_rest_ts.shape}')
-
-    return fmri_task_ts, fmri_rest_ts, fmri_rest_nsteps, selected
-
-
-# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -548,6 +501,20 @@ def main():
                         help='Output directory (defaults to modeldir)')
     parser.add_argument('--skip_fmri', action='store_true',
                         help='Skip fMRI projection (compute only weight-kernel similarity + accuracy)')
+    parser.add_argument('--skip_topology', action='store_true',
+                        help='Skip network-topology metrics (whole-network graph analysis)')
+    parser.add_argument('--node_subsets', choices=['both', 'bystanders', 'all'],
+                        default='both',
+                        help="Which node subset(s) to compute TOPOLOGY for: 'both' (full "
+                             "network + bystanders; default), 'bystanders' (skip full-network "
+                             "topology, faster), or 'all' (full network only). fMRI VE is "
+                             "always computed for all subsets regardless of this flag.")
+    parser.add_argument('--rc_perms', type=int, default=1000,
+                        help='Permutations for normalized rich-club (0 = raw, no normalization)')
+    parser.add_argument('--test_seed', type=int, default=0,
+                        help='Fixed seed for the eval battery (task test-trials + resting-state '
+                             'noise), so trajectories are deterministic and comparable across '
+                             'epochs/runs/models. Use a negative value for legacy stochastic eval.')
     args = parser.parse_args()
 
     device = torch.device('cpu')
@@ -593,6 +560,27 @@ def main():
         fmri_task_baseline = fmri_rest_baseline = None
         fmri_subjnames = []
 
+    # ---- Topology reference matrices (group fMRI FC, computed once) ----
+    compute_topology = not args.skip_topology
+
+    def group_fc(ts):
+        """Subject-averaged functional connectivity from (time, node, subj)."""
+        fcs = [utils.compute_fc(ts[:, :, si]) for si in range(ts.shape[2])]
+        return np.nanmean(np.stack(fcs, axis=0), axis=0)
+
+    fmri_task_fc = fmri_rest_fc = None
+    ref_topo_fmri_task = ref_topo_fmri_rest = None
+    if compute_topology and not args.skip_fmri:
+        print('Computing group fMRI FC + reference topology...')
+        t0 = time.time()
+        fmri_task_fc = group_fc(fmri_task_ts)
+        fmri_rest_fc = group_fc(fmri_rest_ts)
+        # full-network reference topology only needed when computing full-network topology
+        if args.node_subsets in ('both', 'all'):
+            ref_topo_fmri_task = compute_topology_metrics(fmri_task_fc, rc_perms=args.rc_perms)
+            ref_topo_fmri_rest = compute_topology_metrics(fmri_rest_fc, rc_perms=args.rc_perms)
+        print(f'  Time: {time.time() - t0:.1f}s')
+
     # ---- Main loop ----
     all_results = []
     outfile = os.path.join(outdir, f'training_trajectory_{args.model_params}.pkl')
@@ -612,8 +600,23 @@ def main():
         with open(outfile, 'wb') as f:
             pickle.dump(output, f)
 
+    # cache bystander inter-subject baselines keyed by the bystander node set
+    # (avoids recomputation when models share the same I/O layout)
+    bystander_baseline_cache = {}
+
     for model_idx in range(n_models):
         this = model_params.iloc[model_idx]
+
+        # skip spatial-null rows: their trained files are the '-null{p}' perm
+        # ensembles (offset / spanning run indices), not this base row -- the
+        # trajectory analysis is for the primary models only.
+        if int(getattr(this, 'null_perms', 0) or 0) > 0:
+            print(f'\nModel {model_idx+1}/{n_models}: null-ensemble row '
+                  f'(null_perms={int(this.null_perms)}) — skipping.')
+            all_results.append(None)
+            save_checkpoint()
+            continue
+
         task_label = this.task_label
         kernel_label = this.kernel_label
         kernel_type = this.kernel_type
@@ -667,12 +670,57 @@ def main():
         dataset, rnn_template = create_dataset_and_rnn_shell(
             this, state_template, device)
 
-        # ---- Determine node subsets for leave-one-out analysis ----
+        # ---- Determine node subsets for VE (full network + bystanders only) ----
         node_subsets = get_node_subsets(state_template, hidden_size)
         if len(node_subsets) > 1:
             print(f'  Node subsets: {", ".join(f"{k} ({len(v)} nodes)" for k, v in node_subsets.items())}')
         else:
             print(f'  Node subsets: all ({hidden_size} nodes, no I/O masks)')
+
+        # ---- Bystander-only inter-subject fMRI baseline (region-matched) ----
+        fmri_baselines_bystander = None
+        if not args.skip_fmri:
+            by_idx = _bystander_node_idx(node_subsets)
+            if by_idx.size > 2:
+                bkey = tuple(int(i) for i in by_idx)
+                if bkey not in bystander_baseline_cache:
+                    bystander_baseline_cache[bkey] = {
+                        'task': compute_fmri_intersubj_baseline(
+                            fmri_task_ts[:, by_idx, :], args.n_fmri_subj, args.n_pc),
+                        'rest': compute_fmri_intersubj_baseline(
+                            fmri_rest_ts[:, by_idx, :], args.n_fmri_subj, args.n_pc),
+                    }
+                fmri_baselines_bystander = bystander_baseline_cache[bkey]
+
+        # ---- Topology references for this model (kernel + group fMRI FC) ----
+        ref_matrices = {'kernel': None, 'fmri_task': None, 'fmri_rest': None}
+        reference_topology = None
+        reference_topology_bystander = None
+        if compute_topology:
+            kernel_ref = kernel_sim if has_kernel else None
+            ref_matrices = {
+                'kernel': kernel_ref,
+                'fmri_task': fmri_task_fc,
+                'fmri_rest': fmri_rest_fc,
+            }
+            if args.node_subsets in ('both', 'all'):
+                reference_topology = {
+                    'kernel': (compute_topology_metrics(kernel_ref, rc_perms=args.rc_perms)
+                               if kernel_ref is not None else None),
+                    'fmri_task': ref_topo_fmri_task,
+                    'fmri_rest': ref_topo_fmri_rest,
+                }
+            # bystander-only topology of the reference networks (for overlays on
+            # the bystander RNN-topology plots)
+            if args.node_subsets in ('both', 'bystanders'):
+                by_idx = _bystander_node_idx(node_subsets)
+                if by_idx.size > 2:
+                    bix = np.ix_(by_idx, by_idx)
+                    reference_topology_bystander = {
+                        name: (compute_topology_metrics(mat[bix], rc_perms=args.rc_perms)
+                               if mat is not None else None)
+                        for name, mat in ref_matrices.items()
+                    }
 
         model_result = {
             'task': this.task_no_modifier,
@@ -682,6 +730,9 @@ def main():
             'sampled_epochs': sampled_epochs,
             'n_runs': n_runs,
             'node_subsets': {k: v.tolist() for k, v in node_subsets.items()},
+            'reference_topology': reference_topology,
+            'reference_topology_bystander': reference_topology_bystander,
+            'fmri_intersubj_baselines_bystander': fmri_baselines_bystander,
             'runs': [None] * n_runs,
         }
 
@@ -712,7 +763,12 @@ def main():
                 args.n_fmri_subj,
                 args.skip_fmri,
                 node_subsets,
+                compute_topology,
+                args.node_subsets,
+                args.rc_perms,
+                ref_matrices,
                 device,
+                args.test_seed,
             )
             for run_idx in range(n_runs)
         )
