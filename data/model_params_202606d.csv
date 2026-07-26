@@ -1,0 +1,6 @@
+task,seq_len_multi,time_step,alpha,rec_noise,init_hh_w,rnn_model,hidden_size,batch_size,learning_rate,n_epochs,reg_type,reg_weight,kernel_type,kernel_normalization,mask_weights,n_runs,null_perms,null_seed,null_run,null_run_ids
+DelayMatchSampleDistractor1D-v0,5,50,0.1,0.05,-0.01 0.01,rnn-tanh,100,32,0.001,60000,l2s,0.002,None,mean,False,100,0,0,0,
+DelayMatchSampleDistractor1D-v0,5,50,0.1,0.05,-0.01 0.01,rnn-tanh,100,32,0.001,60000,l2s,0.002,None,mean,True,100,0,0,0,
+DelayMatchSampleDistractor1D-v0,5,50,0.1,0.05,-0.01 0.01,rnn-tanh,100,32,0.001,60000,pearson_l2s,0.002,euclidean,mean,True,100,0,0,0,
+DelayMatchSampleDistractor1D-v0,5,50,0.1,0.05,-0.01 0.01,rnn-tanh,100,32,0.001,45000,pearson_l2s,0.002,euclidean,mean,True,1,200,0,81,
+DelayMatchSampleDistractor1D-v0,5,50,0.1,0.05,-0.01 0.01,rnn-tanh,100,32,0.001,40000,pearson_l2s,0.002,euclidean,mean,True,5,200,0,0,14 24 32 57 87
