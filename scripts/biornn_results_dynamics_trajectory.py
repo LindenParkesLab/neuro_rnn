@@ -166,17 +166,22 @@ def compute_losses(rnn, dataset, n_trials, reg_type, reg_weight):
     hidden_size = W_hh.shape[0]
     kernel = rnn.regularization_kernel  # may be None
 
-    # task loss: run a batch through the model
+    # task loss: run each trial through the model. The RNN is sequence-first
+    # (batch_first=False), so a single trial must be shaped (seq_len, batch=1,
+    # input); env.ob is (seq_len, input). Using env.ob[np.newaxis, :, :] shaped it
+    # (1, seq_len, input), which the RNN read as seq_len=1 over a batch of
+    # timesteps -- i.e. no recurrence across time. On a memory task that yields a
+    # meaningless cross-entropy that spuriously *rises* over training; use the same
+    # (seq_len, 1, input) convention as run_testing so this matches training CE.
     criterion = nn.CrossEntropyLoss()
     task_losses = []
     env = dataset.env
     env.reset(seed=0)
     for _ in range(n_trials):
         env.new_trial()
-        obs = torch.tensor(env.ob[np.newaxis, :, :], dtype=torch.float32,
+        obs = torch.tensor(env.ob[:, np.newaxis, :], dtype=torch.float32,
                            device=W_hh.device)
-        gt = torch.tensor(env.gt[np.newaxis, :], dtype=torch.long,
-                          device=W_hh.device)
+        gt = torch.tensor(env.gt, dtype=torch.long, device=W_hh.device)
         with torch.no_grad():
             outputs, _ = rnn(obs)
             tl = criterion(outputs.view(-1, rnn.num_classes), gt.view(-1))
