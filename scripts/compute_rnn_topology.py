@@ -7,6 +7,7 @@ import torch
 # Device configuration
 device = torch.device('cpu')
 
+from src.config import REPO_ROOT, get_paths
 from src.topology import get_norm_rc, threshold_adj
 
 warnings.simplefilter(action='ignore', category=FutureWarning)
@@ -176,8 +177,12 @@ def get_args():
     '''
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('--indir', type=str, default='/media/lindenmp/storage_ssd/research_projects/neuro_rnn/results/pytorch/model')
-    parser.add_argument('--outdir', type=str, default='/media/lindenmp/storage_ssd/research_projects/neuro_rnn/results/topology')
+    parser.add_argument('--indir', type=str, default=None,
+                        help='directory holding the trained models '
+                             '(default: model_dir from paths.yaml)')
+    parser.add_argument('--outdir', type=str, default=None,
+                        help='where to write topology results '
+                             '(default: <repo>/results/topology)')
     parser.add_argument('--file_prefix', type=str, default='task-PerceptualDecisionMaking-v0-125-400_model-rnn-tanh-100-32-0.001-50-25000_wmask-True-14-27_reg-l2-0.002-sa_axis')
 
     # settings
@@ -189,6 +194,13 @@ def get_args():
     parser.add_argument('--richclub', type=bool, default=True)
 
     args = parser.parse_args()
+
+    # fall back to the configured project paths (see paths.yaml)
+    if args.indir is None:
+        args.indir = get_paths().model_dir
+    if args.outdir is None:
+        args.outdir = os.path.join(REPO_ROOT, 'results', 'topology')
+
     args.input = os.path.expanduser(args.file_prefix)
     args.outdir = os.path.expanduser(args.outdir)
 

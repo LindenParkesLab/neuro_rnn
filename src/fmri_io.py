@@ -2,47 +2,24 @@
 
 Single source of truth for the HCP task/rest fMRI pipeline and spatial kernels
 used by the training-trajectory engine (``biornn_results_dynamics_trajectory.py``)
-and the results notebooks (``biornn_results_dynamics*.ipynb``): host path
-resolution, seeded common-subject selection, global signal regression, spatial
-kernel loading, and the full task/rest loader. These were previously duplicated
-(and drifting) across all three, which is what made the GSR/selection logic hard
-to keep aligned -- everything now lives here.
+and the analysis notebooks: seeded common-subject selection, global signal
+regression, spatial kernel loading, and the full task/rest loader. These were
+previously duplicated (and drifting) across all three, which is what made the
+GSR/selection logic hard to keep aligned -- everything now lives here.
+
+Directory locations come from :mod:`src.config` (``paths.yaml``); ``get_paths``
+is re-exported here so existing callers keep working.
 """
 
 import os
 import pickle
-import sys
 
 import numpy as np
 import pandas as pd
 from scipy.spatial import distance
 
 import src.utils as utils
-
-
-# ---------------------------------------------------------------------------
-# Path setup
-# ---------------------------------------------------------------------------
-
-def get_paths(model_params_name):
-    """Return datadir, modeldir, fmridir based on platform/user."""
-    username = os.getenv('USER')
-    if sys.platform == 'darwin':
-        if username == 'ahmad':
-            datadir = '/Users/ahmad/software/snaplab_github/neuro_rnn/data'
-            modeldir = os.path.join('/Users/ahmad/data/rutgers/neuro_rnn/results/pytorch/model', model_params_name)
-            # modeldir = os.path.join('/Volumes/Sabrent_2TB/rutgers/neuro_rnn/data', model_params_name)
-            fmridir = '/Users/ahmad/data/rutgers/hcp'
-    elif sys.platform == 'linux':
-        if username == 'ab2792':
-            datadir = '/home/ab2792/software/snaplab_github/neuro_rnn/data'
-            modeldir = '/home/ab2792/data/neuro_rnn/results/pytorch/model'
-            fmridir = '/home/ab2792/data/HCP/fmri'
-        elif username == 'lindenmp':
-            datadir = '/home/lindenmp/research_projects/neuro_rnn/data'
-            modeldir = '/media/lindenmp/storage_ssd/research_projects/neuro_rnn/results/model_cpu'
-            fmridir = '/media/lindenmp/storage_ssd/research_projects/neuro_rnn/data/fmri'
-    return datadir, modeldir, fmridir
+from src.config import get_paths   # noqa: F401  (re-exported for callers)
 
 
 # ---------------------------------------------------------------------------
