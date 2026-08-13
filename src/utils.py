@@ -650,13 +650,11 @@ def get_n_gpu():
 def get_device(device_opt=None, n_devices=None):
     cuda_avail = torch.cuda.is_available()
     mps_avail = torch.backends.mps.is_available()
-    if device_opt == 'None':
-        if cuda_avail:
-            torch.device('cuda')
-        elif mps_avail:
-            torch.device('mps')
-        else:
-            torch.device('cpu')
+    if device_opt is None or device_opt == 'None':
+        # Default to CPU. Accelerators (cuda/mps) must be requested explicitly,
+        # via --device or 'gpu', so that a run never silently changes hardware
+        # (and with it, numerical behaviour) depending on the host machine.
+        device = torch.device('cpu')
     else:
         if device_opt == 'gpu':
             if cuda_avail:

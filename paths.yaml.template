@@ -1,0 +1,36 @@
+# Project path configuration.
+#
+#   cp paths.yaml.template paths.yaml
+#
+# then edit the values below. `paths.yaml` is git-ignored, so your local paths
+# never end up in version control.
+#
+# Relative paths are resolved against the repository root, so `./data_public`
+# works no matter which directory you run from. Any value here can be overridden
+# at run time with the matching environment variable (shown in brackets).
+
+
+# Openly redistributable inputs: atlas geometry, regularization kernels and
+# model parameter files. Ships with the repo -- you should not normally need to
+# change this.                                         [NEURO_RNN_DATA_DIR]
+data_dir: ./data_public
+
+# Where trained models are read from and written to. `train_rnn.py` creates one
+# subdirectory per params CSV, e.g. <model_dir>/model_params_202606d/.
+# Point this at a disk with room to spare: a full 100-run training sweep with
+# checkpoints is large.                                [NEURO_RNN_MODEL_DIR]
+model_dir: ./results/model
+
+# Empirical HCP fMRI inputs. These are access-restricted and are NOT included
+# in this repository. The default below points at the git-ignored data_private/
+# folder -- see data_private/README.md for the files expected there and how to
+# obtain them. Change this if you keep the data elsewhere.
+#                                                      [NEURO_RNN_FMRI_DIR]
+fmri_dir: ./data_private
+
+# Where the analysis notebooks write figures. Leave commented out to default to
+# a `figures/` folder inside model_dir. Set it to send figures elsewhere -- for
+# example a synced cloud folder, so you can view them from another device.
+# A subdirectory named after the params CSV is added automatically.
+#                                                      [NEURO_RNN_FIGURE_DIR]
+# figure_dir: ~/Dropbox/neuro_rnn/figures

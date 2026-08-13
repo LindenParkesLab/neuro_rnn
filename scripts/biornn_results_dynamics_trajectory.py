@@ -14,8 +14,8 @@ kernel-type-agnostic.
 
 Usage:
     python scripts/biornn_results_dynamics_trajectory.py \
-        --model_params model_params_202603bp \
-        --rows 2 3 4 5 6 7 10 11 12 13 14 15 \
+        --model_params model_params_202606d \
+        --rows 2 \
         --n_epochs 10 \
         --max_epoch 30000 \
         --n_trials 100 \
@@ -503,7 +503,7 @@ def main():
     parser.add_argument('--max_runs', type=int, default=100,
                         help='Maximum number of runs per model')
     parser.add_argument('--outdir', default=None,
-                        help='Output directory (defaults to modeldir)')
+                        help='Output directory (defaults to model_dir)')
     parser.add_argument('--skip_fmri', action='store_true',
                         help='Skip fMRI projection (compute only weight-kernel similarity + accuracy)')
     parser.add_argument('--skip_topology', action='store_true',
@@ -525,13 +525,13 @@ def main():
     device = torch.device('cpu')
 
     # ---- Paths ----
-    datadir, modeldir, fmridir = get_paths(args.model_params)
-    outdir = args.outdir or modeldir
+    paths = get_paths(args.model_params, require='all')
+    outdir = args.outdir or paths.model_dir
     os.makedirs(outdir, exist_ok=True)
-    model_params_file = os.path.join(datadir, args.model_params + '.csv')
+    model_params_file = os.path.join(paths.data_dir, args.model_params + '.csv')
 
     print(f'Model params: {args.model_params}')
-    print(f'Model dir:    {modeldir}')
+    print(f'Model dir:    {paths.model_dir}')
     print(f'Output dir:   {outdir}')
 
     # ---- Load model params ----
@@ -542,13 +542,13 @@ def main():
 
     # ---- Load kernels ----
     hidden_size = 100
-    kernel_similarity_matrices = load_kernels(datadir, hidden_size)
+    kernel_similarity_matrices = load_kernels(paths.data_dir, hidden_size)
     kernel_types_with_embedding = set(kernel_similarity_matrices.keys())
 
     # ---- Load fMRI data and compute baselines ----
     if not args.skip_fmri:
         fmri_task_ts, fmri_rest_ts, fmri_rest_nsteps, fmri_subjnames = \
-            load_fmri_data(datadir, fmridir, args.n_fmri_subj, hidden_size)
+            load_fmri_data(paths.data_dir, paths.fmri_dir, args.n_fmri_subj, hidden_size)
 
         print('Computing fMRI inter-subject baselines...')
         t0 = time.time()
@@ -630,7 +630,7 @@ def main():
         print(f'{"="*70}')
 
         # get available epochs
-        file_path_models = os.path.join(modeldir, this.file_str_models)
+        file_path_models = os.path.join(paths.model_dir, this.file_str_models)
         if not os.path.isfile(file_path_models):
             print(f'  Model file not found, skipping: {this.file_str_models}')
             all_results.append(None)
