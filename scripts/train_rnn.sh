@@ -36,7 +36,12 @@ repodir="$(dirname "$scriptsdir")"
 # NOTE: this must happen before the path queries below, so that `python` is the
 # project interpreter.
 if [ "${SKIP_CONDA_ACTIVATE:-0}" != "1" ]; then
+  # Source first: `conda` is a shell function that does not exist until the
+  # shell is initialised, so calling it beforehand aborts the script (set -e).
   source ~/.bashrc
+  # Drop any already-active env so environments do not stack. Tolerate failure:
+  # there may be nothing to deactivate.
+  conda deactivate 2>/dev/null || true
   conda activate neuro_rnn
 fi
 
@@ -52,7 +57,7 @@ write_freq=1000
 
 # device settings
 device=${DEVICE:-cpu} # 'cpu' or 'cuda' or 'mps'
-n_threads=${N_THREADS:-30}
+n_threads=${N_THREADS:-4}
 if [ ${device} == 'cpu' ] && [ ${n_threads} -gt 1 ]; then
   echo "suspending all cuda devices"
   export CUDA_VISIBLE_DEVICES=""
@@ -61,12 +66,6 @@ if [ ${device} == 'cpu' ] && [ ${n_threads} -gt 1 ]; then
 elif [ ${device} != 'cpu' ]; then
   n_threads=1
 fi
-
-########################################################################################################################
-
-# # clean csv to avoid encoding issues
-# python ${scriptsdir}/clean_csv.py "$params_file"
-# params_file="${params_file%.csv}_clean.csv"
 
 ########################################################################################################################
 

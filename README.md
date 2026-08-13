@@ -1,65 +1,52 @@
 # neuro_rnn
 
-Training and analysis code for **biophysical RNNs (bioRNNs)** — spatially embedded,
-biologically constrained recurrent neural networks used to study how the brain's
-physical geometry and cognitive inputs jointly shape emergent dynamics and topology.
+## Background
 
-Three RNN classes form a graded hierarchy of spatial constraint:
+Recurrent neural networks (RNNs) are *in silico* networks capable of reading in time series data and producing time series outputs. They are useful models to study simulated brain dynamics and the links between brain structure and function. Classically, RNNs are trained without spatial constraints on their hidden weights. However, the brain is a physically embedded system with clear structural constraints on its shape and connectivity. Therefore, this repository supports training and analyzing **biophysical RNNs (bioRNNs)**, a class of RNNs that have such constraints built into their architecture.
 
-| Class | Projection constraints | Geometry prior on recurrent weights |
-|---|---|---|
-| **Vanilla** | – | – |
-| **Masked** | ✓ | – |
-| **bioRNN** | ✓ | ✓ (inter-regional Euclidean distance) |
+---
 
-Networks are trained on a delayed match-to-sample with distractors (DMS-D) task via
-[NeuroGym](https://github.com/neurogym/neurogym), and their hidden-state dynamics are
-compared against empirical HCP task fMRI.
-
-> **Paper:** Beyh, A., Kim, J. Z., Bajwa, W. U., & Parkes, L. *Geometric constraints and
-> cognitive inputs jointly shape emergent brain dynamics and topology.*
+## Reference paper
+Beyh A., Kim J.Z., Bajwa W.U., & Parkes L. *Geometric constraints and cognitive inputs jointly shape emergent brain dynamics and topology.* [bioRxiv](https://www.biorxiv.org/content/10.64898/2026.08.07.742341)
 
 ---
 
 ## Requirements
 
-- Linux or macOS (Apple silicon supported via `mps`)
+- Linux or macOS
 - [conda](https://docs.conda.io/) (Miniconda or Anaconda)
-- Python 3.12.11 and PyTorch 2.7.1 — installed by `environment.yml`
+- Python 3.12.11 and PyTorch 2.7.1 — installed by `environment.yml` (see below)
 - Optional: an NVIDIA GPU for CUDA training
 
-The published results were produced on a Mac Studio (M3 Ultra) using CPU/`mps`.
+The published results were produced on a Mac Studio (M3 Ultra) using CPU.
 
 ---
 
 ## Installation
 
-### 1. Clone
+The code requires several dependencies, and specific versions must be used to avoid clashes between them. This can be achieved in a few steps that should guarantee you get the exact setup needed. **Important:** make sure you have conda installed before proceeding.
+
+### 1. Clone the main code
+
+First, clone the code into a local repository on your machine.
 
 ```bash
-git clone https://github.com/abeyh/neuro_rnn.git
+git clone https://github.com/LindenParkesLab/neuro_rnn.git
 cd neuro_rnn
 ```
 
-### 2. Create the environment
+### 2. Create the conda environment
 
-`environment.yml` installs Python and defers every library to `requirements.txt`,
-where all dependencies are pinned to the exact versions used for the paper.
+From within the `neuro_rnn` repo, create a new conda environment using the existing `environment.yml` config file and activate it.
 
 ```bash
 conda env create -f environment.yml
 conda activate neuro_rnn
 ```
 
-> Conda supplies only the interpreter; pip resolves the rest. This is deliberate —
-> NeuroGym hard-pins `numpy`, `scipy` and `matplotlib`, and letting conda and pip each
-> resolve part of the stack is a common source of version clashes.
-
-> **GPU:** the pinned `torch` is the default CPU/MPS wheel. For an NVIDIA GPU, install
-> the matching CUDA build of torch 2.7.1 afterwards, per
-> [pytorch.org](https://pytorch.org/get-started/locally/).
-
 ### 3. Install the local package
+
+Now that the installation configuration is in place, install the main package. This step will automatically download and install the correct version of each required dependency. 
 
 ```bash
 pip install -e .
@@ -67,14 +54,15 @@ pip install -e .
 
 ### 4. Configure your paths
 
-Copy the template and edit it. `paths.yaml` is git-ignored, so your local paths never
-enter version control.
+Running the code requires setting up data paths. Copy the existing template, `paths.yaml.template`, and edit it to match your local paths. See **Configuration** below for more details.
 
 ```bash
 cp paths.yaml.template paths.yaml
 ```
 
-### 5. Verify
+### 5. Verify the installation
+
+Run this quick python command to verify that the installation worked.
 
 ```bash
 python -c "import torch, neurogym, bct; from src.config import get_paths; print('OK', torch.__version__)"
@@ -90,17 +78,12 @@ All directory locations live in one file, `paths.yaml`:
 |---|---|---|
 | `data_dir` | Openly redistributable inputs (ships with the repo) | `./data_public` |
 | `model_dir` | Where trained models are written and read | `./results/model` |
-| `fmri_dir` | Restricted HCP fMRI inputs | `./data_private` |
+| `fmri_dir` | Restricted empirical fMRI inputs | `./data_private` |
 | `figure_dir` | Where analyses save figures | `<model_dir>/figures` |
 
-Relative paths resolve against the repository root, so they behave identically whether
-you run from the repo root, from `scripts/`, or inside a notebook. Any key can be
-overridden at run time with `NEURO_RNN_DATA_DIR`, `NEURO_RNN_MODEL_DIR`,
-`NEURO_RNN_FMRI_DIR`, or `NEURO_RNN_FIGURE_DIR`.
+Relative paths resolve against the repository root, so they behave identically whether you run from the repo root, from `scripts/`, or inside a notebook. Any key can be overridden at run time with `NEURO_RNN_DATA_DIR`, `NEURO_RNN_MODEL_DIR`, `NEURO_RNN_FMRI_DIR`, or `NEURO_RNN_FIGURE_DIR`.
 
-`model_dir` and `figure_dir` gain a subdirectory named after the params CSV, so
-different training sweeps never collide. Point `model_dir` at a disk with room to
-spare — a full 100-run sweep with checkpoints is large.
+`model_dir` and `figure_dir` gain a subdirectory named after the params CSV (training options), so different training setups never collide. 
 
 In code:
 
@@ -117,40 +100,26 @@ figdir = ensure_dir(paths.figure_dir)
 
 ### `data_public/` — ships with the repo
 
-Atlas geometry, regularization kernels, and the model parameter files. Everything
-training needs. See [`data_public/README.md`](data_public/README.md) for a
-file-by-file description and sources.
+Atlas geometry, regularization kernels, and the model parameter files. These cover everything required for training the models. See [`data_public/README.md`](data_public/README.md) for a file-by-file description and sources.
 
-Atlas files are named by the **bilateral** parcel count and selected as
-`hidden_size * 2` — so `hidden_size=100` (the 100 left-hemisphere parcels used
-throughout the paper) reads the `schaefer200_*` files.
+Atlas files are named by the **bilateral** parcel count and selected as `hidden_size * 2` — so `hidden_size=100` (the 100 left-hemisphere parcels used throughout the paper) reads the `schaefer200_*` files.
 
 ### `data_private/` — you supply this
 
-The empirical HCP fMRI inputs. **Not included**: the Human Connectome Project requires
-users to register and accept its Data Use Terms. Everything in this folder is
-git-ignored, so restricted data cannot be committed by accident. See
-[`data_private/README.md`](data_private/README.md) for the expected files and how to
-obtain them.
-
-RNN training and task-performance analyses run **without** any of this; only the
-fMRI-comparison analyses need it.
+The empirical fMRI inputs. **Not included**: the HCP requires users to register and accept its Data Use Terms. Everything in this folder is git-ignored, so restricted data cannot be committed by accident. See [`data_private/README.md`](data_private/README.md) for the expected files and how to obtain them.
 
 ---
 
 ## Quick test
 
-Verify the pipeline end-to-end with the bundled test config. It defines one model
-(`n_runs=4`, `n_epochs=1000`) — enough to exercise parallel runs, checkpointing, and
-logging without a long wait:
+Verify the pipeline end-to-end with the test parameters file. It defines one model
+(`n_runs=4`, `n_epochs=1000`), which is enough to test all the training functionality without a long wait (the resulting models are not meaningful).
 
 ```bash
 python scripts/train_rnn.py --params_csv data_public/model_params_test.csv --model_index 0
 ```
 
-Paths come from `paths.yaml`, so no directory arguments are needed. On success you'll
-see training progress and three files (`*_models.h5`, `*_outputs.h5`, `*_config.npy`)
-under `<model_dir>/model_params_test/`.
+On success you'll see training progress and three files (`*_models.h5`, `*_outputs.h5`, `*_config.npy`) under `<model_dir>/model_params_test/`.
 
 ---
 
@@ -168,7 +137,7 @@ counted). Empty cells fall back to code defaults.
 | `alpha` | temporal integration factor (float, or a `.txt` filename in `data_public/` with one value per node) | `0.1` |
 | `rec_noise` | recurrent noise | `0.05` |
 | `init_hh_w` | hidden-hidden weight init (`float`, `"min max"`, or `None`) | `-0.01 0.01` |
-| `rnn_model` | RNN cell type | `rnn-tanh` |
+| `rnn_model` | RNN non-linearity | `rnn-tanh` |
 | `hidden_size` | number of hidden units (parcels) | `100` |
 | `batch_size`, `learning_rate`, `n_epochs` | optimizer settings | `32`, `0.001`, `60000` |
 | `reg_type` | `l1`, `l2`, `l2s`, `pearson`, `pearson_l2s`, `pearson_abs`, `pearson_abs_l2s` | `pearson_l2s` |
@@ -179,7 +148,7 @@ counted). Empty cells fall back to code defaults.
 | `n_runs` | number of randomly initialized networks | `100` |
 | `null_perms`, `null_seed`, `null_run`, `null_run_ids` | spin-permutation controls for the geometry null | `200`, `0`, `0`, `14 24 32 57 87` |
 
-### The published sweep
+### The published results
 
 `data_public/model_params_202606d.csv` reproduces the paper:
 
@@ -188,15 +157,11 @@ counted). Empty cells fall back to code defaults.
 | 0 | `l2s` | – | `False` | 100 | **Vanilla RNNs** |
 | 1 | `l2s` | – | `True` | 100 | **Masked RNNs** |
 | 2 | `pearson_l2s` | `euclidean` | `True` | 100 | **bioRNNs** |
-| 3 | `pearson_l2s` | `euclidean` | `True` | 1 × 200 perms | geometry-null pilot |
-| 4 | `pearson_l2s` | `euclidean` | `True` | 5 × 200 perms | the 1,000 geometry-null RNNs |
+| 3 | `pearson_l2s` | `euclidean` | `True` | 5 × 200 perms | the 1,000 geometry-null RNNs |
 
-Row 4's `null_run_ids` (`14 24 32 57 87`) are the five run indices reused across every
-permuted geometry, so any difference between geometries is attributable to geometry
-alone.
+Row 3's `null_run_ids` (`14 24 32 57 87`) are the five run indices reused across every permuted geometry, so any difference between geometries is attributable to geometry alone.
 
-> **Compute warning:** rows 0–2 are 100 networks × 60,000 epochs each, and row 4 is
-> 1,000 networks. This is many CPU-days of compute. Start with the quick test.
+**Compute warning:** rows 0–2 are 100 networks × 60,000 epochs each, and row 3 is 1,000 networks. This is many CPU-days of compute. Start with the quick test.
 
 ### Option A — Python entry point
 
@@ -218,10 +183,29 @@ Key arguments:
   change hardware depending on the machine.
 - `--n_threads` — CPU threads
 - `--print_freq` / `--log_freq` / `--write_freq` — console, metric, and checkpoint
-  frequencies in epochs
+  frequencies in epochs (defaults: `100`, `100`, `1000`)
 
 Any CSV column can be overridden on the command line (e.g. `--n_epochs`, `--reg_type`);
 command-line values take precedence over the CSV.
+
+#### Frequency constraints
+
+The three frequencies must divide the epoch count, and writes must align with logs:
+
+```
+n_epochs   % print_freq == 0
+n_epochs   % log_freq   == 0
+n_epochs   % write_freq == 0
+write_freq % log_freq   == 0
+```
+
+Violations raise a `ValueError` listing each offending pair before training starts.
+
+These rules keep checkpoints aligned with the end of training: analyses read the
+**final** checkpoint (epoch 40,000 in the paper), and the training-trajectory analysis
+assumes evenly spaced checkpoints across the run. If `n_epochs` were not a multiple of
+`write_freq`, the last partial window would never be written and the final state would
+be missing.
 
 ### Option B — bash launcher
 
@@ -240,6 +224,11 @@ can be set via the environment:
 ```bash
 DEVICE=mps N_THREADS=8 bash scripts/train_rnn.sh data_public/model_params_202606d.csv 2
 ```
+
+The launcher fixes the frequencies at `print_freq=100`, `log_freq=100`,
+`write_freq=1000` (edit the script to change them), so every row of the CSV it runs
+must have an `n_epochs` that is a multiple of 1,000 — see
+[Frequency constraints](#frequency-constraints) above.
 
 Set `SKIP_CONDA_ACTIVATE=1` if you manage the environment yourself.
 
