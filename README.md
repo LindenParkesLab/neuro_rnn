@@ -60,7 +60,19 @@ Running the code requires setting up data paths. Copy the existing template, `pa
 cp paths.yaml.template paths.yaml
 ```
 
-### 5. Verify the installation
+### 5. Enable notebook output stripping (contributors only)
+
+If you intend to commit changes, register the `nbstripout` filter once. Notebook outputs
+are then removed automatically when staging, while your local copies keep their figures:
+
+```bash
+nbstripout --install --attributes .gitattributes
+```
+
+This keeps the repository small and stops local paths from leaking into version control
+via embedded cell outputs. Skip it if you are only running the code.
+
+### 6. Verify the installation
 
 Run this quick python command to verify that the installation worked.
 
