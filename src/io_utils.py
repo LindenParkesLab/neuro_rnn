@@ -2,6 +2,9 @@ import os, argparse
 import numpy as np
 import pandas as pd
 
+from src.config import get_paths
+import torch
+
 def parse_weight_init_value(value):
     """
     Parse weight initialization value from string or other formats.
@@ -80,6 +83,12 @@ def parse_alpha_value(value):
         except ValueError:
             pass
         path = os.path.expanduser(value)
+        # A bare filename (or relative path) is resolved against the configured
+        # data directory, so params CSVs stay portable across machines.
+        if not os.path.isabs(path) and not os.path.isfile(path):
+            candidate = os.path.join(get_paths().data_dir, path)
+            if os.path.isfile(candidate):
+                path = candidate
         if os.path.isfile(path):
             arr = np.loadtxt(path)
             arr = np.atleast_1d(arr)
@@ -342,14 +351,17 @@ Examples:
     # file locations
     file_group = parser.add_argument_group('File Locations')
     file_group.add_argument('--datadir', type=str, default=_NOT_PROVIDED,
-                           help='Path to directory containing embedding kernel data')
+                           help='Path to directory containing embedding kernel data '
+                                '(default: data_dir from paths.yaml)')
     file_group.add_argument('--outdir', type=str, default=_NOT_PROVIDED,
-                           help='Output directory path')
+                           help='Output directory path '
+                                '(default: <model_dir from paths.yaml>/<params_csv name>)')
     
     # device settings
     device_group = parser.add_argument_group('Device Settings')
     device_group.add_argument('--device', type=str, default=_NOT_PROVIDED,
-                             help='Device to use: cpu, cuda, mps, or None for auto-detection')
+                             help='Device to use: cpu (default), cuda, mps, or gpu '
+                                  '(auto-selects cuda/mps if available)')
     device_group.add_argument('--n_threads', type=int, default=_NOT_PROVIDED,
                              help='Number of threads for parallel processing')
 
@@ -570,14 +582,54 @@ def build_config():
         config = args_config
 
     config = apply_defaults(config)
+    config = apply_path_defaults(config, args.params_csv)
 
     if not config.get('reservoir_mode', False):
         validate_freq_config(config)
 
-    # Validate required fields
+    # Validate required fields. These are normally filled by
+    # apply_path_defaults, so this only trips if the path config is unusable.
     for required in ['datadir', 'outdir']:
         if not config.get(required):
             raise ValueError(f"'{required}' is required but was not provided.")
+
+    return config
+
+
+def apply_path_defaults(config, params_csv=None):
+    """
+    Fill unset ``datadir``/``outdir`` from the project path config.
+
+    Locations come from ``paths.yaml`` (see :mod:`src.config`), so training can
+    be launched without passing ``--datadir``/``--outdir``. Anything given
+    explicitly on the command line or in the CSV takes precedence.
+
+    ``outdir`` resolves to ``<model_dir>/<params_csv name>``, which keeps the
+    outputs of different params CSVs apart -- matching what ``train_rnn.sh``
+    does.
+
+    Parameters
+    ----------
+    config : dict
+        Configuration dictionary
+    params_csv : str, optional
+        Path to the params CSV; its basename names the output subdirectory
+
+    Returns
+    -------
+    dict
+        Configuration with path defaults applied
+    """
+    params_name = None
+    if params_csv and params_csv is not _NOT_PROVIDED:
+        params_name = os.path.splitext(os.path.basename(params_csv))[0]
+
+    paths = get_paths(params_name)
+
+    if not config.get('datadir'):
+        config['datadir'] = paths.data_dir
+    if not config.get('outdir'):
+        config['outdir'] = paths.model_dir
 
     return config
 
@@ -664,7 +716,6 @@ def print_config(config):
     """
     def _fmt(value):
         try:
-            import torch
             if isinstance(value, torch.Tensor):
                 return f'Tensor shape={tuple(value.shape)} dtype={value.dtype}'
             if isinstance(value, torch.device):

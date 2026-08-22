@@ -14,6 +14,9 @@ import numpy as np
 import pandas as pd
 from scipy.spatial import distance
 
+import matplotlib
+import matplotlib.pyplot as plt
+
 import src.utils as utils
 from src.fmri_io import get_paths, load_fmri_data
 from src.spatial_null import (
@@ -27,20 +30,21 @@ SEED = 0
 
 
 def main():
-    datadir, _, fmridir = get_paths('model_params_202606a')
+    paths = get_paths('model_params_202606d', require='all')
 
     # euclidean kernel from the volumetric centroids (what the bioRNN trains on)
-    centroids = pd.read_csv(os.path.join(datadir, 'schaefer200_centroids.csv'))
+    centroids = pd.read_csv(os.path.join(paths.data_dir, 'schaefer200_centroids.csv'))
     centroids = centroids.set_index('ROI Name')[:100]
     D = distance.squareform(distance.pdist(centroids, 'euclidean'))
     S = 1 - utils.normalize_x(D, KERNEL_NORM)
 
     # spin permutations from the FreeSurfer-sphere coords of the same parcels
-    sphere = np.loadtxt(os.path.join(datadir, 'schaefer200_LH_sphere_coords.txt'))
+    sphere = np.loadtxt(os.path.join(paths.data_dir, 'schaefer200_LH_sphere_coords.txt'))
     perms = spin_permutations(sphere, N_PERM, seed=SEED)
 
     # fMRI (GSR'd, seeded common subjects) via the shared loader
-    fmri_task_ts, fmri_rest_ts, _, _ = load_fmri_data(datadir, fmridir, N_FMRI_SUBJ)
+    fmri_task_ts, fmri_rest_ts, _, _ = load_fmri_data(
+        paths.data_dir, paths.fmri_dir, N_FMRI_SUBJ)
 
     print(f"\n{'k':>3} {'modality':>5} {'real_VE':>9} {'spin_mean':>10} "
           f"{'spin_p95':>9} {'p_spin':>8} {'verdict'}")
@@ -58,9 +62,7 @@ def main():
 
     # figure for the headline k = 5
     try:
-        import matplotlib
         matplotlib.use('Agg')
-        import matplotlib.pyplot as plt
         utils.set_font_size(11)
         fig, axes = plt.subplots(1, 2, figsize=(9, 3.2))
         for ax, label in zip(axes, ('task', 'rest')):

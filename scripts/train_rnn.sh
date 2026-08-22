@@ -26,27 +26,27 @@ shift
 selected_indices="$*"
 
 # directories
-if [ $(uname -s) == "Darwin" ]; then
-  if [ $USER == "ahmad" ]; then
-    scriptsdir='/Users/ahmad/software/snaplab_github/neuro_rnn/scripts'
-    datadir='/Users/ahmad/software/snaplab_github/neuro_rnn/data'
-    outdir="/Users/ahmad/data/rutgers/neuro_rnn/results/pytorch/model/${params_name}"
-  fi
-else
-  if [ $USER == "lindenmp" ]; then
-    scriptsdir='/home/lindenmp/research_projects/neuro_rnn/scripts'
-    datadir='/home/lindenmp/research_projects/neuro_rnn/data'
-    outdir='/media/lindenmp/storage_ssd/research_projects/neuro_rnn/results/model_cpu'
-  elif [ $USER == "ab2792" ]; then
-    scriptsdir='/home/ab2792/software/snaplab_github/neuro_rnn/scripts'
-    datadir='/home/ab2792/software/snaplab_github/neuro_rnn/data'
-    outdir="/home/ab2792/data/neuro_rnn/results/pytorch/model/${params_name}"
-  fi
+# scriptsdir is this script's own location; datadir/outdir come from the project
+# path config (see paths.yaml.template), and can be overridden by exporting
+# NEURO_RNN_DATA_DIR / NEURO_RNN_MODEL_DIR.
+scriptsdir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repodir="$(dirname "$scriptsdir")"
+
+# activate conda env (skip if you manage the environment yourself)
+# NOTE: this must happen before the path queries below, so that `python` is the
+# project interpreter.
+if [ "${SKIP_CONDA_ACTIVATE:-0}" != "1" ]; then
+  # Source first: `conda` is a shell function that does not exist until the
+  # shell is initialised, so calling it beforehand aborts the script (set -e).
+  source ~/.bashrc
+  # Drop any already-active env so environments do not stack. Tolerate failure:
+  # there may be nothing to deactivate.
+  conda deactivate 2>/dev/null || true
+  conda activate neuro_rnn
 fi
 
-# activate conda env
-source ~/.bashrc
-conda activate neuro_rnn
+datadir=$(cd "$repodir" && python -m src.config data_dir)
+outdir=$(cd "$repodir" && python -m src.config model_dir --params_name "$params_name")
 
 [ ! -d "$outdir" ] && mkdir -p "$outdir"
 
@@ -56,8 +56,8 @@ log_freq=100
 write_freq=1000
 
 # device settings
-device='cpu' # 'cpu' or 'cuda' or 'mps'
-n_threads=10
+device=${DEVICE:-cpu} # 'cpu' or 'cuda' or 'mps'
+n_threads=${N_THREADS:-4}
 if [ ${device} == 'cpu' ] && [ ${n_threads} -gt 1 ]; then
   echo "suspending all cuda devices"
   export CUDA_VISIBLE_DEVICES=""
@@ -66,12 +66,6 @@ if [ ${device} == 'cpu' ] && [ ${n_threads} -gt 1 ]; then
 elif [ ${device} != 'cpu' ]; then
   n_threads=1
 fi
-
-########################################################################################################################
-
-# # clean csv to avoid encoding issues
-# python ${scriptsdir}/clean_csv.py "$params_file"
-# params_file="${params_file%.csv}_clean.csv"
 
 ########################################################################################################################
 

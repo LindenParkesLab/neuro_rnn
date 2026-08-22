@@ -17,6 +17,7 @@ from nilearn import datasets, plotting as nilearn_plotting
 from sklearn.decomposition import PCA
 
 from src.utils import get_my_colors
+from src import use_arial
 
 CBIG_BASE_URL = (
     'https://raw.githubusercontent.com/ThomasYeoLab/CBIG/master/'
@@ -225,7 +226,7 @@ def my_reg_plot(x, y, xlabel, ylabel, ax, c='gray', annotate='pearson', regr_lin
     rho, rho_p = sp.stats.spearmanr(x, y)
     if type(annotate) == str:
         if annotate == 'pearson':
-            textstr = '$\mathit{:}$ = {:.2f}, {:}'.format('{r}', r, get_p_val_string(r_p))
+            textstr = '$\\mathit{:}$ = {:.2f}, {:}'.format('{r}', r, get_p_val_string(r_p))
             ax.text(0.05, 0.975, textstr, transform=ax.transAxes, fontsize=fontsize,
                     verticalalignment='top')
         elif annotate == 'spearman':
@@ -233,7 +234,7 @@ def my_reg_plot(x, y, xlabel, ylabel, ax, c='gray', annotate='pearson', regr_lin
             ax.text(0.05, 0.975, textstr, transform=ax.transAxes, fontsize=fontsize,
                     verticalalignment='top')
         elif annotate == 'both':
-            textstr = '$\mathit{:}$ = {:.2f}, {:}\n$\\rho$ = {:.2f}, {:}'.format('{r}', r, get_p_val_string(r_p),
+            textstr = '$\\mathit{:}$ = {:.2f}, {:}\n$\\rho$ = {:.2f}, {:}'.format('{r}', r, get_p_val_string(r_p),
                                                                                  rho, get_p_val_string(rho_p))
             ax.text(0.05, 0.975, textstr, transform=ax.transAxes, fontsize=fontsize,
                     verticalalignment='top')
@@ -540,5 +541,4 @@ def plot_iodata(
 
     # reset rc defaults (keep Arial as the default font)
     mpl.rcdefaults()
-    from src import use_arial
     use_arial()

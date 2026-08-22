@@ -11,6 +11,13 @@ torch.multiprocessing.set_sharing_strategy('file_system')
 from src.neural_network import train_helper, ModelStateManager, ModelDataManager
 from src import utils
 from src.io_utils import build_config, print_config
+import gc
+import time
+import h5py
+import multiprocessing as mp
+from src.neural_network import train_helper_with_gpu
+from src.spatial_null import spin_permutations
+import traceback
 
 warnings.simplefilter(action='ignore', category=FutureWarning)
 warnings.simplefilter(action='ignore', category=RuntimeWarning)
@@ -20,8 +27,6 @@ warnings.simplefilter(action='ignore', category=UserWarning)
 
 def cleanup_and_exit(exit_code, message):
     """Clean up resources that prevent script exit, and force exit"""
-    import gc
-    import time
     
     print("Cleaning up for script exit...", flush=True)
     
@@ -34,7 +39,6 @@ def cleanup_and_exit(exit_code, message):
     
     # 2. HDF5 cleanup  
     try:
-        import h5py
         for obj_id in h5py.h5f.get_obj_ids(h5py.h5f.OBJ_ALL):
             try:
                 h5py.h5o.close(obj_id)
@@ -45,7 +49,6 @@ def cleanup_and_exit(exit_code, message):
     
     # 3. Multiprocessing cleanup
     try:
-        import multiprocessing as mp
         for p in mp.active_children():
             p.terminate()
             p.join(timeout=0.5)
@@ -74,7 +77,6 @@ def train_helper_with_gpu_assignment(run_gpu_pair, config):
     This needs to be at module level to be pickleable
     """
     run, gpu_id = run_gpu_pair
-    from src.neural_network import train_helper_with_gpu
     return train_helper_with_gpu(run, config, gpu_id)
 
 
@@ -191,7 +193,6 @@ def train_single(config):
                     gpu_assignments = [None] * len(rem_runs)
                 
                 # Sequential processing with GPU rotation
-                from src.neural_network import train_helper_with_gpu
                 for i, run in enumerate(rem_runs):
                     gpu_id = gpu_assignments[i] if gpu_assignments[i] is not None else None
                     outputs = train_helper_with_gpu(run, config, gpu_id)
@@ -381,7 +382,6 @@ def train(config):
     # fan out into spin-permuted (SA-matched) null geometries, or train the single model
     null_perms = int(config.get('null_perms', 0) or 0)
     if null_perms and regularization_kernel is not None:
-        from src.spatial_null import spin_permutations
         sphere = np.loadtxt(os.path.join(datadir, f'schaefer{hidden_size * 2}_LH_sphere_coords.txt'))
         perms = spin_permutations(sphere, null_perms, seed=int(config.get('null_seed', 0) or 0))
         if device.type == 'cpu' and n_threads and n_threads > 1:
@@ -468,7 +468,6 @@ if __name__ == '__main__':
         exit_code = 1
         error_message = f"Unexpected error: {str(e)}"
         print(f"Error occurred: {e}", file=sys.stderr, flush=True)
-        import traceback
         traceback.print_exc()
 
     finally:

@@ -1,48 +1,26 @@
 """Shared fMRI loading and preprocessing utilities.
 
-Single source of truth for the HCP task/rest fMRI pipeline and spatial kernels
-used by the training-trajectory engine (``biornn_results_dynamics_trajectory.py``)
-and the results notebooks (``biornn_results_dynamics*.ipynb``): host path
-resolution, seeded common-subject selection, global signal regression, spatial
-kernel loading, and the full task/rest loader. These were previously duplicated
-(and drifting) across all three, which is what made the GSR/selection logic hard
-to keep aligned -- everything now lives here.
+The HCP task/rest fMRI pipeline and the spatial kernels built from the atlas:
+seeded common-subject selection, global signal regression, kernel loading, and
+the combined task/rest loader.
+
+Every analysis loads its fMRI through here, so they all see the same subjects in
+the same order -- which is what allows variance-explained values computed in
+different notebooks to be compared subject for subject.
+
+Directory locations come from :mod:`src.config` (``paths.yaml``); ``get_paths``
+is re-exported here for convenience.
 """
 
 import os
 import pickle
-import sys
 
 import numpy as np
 import pandas as pd
 from scipy.spatial import distance
 
 import src.utils as utils
-
-
-# ---------------------------------------------------------------------------
-# Path setup
-# ---------------------------------------------------------------------------
-
-def get_paths(model_params_name):
-    """Return datadir, modeldir, fmridir based on platform/user."""
-    username = os.getenv('USER')
-    if sys.platform == 'darwin':
-        if username == 'ahmad':
-            datadir = '/Users/ahmad/software/snaplab_github/neuro_rnn/data'
-            modeldir = os.path.join('/Users/ahmad/data/rutgers/neuro_rnn/results/pytorch/model', model_params_name)
-            # modeldir = os.path.join('/Volumes/Sabrent_2TB/rutgers/neuro_rnn/data', model_params_name)
-            fmridir = '/Users/ahmad/data/rutgers/hcp'
-    elif sys.platform == 'linux':
-        if username == 'ab2792':
-            datadir = '/home/ab2792/software/snaplab_github/neuro_rnn/data'
-            modeldir = '/home/ab2792/data/neuro_rnn/results/pytorch/model'
-            fmridir = '/home/ab2792/data/HCP/fmri'
-        elif username == 'lindenmp':
-            datadir = '/home/lindenmp/research_projects/neuro_rnn/data'
-            modeldir = '/media/lindenmp/storage_ssd/research_projects/neuro_rnn/results/model_cpu'
-            fmridir = '/media/lindenmp/storage_ssd/research_projects/neuro_rnn/data/fmri'
-    return datadir, modeldir, fmridir
+from src.config import get_paths   # noqa: F401  (re-exported for callers)
 
 
 # ---------------------------------------------------------------------------
@@ -83,41 +61,77 @@ def select_common_subjects(task_subjnames, rest_subjnames, n_fmri_subj,
 # Spatial kernels
 # ---------------------------------------------------------------------------
 
-def load_kernels(datadir, hidden_size=100):
-    """Load and normalize spatial kernel distance/similarity matrices."""
-    eucl_kernel_file = os.path.join(datadir, 'schaefer200_centroids.csv')
-    sa_kernel_file = os.path.join(datadir, 'schaefer200_sa-axis.npy')
-    ut_kernel_file = os.path.join(datadir, 'schaefer200_ut-axis.npy')
-    sf_kernel_file = os.path.join(datadir, 'schaefer200_cyto.npy')
+def kernel_distance_matrices(datadir, hidden_size=100):
+    """Normalized inter-node **distance** matrices, one per spatial kernel.
 
-    centroids = pd.read_csv(eucl_kernel_file)[:hidden_size]
-    dist = distance.squareform(distance.pdist(centroids.set_index('ROI Name'), 'euclidean'))
-    dist_eucl = utils.normalize_x(dist)
+    The companion to :func:`load_kernels`, which returns the ``1 - distance``
+    similarity view. Both are needed: training penalizes weights that disagree
+    with *proximity*, while some analyses want the raw distances. Ask for the
+    one you mean rather than converting by hand, so the sign convention stays
+    explicit at the call site.
+    """
+    centroids = pd.read_csv(
+        os.path.join(datadir, 'schaefer200_centroids.csv'))[:hidden_size]
+    dist = distance.squareform(
+        distance.pdist(centroids.set_index('ROI Name'), 'euclidean'))
 
-    sa_axis = np.load(sa_kernel_file)[:hidden_size]
-    dist_sa = utils.normalize_x(utils.get_brainmap_distance(sa_axis))
-
-    ut_axis = np.load(ut_kernel_file)[:hidden_size]
-    dist_ut = utils.normalize_x(utils.get_brainmap_distance(ut_axis))
-
-    sf_axis = np.load(sf_kernel_file)[:hidden_size]
-    dist_sf = utils.normalize_x(utils.get_brainmap_distance(sf_axis))
-
-    kernel_similarity_matrices = {
-        'euclidean': 1 - dist_eucl,
-        'sa_axis': 1 - dist_sa,
-        'ut_axis': 1 - dist_ut,
-        'sf_axis': 1 - dist_sf,
+    brain_maps = {
+        'sa_axis': 'schaefer200_sa-axis.npy',
+        'ut_axis': 'schaefer200_ut-axis.npy',
+        'sf_axis': 'schaefer200_cyto.npy',
     }
-    return kernel_similarity_matrices
+    out = {'euclidean': utils.normalize_x(dist)}
+    for name, fname in brain_maps.items():
+        brain_map = np.load(os.path.join(datadir, fname))[:hidden_size]
+        out[name] = utils.normalize_x(utils.get_brainmap_distance(brain_map))
+    return out
+
+
+def load_kernels(datadir, hidden_size=100):
+    """Spatial kernel **similarity** matrices (``1 - distance``).
+
+    See :func:`kernel_distance_matrices` for the distance form.
+    """
+    return {name: 1 - dist
+            for name, dist in kernel_distance_matrices(datadir, hidden_size).items()}
 
 
 # ---------------------------------------------------------------------------
 # Task + rest fMRI loader
 # ---------------------------------------------------------------------------
 
-def load_fmri_data(datadir, fmridir, n_fmri_subj, hidden_size=100):
-    """Load task and resting-state fMRI data for a common set of subjects."""
+def load_fmri_data(datadir, fmridir, n_fmri_subj, hidden_size=100,
+                   apply_gsr=True, pick_random_subjects=True, subject_seed=42,
+                   verbose=True):
+    """Load task and resting-state fMRI for a common set of subjects.
+
+    Parameters
+    ----------
+    datadir, fmridir : str
+        Atlas directory and the directory holding the HCP files. ``fmridir``
+        typically points outside the repository -- see ``data_private/README``.
+    n_fmri_subj : int
+        Number of subjects to draw from those present in both task and rest.
+    hidden_size : int
+        Number of parcels to keep, matching the RNN hidden layer (100 = left
+        hemisphere of the Schaefer-200 atlas).
+    apply_gsr : bool
+        Regress the global signal out of both modalities.
+    pick_random_subjects : bool
+        Draw the subject set at random (seeded) rather than taking the first
+        ``n_fmri_subj`` common subjects.
+    subject_seed : int
+        Seeds that draw. Every caller using the same seed gets the identical
+        subject set, which is what lets variance-explained values computed in
+        different notebooks be compared subject-for-subject.
+    verbose : bool
+        Print the resulting shapes.
+
+    Returns
+    -------
+    (task_ts, rest_ts, rest_nsteps, subjects)
+        Time series as ``(time, nodes, subjects)``.
+    """
     tfmri_file = os.path.join(
         fmridir, 'hcpya_tfmri.pkl')
     fmri_data_file = os.path.join(
@@ -149,7 +163,8 @@ def load_fmri_data(datadir, fmridir, n_fmri_subj, hidden_size=100):
 
     # common subjects (seeded so every caller selects the identical set)
     selected = select_common_subjects(
-        fmri_task_subjnames, fmri_rest_subjnames, n_fmri_subj, seed=42)
+        fmri_task_subjnames, fmri_rest_subjnames, n_fmri_subj,
+        seed=subject_seed, pick_random=pick_random_subjects)
     rest_bool = [s in set(selected) for s in fmri_rest_subjnames]
 
     # assemble task fMRI array (over the selected subjects)
@@ -164,11 +179,15 @@ def load_fmri_data(datadir, fmridir, n_fmri_subj, hidden_size=100):
     fmri_rest_nsteps = fmri_rest_ts.shape[0]
 
     # global signal regression (per subject)
-    global_signal_regression(fmri_task_ts)
-    global_signal_regression(fmri_rest_ts)
+    if apply_gsr:
+        global_signal_regression(fmri_task_ts)
+        global_signal_regression(fmri_rest_ts)
 
-    print(f'fMRI subjects selected: {n_fmri_subj}')
-    print(f'fMRI task shape: {fmri_task_ts.shape}')
-    print(f'fMRI rest shape: {fmri_rest_ts.shape}')
+    if verbose:
+        print(f'fMRI subjects selected: {n_fmri_subj} '
+              f'({"seeded random" if pick_random_subjects else "first N"}, '
+              f'seed={subject_seed}); GSR={"on" if apply_gsr else "off"}')
+        print(f'fMRI task shape: {fmri_task_ts.shape}')
+        print(f'fMRI rest shape: {fmri_rest_ts.shape}')
 
     return fmri_task_ts, fmri_rest_ts, fmri_rest_nsteps, selected

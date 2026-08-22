@@ -15,7 +15,9 @@ models.
 """
 
 import numpy as np
+import scipy.stats as stats
 from scipy.optimize import linear_sum_assignment
+from scipy.spatial import distance
 
 
 def _random_rotation(rng):
@@ -114,3 +116,78 @@ def spin_pvalue(real_ve, null_ve):
     """One-sided p: P(null >= real), with the standard +1 correction."""
     null_ve = np.asarray(null_ve)
     return (1 + np.sum(null_ve >= real_ve)) / (len(null_ve) + 1)
+
+
+# ---------------------------------------------------------------------------
+# Spatial autocorrelation and brain-map regression
+# ---------------------------------------------------------------------------
+
+def spatial_weights(coords, row_standardize=True):
+    """Inverse-distance spatial weight matrix from parcel coordinates.
+
+    Parameters
+    ----------
+    coords : (n_nodes, 3) array
+        Parcel centroid coordinates.
+    row_standardize : bool
+        Scale each row to sum to 1, the usual convention for Moran's I.
+    """
+    d = distance.cdist(np.asarray(coords, float), np.asarray(coords, float))
+    with np.errstate(divide='ignore'):
+        w = 1.0 / d
+    np.fill_diagonal(w, 0.0)
+    if row_standardize:
+        w /= w.sum(axis=1, keepdims=True)
+    return w
+
+
+def morans_i(x, weights):
+    """Global Moran's I: spatial autocorrelation of ``x`` under ``weights``.
+
+    Near 0 means no spatial structure; positive means nearby nodes hold similar
+    values. Used to test whether PC loading maps are spatially smooth.
+    """
+    x = np.asarray(x, float)
+    z = x - x.mean()
+    return float((x.size / weights.sum()) * (z @ weights @ z) / np.sum(z ** 2))
+
+
+def map_r2(components, target, k=None):
+    """R^2 from regressing a brain map on the first ``k`` PC loading maps.
+
+    ``components`` is ``(n_pc, n_nodes)``; ``target`` is ``(n_nodes,)``, e.g.
+    the sensorimotor-association axis. ``k`` sets how many components enter the
+    regression and defaults to all of those supplied; it drives the degrees of
+    freedom, so :func:`map_r2_adjusted` and :func:`map_r2_ftest` must be given
+    the same value.
+    """
+    comps = np.asarray(components, float)
+    k = comps.shape[0] if k is None else k
+    X = comps[:k].T
+    X = X - X.mean(axis=0, keepdims=True)
+    y = np.asarray(target, float)
+    y = y - y.mean()
+    beta, *_ = np.linalg.lstsq(X, y, rcond=None)
+    return 1.0 - float(((y - X @ beta) ** 2).sum()) / float((y ** 2).sum())
+
+
+def map_r2_adjusted(r2, n, k):
+    """Adjusted R^2: penalises the free fit gained from ``k`` predictors.
+
+    With only ~100 parcels and 5 predictors the inflation is not negligible,
+    which is why the paper reports the adjusted value.
+    """
+    return float(1.0 - (1.0 - r2) * (n - 1) / (n - k - 1))
+
+
+def map_r2_ftest(r2, n, k):
+    """p-value of the regression F-test for an R^2 with ``k`` predictors."""
+    f = (r2 / k) / ((1.0 - r2) / (n - k - 1))
+    return float(stats.f.sf(f, k, n - k - 1))
+
+
+def map_r2_critical(alpha, n, k):
+    """Smallest R^2 that reaches significance ``alpha`` -- a chance line for plots."""
+    f_crit = stats.f.ppf(1 - alpha, k, n - k - 1)
+    return float((f_crit * k) / (f_crit * k + (n - k - 1)))
+

@@ -8,8 +8,19 @@ spin-permuted kernel, written to a '-null{p}' file (see train_rnn.py); here we t
 each permutation as an ordinary model and summarize them into a null distribution.
 """
 
+import os
+
 import numpy as np
+import pandas as pd
+import statsmodels.formula.api as smf
+import torch
+from joblib import Parallel, delayed
+from scipy import stats as sstats
 from sklearn.decomposition import PCA
+
+import src.pca_utils as pca_utils
+from src.neural_network import (ModelStateManager, create_rnn_and_env_for_model,
+                                run_testing, run_testing_rest)
 
 
 # ---------------------------------------------------------------------------
@@ -69,42 +80,18 @@ def make_null_rows(null_row):
 # ---------------------------------------------------------------------------
 
 def _fit_pca(hidden_activity, n_pc):
-    """Fit PCA on RNN hidden activity (list of [time, nodes] trials, or one array)."""
-    if isinstance(hidden_activity, list):
-        X = np.reshape(np.asarray(hidden_activity),
-                       (len(hidden_activity) * hidden_activity[0].shape[0], -1))
-    else:
-        X = np.asarray(hidden_activity)
-    # svd_solver='full' -> exact, deterministic PCA (the default 'auto' picks the
-    # stochastic randomized solver for tall matrices, injecting solver noise into VE).
-    return PCA(n_components=n_pc, svd_solver='full').fit(X)
+    """Fit PCA on RNN hidden activity. Thin wrapper over :mod:`src.pca_utils`."""
+    return pca_utils.fit_pca(hidden_activity, n_components=n_pc)
 
 
-def _subspace_ve(fmri, pca):
-    """Fraction of a subject's fMRI temporal variance captured by the PCA subspace.
-
-    Mirrors ``pca_projection(..., centering_mean='data')`` summed over components:
-    center the fMRI by its own mean, project onto the fitted PCs, and divide the
-    projected energy by the total.
-    """
-    Xc = fmri - fmri.mean(axis=0, keepdims=True)
-    proj = Xc @ pca.components_.T
-    return np.sum(proj ** 2) / np.sum(Xc ** 2)
+def _subspace_ve(fmri, subspace):
+    """Fraction of one subject's fMRI variance in ``subspace``. See pca_utils."""
+    return pca_utils.subspace_ve(fmri, subspace)
 
 
-def _subspace_ve_all(fmri_ts, pca):
-    """Mean-over-subjects fraction of fMRI temporal variance in the PCA subspace.
-
-    Vectorized equivalent of ``mean(_subspace_ve(fmri_ts[:, :, s], pca) for s ...)``:
-    one BLAS/einsum pass over all subjects instead of a per-subject Python loop, so
-    the (GIL-bound) inner loop parallelizes across joblib threads. ``fmri_ts`` is
-    (time, nodes, subjects).
-    """
-    Xc = fmri_ts - fmri_ts.mean(axis=0, keepdims=True)               # (T, N, S)
-    proj = np.einsum('tns,kn->tks', Xc, pca.components_, optimize=True)  # (T, k, S)
-    num = np.einsum('tks,tks->s', proj, proj)                        # (S,)
-    den = np.einsum('tns,tns->s', Xc, Xc)                            # (S,)
-    return float(np.mean(num / den))
+def _subspace_ve_all(fmri_ts, subspace):
+    """Subject-averaged :func:`_subspace_ve`. See pca_utils."""
+    return pca_utils.subspace_ve_all(fmri_ts, subspace)
 
 
 def model_fmri_ve(rnn, dataset, fmri_task_ts, fmri_rest_ts, n_pc,
@@ -117,11 +104,9 @@ def model_fmri_ve(rnn, dataset, fmri_task_ts, fmri_rest_ts, n_pc,
 
     ``seed`` (int) makes the evaluation deterministic -- a fixed task test battery
     and resting-state noise input -- which is required for noise-free null testing
-    (e.g. the fixed-initialization spin null). ``None`` keeps the legacy stochastic
+    (e.g. the fixed-initialization spin null). ``None`` gives a stochastic
     evaluation. Returns {'task', 'rest', 'accuracy'}.
     """
-    import torch
-    from src.neural_network import run_testing, run_testing_rest
     torch.set_num_threads(1)
 
     if rest_nsteps is None:
@@ -150,7 +135,6 @@ def runs_fmri_ve(run_models, fmri_task_ts, fmri_rest_ts, n_pc,
     same ``model_fmri_ve`` used for the null so the comparison is apples-to-apples.
     ``seed`` makes evaluation deterministic (see ``model_fmri_ve``).
     """
-    from joblib import Parallel, delayed
     res = Parallel(n_jobs=n_jobs, prefer='threads')(
         delayed(model_fmri_ve)(m['rnn'], m['dataset'], fmri_task_ts, fmri_rest_ts,
                                n_pc, n_trials, rest_nsteps, baseline, seed)
@@ -183,8 +167,6 @@ def _permutation_ve(perm_row, modeldir, device, epoch, fmri_task_ts, fmri_rest_t
     reached it yet are skipped, so a partially-trained ensemble can be peeked at
     without crashing. Returns NaN means if no run is usable yet.
     """
-    import os
-    from src.neural_network import ModelStateManager, create_rnn_and_env_for_model
     mm = ModelStateManager(os.path.join(modeldir, perm_row['file_str_models']))
     run_ids = mm.get_run_ids()
     if n_runs is not None:
@@ -216,7 +198,6 @@ def compute_null_distribution(null_row, fmri_task_ts, fmri_rest_ts, n_pc, modeld
     Returns {'task', 'rest'} arrays of length n_perms (per-permutation means),
     plus 'epochs_used' and 'n_perms'.
     """
-    from joblib import Parallel, delayed
     perm_rows = make_null_rows(null_row)
     if max_perms is not None:
         perm_rows = perm_rows[:max_perms]
@@ -239,6 +220,125 @@ def compute_null_distribution(null_row, fmri_task_ts, fmri_rest_ts, n_pc, modeld
 
 # ---------------------------------------------------------------------------
 # Real-vs-null comparison
+# ---------------------------------------------------------------------------
+# Random-subspace null
+# ---------------------------------------------------------------------------
+
+def random_orthonormal_subspace(n_features, n_pc, rng):
+    """One uniformly random ``n_pc``-dimensional subspace of R^n_features.
+
+    Returned as ``(n_pc, n_features)`` rows, matching ``PCA.components_``.
+    """
+    q, _ = np.linalg.qr(rng.standard_normal((n_features, n_pc)))
+    return q[:, :n_pc].T
+
+
+def random_subspace_null(fmri_ts_by_modality, n_pc, n_draws=1000, paired=False,
+                         seed=0, node_idx=None):
+    """Null distribution of fMRI variance explained by random subspaces.
+
+    ``n_draws`` is the number of null samples returned, in both modes -- it is
+    never silently doubled or halved to suit the internal draw scheme.
+
+    Two modes, because two different statistics need calibrating:
+
+    ``paired=False`` (default)
+        Draws ``n_draws`` single random subspaces. Calibrates a plain subspace
+        VE -- one RNN's PC subspace predicting fMRI (Figs. 2c, 2d, 3a).
+        Returns ``{'ve': (n_draws,)}`` per modality.
+
+    ``paired=True``
+        Draws ``n_draws`` *pairs* plus each pair's union, because the variance
+        decomposition compares two predictor sets at once (Fig. 3b). Consumes
+        ``2 * n_draws`` subspaces internally but still yields ``n_draws``
+        samples of each decomposition statistic. Returns ``ve_a``, ``ve_b``,
+        ``ve_union``, ``unique_a``, ``unique_b``, ``shared``, each ``(n_draws,)``.
+
+    Note on naming: ``a`` and ``b`` are the two members of a pair, standing in
+    for the task-driven and noise-driven RNN bases. They are unrelated to the
+    ``'task'``/``'rest'`` fMRI modalities, which are keyed separately -- each
+    modality gets its own null, and they are never pooled.
+
+    Parameters
+    ----------
+    fmri_ts_by_modality : dict of str -> (time, nodes, subjects) array
+    n_pc : int
+        Subspace dimensionality; must match the real subspaces being calibrated.
+    n_draws : int
+        Number of null samples to return.
+    paired : bool
+        Draw pairs and decomposition statistics instead of single subspaces.
+    seed : int
+        Seeds the draw sequence, so a given call is exactly reproducible.
+    node_idx : array-like of int, optional
+        Restrict to a subset of nodes (e.g. bystander nodes), applied to both
+        the fMRI and the subspace dimensionality.
+
+    Returns
+    -------
+    dict
+        ``{modality: {component: (n_draws,) subject-averaged VE}}`` plus a
+        ``'meta'`` entry recording ``n_pc``, ``n_draws``, ``paired`` and ``seed``.
+        Each value is already averaged over subjects, so one element is one
+        null sample of the quantity being z-scored.
+    """
+    rng = np.random.default_rng(seed)
+
+    modalities = {}
+    for name, ts in fmri_ts_by_modality.items():
+        ts = np.asarray(ts)
+        modalities[name] = ts[:, node_idx, :] if node_idx is not None else ts
+    n_features = next(iter(modalities.values())).shape[1]
+
+    if paired:
+        components = ('ve_a', 've_b', 've_union', 'unique_a', 'unique_b', 'shared')
+    else:
+        components = ('ve',)
+    out = {mod: {c: np.zeros(n_draws) for c in components} for mod in modalities}
+
+    for draw in range(n_draws):
+        basis_a = random_orthonormal_subspace(n_features, n_pc, rng)
+        if paired:
+            basis_b = random_orthonormal_subspace(n_features, n_pc, rng)
+            basis_union = pca_utils.orth_basis(np.vstack([basis_a, basis_b]))
+
+        for mod, ts in modalities.items():
+            ve_a = pca_utils.subspace_ve_all(ts, basis_a)
+            if not paired:
+                out[mod]['ve'][draw] = ve_a
+                continue
+            ve_b = pca_utils.subspace_ve_all(ts, basis_b)
+            ve_u = pca_utils.subspace_ve_all(ts, basis_union)
+            out[mod]['ve_a'][draw] = ve_a
+            out[mod]['ve_b'][draw] = ve_b
+            out[mod]['ve_union'][draw] = ve_u
+            out[mod]['unique_a'][draw] = ve_u - ve_b
+            out[mod]['unique_b'][draw] = ve_u - ve_a
+            out[mod]['shared'][draw] = ve_a + ve_b - ve_u
+
+    out['meta'] = {'n_pc': n_pc, 'n_draws': n_draws, 'paired': paired,
+                   'seed': seed, 'n_features': n_features}
+    return out
+
+
+def ve_to_z(value, null, modality, component=None):
+    """Standardize a variance-explained value against its matching null.
+
+    ``component`` selects which null statistic to calibrate against, and defaults
+    to the only one present for an unpaired null. A decomposition component must
+    be calibrated against the null distribution of that same component: a
+    ``shared`` value scored against the plain-VE null is not interpretable.
+    """
+    draws = null[modality]
+    if component is None:
+        component = 've' if 've' in draws else None
+        if component is None:
+            raise ValueError(
+                f"this null holds {sorted(draws)}; pass component= explicitly")
+    samples = np.asarray(draws[component], float)
+    return (np.asarray(value, float) - samples.mean()) / samples.std(ddof=1)
+
+
 # ---------------------------------------------------------------------------
 
 def null_stats(real, null_values):
@@ -279,8 +379,6 @@ def representative_run(real_ve_task):
 def _ve_at_run(row, run_index, modeldir, device, epoch, fmri_task_ts, fmri_rest_ts,
                n_pc, n_trials, rest_nsteps, baseline, seed):
     """fMRI VE for one specific run index of a model row (nearest-epoch resolved)."""
-    import os
-    from src.neural_network import ModelStateManager, create_rnn_and_env_for_model
     mm = ModelStateManager(os.path.join(modeldir, row['file_str_models']))
     _, logged_epochs, _ = mm.get_info()
     use_epoch = _nearest_epoch(logged_epochs, epoch)
@@ -301,7 +399,6 @@ def compute_fixed_init_distribution(null_row, fmri_task_ts, fmri_rest_ts, n_pc, 
     Each '-null{p}' file is read by one thread (HDF5-safe). Returns {'task', 'rest'}
     VE arrays (one entry per permutation), plus 'run_index', 'epochs_used', 'n_perms'.
     """
-    from joblib import Parallel, delayed
     run_index = int(null_row.get('null_run', 0) or 0)
     perm_rows = make_null_rows(null_row)
     if max_perms is not None:
@@ -373,7 +470,6 @@ def mixed_null_test(null_runs, real_runs, n_boot=2000, seed=0, use_mixedlm=True,
     Wald contrast (#2): real mean vs the permuted-population mean. A cluster
     bootstrap (resampling permutations and real runs) gives a CI on the headline z.
     """
-    from scipy import stats as sstats
     null_runs = np.asarray(null_runs, dtype=float)
     real_runs = np.asarray(real_runs, dtype=float)
     N, R = null_runs.shape
@@ -450,8 +546,6 @@ def mixed_null_test(null_runs, real_runs, n_boot=2000, seed=0, use_mixedlm=True,
         out['sigma_run'] = float(np.sqrt(np.mean(run_eff ** 2)))
     if use_mixedlm:
         try:
-            import pandas as pd
-            import statsmodels.formula.api as smf
             df = pd.DataFrame({'ve': null_runs.ravel(),
                                'perm': np.repeat(np.arange(N), R),
                                'run': np.tile(np.arange(R), N)})

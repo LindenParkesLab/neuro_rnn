@@ -158,10 +158,23 @@ cython_debug/
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 .idea/
-data/
+# Local path configuration (copy paths.yaml.template -> paths.yaml)
+paths.yaml
+
+# Restricted / non-redistributable data (e.g. HCP fMRI). Everything here is
+# ignored except the README that explains what belongs in it.
+# NOTE: data_public/ is deliberately NOT ignored -- it holds only openly
+# available atlas derivatives and model parameter files, which ship with the
+# repo. Restricted data belongs here in data_private/ instead.
+data_private/*
+!data_private/README.md
+
 results/
 packages/
 scripts/scratch/
+
+# Editor / assistant local settings
+.claude/settings.local.json
 neuro_rnn.code-workspace
 
 # MacOS stuff
