@@ -248,9 +248,62 @@ DelayMatchSampleDistractor1D-v0-520-rnn-tanh-100-32-0.001-100-60000-True-14-27-p
 
 ---
 
+## Reproducing the figures
+
+Four notebooks produce every figure in the paper. Each loads its inputs through
+`paths.yaml`, so once that is configured they can be run in any order — with one
+exception noted below.
+
+| Notebook | Figures | Needs |
+|---|---|---|
+| `biornn_analysis_performance` | 1e, 1f, S1, S2 | models |
+| `biornn_analysis_dynamics` | 2b, 2c, 2d, 2e, S3, S4 | models + fMRI |
+| `biornn_analysis_trajectory` | 3a, 3b, S5, S9 | models + fMRI + trajectory results |
+| `biornn_analysis_topology` | 4, S6, S7, S8 | models + fMRI + trajectory results |
+
+**Without HCP access**, `biornn_analysis_performance` still runs end to end: task
+performance, learning speed and the loss terms need only the trained networks. The other
+three compare network dynamics against empirical fMRI and cannot run without it.
+
+**Trajectory results** are the pickle written by
+`scripts/biornn_results_dynamics_trajectory.py` (see below). Produce it once; the
+trajectory and topology notebooks both read it rather than recomputing.
+
+Figures are written to `figure_dir` from `paths.yaml`, in a subdirectory named after the
+params CSV, and named for the paper figure they produce (`fig2c_...svg`, `figS4_...svg`).
+
+### What the notebooks share
+
+Analysis code lives in `src/`, not in the notebooks, so the figures are built from one
+implementation rather than several:
+
+- `src/performance.py` — learning curves, convergence epochs, paired class statistics
+- `src/dynamics.py` — evaluating trained runs, hidden-state PCA, weight–geometry similarity
+- `src/trajectory.py` — reading the trajectory results, training-phase onsets
+- `src/pca_utils.py` — PCA and subspace-variance machinery
+- `src/null_utils.py` — the random-subspace and spin-permutation nulls
+- `src/topology.py` — graph metrics and connection length
+
+Two consequences worth knowing. **Variance explained is reported as a z-score against a
+random-subspace null** throughout: a five-dimensional subspace captures a non-trivial
+share of fMRI variance purely by virtue of its dimensionality, so raw values cannot be
+read on their own, and z ≈ 0 is chance. Every figure computes it through the same
+function, so the scales are comparable. And **evaluation is seeded**: the task battery
+and noise drive are random draws, so an unseeded run would shift every downstream value
+between executions.
+
+### The analysis epoch
+
+Networks are evaluated at the point where every class has reached stable performance.
+That epoch is *derived* from the learning curves rather than hard-coded — the performance
+notebook fits each run's accuracy trajectory, takes the slowest class's criterion, and
+rounds up. For the published sweep it works out to 40,000.
+
+---
+
 ## Analyses
 
-These require trained models, and (except where noted) empirical fMRI in `data_private/`.
+These require trained models, and (except where noted) empirical fMRI.
 
 **`scripts/biornn_results_dynamics_trajectory.py`** — the main analysis engine. Computes
 weight–kernel similarity, fMRI variance explained, and network topology across training
