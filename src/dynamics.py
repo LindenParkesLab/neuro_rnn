@@ -282,3 +282,49 @@ def subject_geometry_kernels(coords_file, subjects, hidden_size=100,
         dist = distance.squareform(distance.pdist(xyz, 'euclidean'))
         out.append(1.0 - utils.normalize_x(dist, normalization))
     return np.asarray(out)
+
+
+# ---------------------------------------------------------------------------
+# Task-evoked vs intrinsic dynamics (Fig. 3b)
+# ---------------------------------------------------------------------------
+
+def variance_decomposition(result, fmri_ts):
+    """Split the fMRI variance a run explains into unique and shared parts.
+
+    The same network is driven two ways: by the task, and by unstructured noise.
+    Each regime yields a subspace, and together they span a pooled basis. The
+    variance one regime explains that the other cannot is its *unique*
+    contribution; what both account for is *shared*, and is attributable to the
+    architecture rather than to either input.
+
+    Component names match those of
+    :func:`src.null_utils.random_subspace_null` with ``paired=True``, so a value
+    can be calibrated against the null of the same component.
+
+    Parameters
+    ----------
+    result : dict
+        Output of :func:`evaluate_run`, holding both fitted subspaces.
+    fmri_ts : (time, nodes, subjects) array
+        The empirical modality to explain.
+
+    Returns
+    -------
+    dict
+        ``ve_a`` (task-driven), ``ve_b`` (noise-driven), ``ve_union``,
+        ``unique_a``, ``unique_b``, ``shared``, and ``union_rank`` -- normally
+        ``2 * n_pc``, lower if the two subspaces overlap.
+    """
+    basis_task = result['pca_task'].components_
+    basis_noise = result['pca_rest'].components_
+    basis_union = pca_utils.orth_basis(np.vstack([basis_task, basis_noise]))
+
+    ve_a = pca_utils.subspace_ve_all(fmri_ts, basis_task)
+    ve_b = pca_utils.subspace_ve_all(fmri_ts, basis_noise)
+    ve_union = pca_utils.subspace_ve_all(fmri_ts, basis_union)
+
+    return {'ve_a': ve_a, 've_b': ve_b, 've_union': ve_union,
+            'unique_a': ve_union - ve_b,
+            'unique_b': ve_union - ve_a,
+            'shared': ve_a + ve_b - ve_union,
+            'union_rank': basis_union.shape[0]}
