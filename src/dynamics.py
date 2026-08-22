@@ -62,7 +62,7 @@ def resolve_epoch(model_info, model_dir, epoch):
 
 
 def evaluate_run(model_info, run, epoch, model_dir, device=None, n_trials=100,
-                 rest_nsteps=1200, n_pc=5, seed=EVAL_SEED):
+                 rest_nsteps=1200, n_pc=5, seed=EVAL_SEED, return_hidden=False):
     """Drive one trained run under task and noise input, and summarise with PCA.
 
     Parameters
@@ -88,6 +88,9 @@ def evaluate_run(model_info, run, epoch, model_dir, device=None, n_trials=100,
     seed : int or None
         Seeds the task battery and the noise drive. ``None`` draws both afresh,
         so results will differ between calls -- see the module docstring.
+    return_hidden : bool
+        Also return the raw hidden-state trajectories, e.g. to compute the
+        network's own functional connectivity.
 
     Returns
     -------
@@ -111,9 +114,13 @@ def evaluate_run(model_info, run, epoch, model_dir, device=None, n_trials=100,
     pca_task, ve_task = pca_utils.fit_pca(hidden_task, n_pc, return_variance=True)
     pca_rest, ve_rest = pca_utils.fit_pca(hidden_rest, n_pc, return_variance=True)
 
-    return {'accuracy': accuracy, 'n_pc': n_pc,
-            'pca_task': pca_task, 'pca_rest': pca_rest,
-            've_task': ve_task, 've_rest': ve_rest}
+    out = {'accuracy': accuracy, 'n_pc': n_pc,
+           'pca_task': pca_task, 'pca_rest': pca_rest,
+           've_task': ve_task, 've_rest': ve_rest}
+    if return_hidden:
+        out['hidden_task'] = hidden_task
+        out['hidden_rest'] = hidden_rest
+    return out
 
 
 def fmri_variance_explained(result, fmri_task_ts, fmri_rest_ts):
@@ -328,3 +335,23 @@ def variance_decomposition(result, fmri_ts):
             'unique_b': ve_union - ve_a,
             'shared': ve_a + ve_b - ve_union,
             'union_rank': basis_union.shape[0]}
+
+
+def model_functional_connectivity(hidden_activity, nodes=None):
+    """Functional connectivity of a network's own hidden activity.
+
+    Concatenates trials into one time series and correlates nodes, giving the
+    model-side counterpart of an empirical FC matrix.
+
+    Parameters
+    ----------
+    hidden_activity : list of (time, nodes) arrays, or one array
+        Hidden-state trajectories, as returned by
+        :func:`evaluate_run` with ``return_hidden=True``.
+    nodes : array-like of int, optional
+        Restrict to a subset, e.g. the bystander nodes.
+    """
+    activity = pca_utils.stack_trials(hidden_activity)
+    if nodes is not None:
+        activity = activity[:, np.asarray(nodes, int)]
+    return utils.compute_fc(activity)

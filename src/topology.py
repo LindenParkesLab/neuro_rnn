@@ -160,3 +160,60 @@ def compute_reference_similarity(A_rnn_raw, ref_mat):
         'strength_spearman': float(
             stats.spearmanr(np.sum(A, axis=1), np.sum(R, axis=1)).correlation),
     }
+
+
+def parcel_distances(datadir, hidden_size=100, atlas_parcels=200):
+    """Euclidean distances between parcel centroids, in the atlas coordinate units.
+
+    These are the raw inter-regional distances, **not** the normalized kernel the
+    networks were regularized with: connection lengths are a physical quantity
+    and should be read on the atlas scale.
+    """
+    import os
+    import pandas as pd
+    from scipy.spatial import distance
+
+    centroids = pd.read_csv(
+        os.path.join(datadir, f'schaefer{atlas_parcels}_centroids.csv'))[:hidden_size]
+    return distance.squareform(
+        distance.pdist(centroids.set_index('ROI Name'), 'euclidean'))
+
+
+def connection_length_topq(weights, distances, q=0.8):
+    """Mean physical length of the strongest edges.
+
+    Ranks the off-diagonal, non-zero connections by ``|weight|``, keeps the
+    strongest ``1 - q`` of them -- the same edges the other topology metrics are
+    computed on -- and returns the mean Euclidean distance those edges span.
+
+    Rising values mean the network is investing in long-range connections, which
+    a purely distance-penalized network would avoid.
+
+    Parameters
+    ----------
+    weights : (n, n) array
+        Recurrent weight submatrix for the nodes of interest.
+    distances : (n, n) array
+        Matching inter-node distances, e.g. from :func:`parcel_distances`.
+    q : float
+        Quantile threshold; 0.8 keeps the strongest 20%.
+
+    Returns
+    -------
+    float
+        NaN if no non-zero edges survive.
+    """
+    magnitude = np.abs(np.asarray(weights, float)).copy()
+    np.fill_diagonal(magnitude, 0.0)
+
+    off_diagonal = ~np.eye(magnitude.shape[0], dtype=bool)
+    w = magnitude[off_diagonal]
+    d = np.asarray(distances, float)[off_diagonal]
+
+    nonzero = w > 0
+    if not nonzero.any():
+        return np.nan
+    w, d = w[nonzero], d[nonzero]
+
+    keep = w >= np.quantile(w, q)
+    return float(np.mean(d[keep])) if keep.any() else np.nan
