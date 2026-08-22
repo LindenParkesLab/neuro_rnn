@@ -28,6 +28,7 @@ from scipy.optimize import curve_fit
 from scipy.stats import rankdata, wilcoxon
 
 import src.utils as utils
+from src.utils import significance_stars   # noqa: F401  (re-exported)
 from src.config import get_paths
 from src.neural_network import ModelDataManager
 
@@ -114,8 +115,8 @@ def load_performance(model_params_name, rows=(0, 1, 2),
         n_runs, logged_epochs, _ = manager.get_info()
         final_epoch = logged_epochs[-1]
 
-        # log_freq is recorded in the saved config; fall back to inferring it
-        # from the trace length if an older run did not store it.
+        # Prefer the log_freq recorded in the saved config; if a config does not
+        # carry it, infer it from the length of the accuracy trace.
         log_freq = _read_log_freq(model_dir, row.file_str_outputs)
 
         accuracy = manager.load_key_across_runs('test_accuracy', epoch=final_epoch)
@@ -367,14 +368,3 @@ def compare_classes(fits, labels):
     for res, p_adj in zip(results, holm_bonferroni([r['p'] for r in results])):
         res['p_holm'] = float(p_adj)
     return results
-
-
-def significance_stars(p):
-    """Conventional significance markers for annotating plots."""
-    if p < 1e-3:
-        return '***'
-    if p < 1e-2:
-        return '**'
-    if p < 0.05:
-        return '*'
-    return 'ns'

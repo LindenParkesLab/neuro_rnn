@@ -14,6 +14,9 @@ import numpy as np
 import pandas as pd
 from scipy.spatial import distance
 
+import matplotlib
+import matplotlib.pyplot as plt
+
 import src.utils as utils
 from src.fmri_io import get_paths, load_fmri_data
 from src.spatial_null import (
@@ -59,9 +62,7 @@ def main():
 
     # figure for the headline k = 5
     try:
-        import matplotlib
         matplotlib.use('Agg')
-        import matplotlib.pyplot as plt
         utils.set_font_size(11)
         fig, axes = plt.subplots(1, 2, figsize=(9, 3.2))
         for ax, label in zip(axes, ('task', 'rest')):

@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 
 from src.config import get_paths
+import torch
 
 def parse_weight_init_value(value):
     """
@@ -715,7 +716,6 @@ def print_config(config):
     """
     def _fmt(value):
         try:
-            import torch
             if isinstance(value, torch.Tensor):
                 return f'Tensor shape={tuple(value.shape)} dtype={value.dtype}'
             if isinstance(value, torch.device):

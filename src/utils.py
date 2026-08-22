@@ -9,10 +9,12 @@ import scipy.stats as stats
 import os
 import multiprocessing
 import argparse
+import matplotlib.pyplot as plt
+import fnmatch
+import pandas as pd
 
 def set_font_size(font_size=12):
     """Set global matplotlib font (Arial) and sizes consistently across figures."""
-    import matplotlib.pyplot as plt
     plt.rcParams.update({
         'font.family': 'sans-serif',
         'font.sans-serif': ['Arial'],
@@ -713,7 +715,6 @@ def get_n_io(mask_weights=True, hidden_size=100):
 
 
 def get_task_modifier(task):
-    import fnmatch
     delimiter = '-'
     task_subs = task.split(delimiter)
     str_last = str(task_subs[-1])
@@ -1027,7 +1028,6 @@ def get_kernel_label(kernel_type='None', mask_weights=False, reg_weight=0.0, spa
     
 
 def load_params_csv(model_params_csv):
-    import pandas as pd
     df = pd.read_csv(model_params_csv, keep_default_na = False, na_values = ['NaN'])
     kernel_labels = []
     for row in df.itertuples():
@@ -1293,3 +1293,67 @@ def get_optimal_gpu_assignment(n_runs, n_threads=None):
         gpu_assignments.append(gpu_id)
     
     return gpu_assignments
+
+
+# ---------------------------------------------------------------------------
+# Shared analysis helpers
+# ---------------------------------------------------------------------------
+
+def significance_stars(p, ns_label='n.s.'):
+    """Conventional significance markers for annotating plots."""
+    if p < 0.001:
+        return '***'
+    if p < 0.01:
+        return '**'
+    if p < 0.05:
+        return '*'
+    return ns_label
+
+
+def compute_task_variance(hidden_activity, mask=None):
+    """Task, temporal and spatial variance of RNN hidden activity.
+
+    Parameters
+    ----------
+    hidden_activity : (n_trials, n_timepoints, n_nodes) array
+    mask : (n_nodes,) bool array, optional
+        Restrict to a subset of nodes.
+
+    Returns
+    -------
+    dict
+        ``hidden_activity_task_var`` (variance across trials),
+        ``hidden_activity_temp_var`` (across timepoints),
+        ``hidden_activity_spat_var`` (across nodes), and
+        ``hidden_activity_mean`` (trial mean).
+    """
+    if mask is not None:
+        hidden_activity = hidden_activity[:, :, mask]
+    return {
+        'hidden_activity_task_var': hidden_activity.var(axis=0),
+        'hidden_activity_temp_var': hidden_activity.var(axis=1),
+        'hidden_activity_spat_var': hidden_activity.var(axis=2),
+        'hidden_activity_mean': hidden_activity.mean(axis=0),
+    }
+
+
+def column_means_offdiag(matrix):
+    """Column means of a square matrix, ignoring the diagonal.
+
+    For a subject-by-subject variance-explained matrix this gives, per subject,
+    how well everyone *else* predicts them -- useful for spotting subjects with
+    atypical covariance structure.
+    """
+    m = np.asarray(matrix, float).copy()
+    np.fill_diagonal(m, np.nan)
+    return np.nanmean(m, axis=0)
+
+
+def median_triu(matrix, exclude=None):
+    """Median of the strict upper triangle, optionally dropping some indices."""
+    m = np.asarray(matrix, float).copy()
+    if exclude is not None and len(exclude):
+        keep = np.setdiff1d(np.arange(m.shape[0]), exclude)
+        m = m[np.ix_(keep, keep)]
+    return float(np.median(m[np.triu_indices_from(m, k=1)]))
+

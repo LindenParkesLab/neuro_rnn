@@ -1066,8 +1066,9 @@ def run_testing(dataset, model, n_trials=1000, verbose=True, test_seed=None):
     # Environment
     env = dataset.env
     env.timing = infer_test_timing(env)
-    # test_seed set -> deterministic, reproducible test battery (env.seed() actually
-    # controls trial generation; env.reset(seed=) does not). None -> legacy behaviour.
+    # With test_seed, the battery of test trials is fixed and reproducible; without
+    # it, a fresh battery is drawn on every call. Note that env.seed() is what
+    # governs trial generation here -- env.reset(seed=) does not.
     if test_seed is not None:
         env.seed(int(test_seed))
     env.reset() #no_step=True)
@@ -1081,7 +1082,7 @@ def run_testing(dataset, model, n_trials=1000, verbose=True, test_seed=None):
     with torch.no_grad():
         for trial in range(n_trials):
             if test_seed is None:
-                env.reset(seed=int(3*trial))   # legacy stochastic trials
+                env.reset(seed=int(3*trial))   # unseeded: new trials each call
             env.new_trial()
             ob, gt = env.ob, env.gt
             # print(ob.shape, gt.shape)
@@ -1795,7 +1796,13 @@ class ModelDataManager:
         return data
 
 
-def create_rnn_and_env_for_model(model_info: pd.Series, run, epoch, data_dir: str, device: torch.device):
+def create_rnn_and_env_for_model(model_info: pd.Series, run, epoch, model_dir: str,
+                                 device: torch.device):
+    """Rebuild a trained RNN and its task environment at a given checkpoint.
+
+    ``model_dir`` is where the ``*_models.h5`` files live, i.e. the ``model_dir``
+    of :mod:`src.config` -- not the atlas directory holding the kernels.
+    """
     
     if isinstance(model_info, pd.DataFrame):
         model_info = model_info.iloc[0]
@@ -1811,7 +1818,7 @@ def create_rnn_and_env_for_model(model_info: pd.Series, run, epoch, data_dir: st
     n_classes = dataset.env.action_space.n
     
     # load model state
-    file = os.path.join(data_dir, model_info.file_str_models)
+    file = os.path.join(model_dir, model_info.file_str_models)
     manager = ModelStateManager(file)
     if epoch == -1:
         _, epochs, _ = manager.get_info()

@@ -17,6 +17,7 @@ from nilearn import datasets, plotting as nilearn_plotting
 from sklearn.decomposition import PCA
 
 from src.utils import get_my_colors
+from src import use_arial
 
 CBIG_BASE_URL = (
     'https://raw.githubusercontent.com/ThomasYeoLab/CBIG/master/'
@@ -540,5 +541,4 @@ def plot_iodata(
 
     # reset rc defaults (keep Arial as the default font)
     mpl.rcdefaults()
-    from src import use_arial
     use_arial()

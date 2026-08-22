@@ -51,6 +51,7 @@ from src.neural_network import (
     run_testing_rest,
 )
 import neurogym as ngym
+import torch.nn as nn
 
 warnings.simplefilter(action='ignore', category=FutureWarning)
 warnings.simplefilter(action='ignore', category=RuntimeWarning)
@@ -160,7 +161,6 @@ def compute_losses(rnn, dataset, n_trials, reg_type, reg_weight):
         total_spatial_loss: reg_weight * regularization(W_hh, ...)
         total_loss: task_loss + total_spatial_loss
     """
-    import torch.nn as nn
 
     W_hh = rnn.rnn.weight_hh_l0
     hidden_size = W_hh.shape[0]
