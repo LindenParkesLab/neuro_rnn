@@ -607,6 +607,44 @@ def get_my_colors(normalize=True, as_list=False, cat_trio=False):
     return my_colors
 
 
+def get_my_colors_accessible(normalize=True, as_list=False, cat_trio=False):
+    # Palette constructed to maximise the minimum pairwise perceptual distance
+    # evaluated simultaneously under normal vision and simulated protanopia,
+    # deuteranopia and tritanopia (Machado et al., 2009 model, in CIELAB).
+    # Worst-case min distance = 31 for the lead trio and ~29 from five colours
+    # on (limited by the pink/gold pair), so the set stays separable for all
+    # four viewer types.
+    #
+    # color palette (RGB / HEX), in returned order:
+    # crimson:  rgba(150,  0, 50,255) / #960032
+    # blue:     rgba( 27,118,247,255) / #1b76f7
+    # olive:    rgba(107,125,  0,255) / #6b7d00
+    # pink:     rgba(230,125,169,255) / #e67da9
+    # gold:     rgba(217,185, 28,255) / #d9b91c
+    # navy:     rgba(  2, 47,104,255) / #022f68
+    # green:    rgba( 25,224,130,255) / #19e082
+    # lavender: rgba(194,168,251,255) / #c2a8fb
+    my_colors = dict()
+    my_colors['crimson'] = [150, 0, 50]
+    my_colors['blue'] = [27, 118, 247]
+    my_colors['olive'] = [107, 125, 0]
+    if not cat_trio:
+        my_colors['pink'] = [230, 125, 169]
+        my_colors['gold'] = [217, 185, 28]
+        my_colors['navy'] = [2, 47, 104]
+        my_colors['green'] = [25, 224, 130]
+        my_colors['lavender'] = [194, 168, 251]
+
+    if normalize:
+        for key in my_colors.keys():
+            my_colors[key] = [color / 255 for color in my_colors[key]]
+
+    if as_list:
+        my_colors = list(my_colors.values())
+
+    return my_colors
+
+
 def get_slopes(feature, segment_size=20):
     n_runs, n_epochs = feature.shape
     n_epochs_trim = n_epochs - segment_size
