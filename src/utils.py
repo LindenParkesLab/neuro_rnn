@@ -117,6 +117,22 @@ def load_embedding(kernel_type=None, datadir=None, hidden_size=100, kernel_norma
         brain_map = brain_map[:hidden_size] 
         distance_matrix = get_brainmap_distance(brain_map=brain_map)
         regularization_kernel = normalize_x(distance_matrix, kernel_normalization)
+    elif kernel_type == 'geodesic':
+        # Distances along the cortical surface rather than straight through
+        # the volume. Stored as a full bilateral matrix whose two
+        # cross-hemisphere blocks are nan, since geodesic distance is undefined
+        # across the midline. The schaefer{hidden_size * 2} naming convention
+        # keeps this slice inside the left hemisphere at every hidden_size, so
+        # those nans are never read; the check below only fires on a malformed
+        # or mis-sized file, rather than letting nan reach the kernel.
+        geo_mat = np.load(os.path.join(datadir, 'schaefer{0}_geodesic.npy'.format(hidden_size * 2)))
+        distance_matrix = geo_mat[:hidden_size, :][:, :hidden_size]
+        if not np.isfinite(distance_matrix).all():
+            raise ValueError(
+                f'schaefer{hidden_size * 2}_geodesic.npy has non-finite values in its '
+                f'first {hidden_size} parcels; the nan cross-hemisphere blocks should '
+                'fall outside this slice (expected a bilateral matrix, LH then RH)')
+        regularization_kernel = normalize_x(distance_matrix, kernel_normalization)
     elif kernel_type == 'struct_conn':
         conn_reg_mat = np.load(os.path.join(datadir, 'schaefer{0}_structural_conn_kernel.npy'.format(hidden_size * 2)))
         distance_matrix = conn_reg_mat[:hidden_size, :][:, :hidden_size] 
@@ -1007,6 +1023,8 @@ def get_kernel_label(kernel_type='None', mask_weights=False, reg_weight=0.0, spa
         kernel_label = m + 'Myelin' + delay_label 
     elif kernel_type == 'euclidean':
         kernel_label = m + 'Eucl.' + delay_label 
+    elif kernel_type == 'geodesic':
+        kernel_label = m + 'Geod.' + delay_label 
     elif kernel_type == 'struct_conn':
         kernel_label = m + 'SC' + delay_label 
     elif kernel_type == 'sphere_euclidean':
