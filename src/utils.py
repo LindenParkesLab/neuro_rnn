@@ -1310,6 +1310,40 @@ def significance_stars(p, ns_label='n.s.'):
     return ns_label
 
 
+def format_p(p, floor=0.001):
+    """Render a p-value for a figure annotation, bottoming out at ``floor``."""
+    if not np.isfinite(p):
+        return 'p = n/a'
+    return f'p < {floor:g}' if p < floor else f'p = {p:.3f}'
+
+
+def rank_biserial(diffs):
+    """Matched-pairs rank-biserial correlation.
+
+    Zero differences are dropped, as in the Wilcoxon signed-rank test itself.
+    Returns a value in [-1, 1]; NaN if all differences are zero.
+    """
+    d = np.asarray(diffs, float)
+    d = d[d != 0]
+    if d.size == 0:
+        return np.nan
+    ranks = stats.rankdata(np.abs(d))
+    return (ranks[d > 0].sum() - ranks[d < 0].sum()) / ranks.sum()
+
+
+def holm_bonferroni(pvals):
+    """Holm-Bonferroni step-down adjusted p-values, order preserved."""
+    p = np.asarray(pvals, float)
+    order = np.argsort(p)
+    adjusted = np.empty_like(p)
+    running = 0.0
+    m = p.size
+    for rank, idx in enumerate(order):
+        running = max(running, (m - rank) * p[idx])
+        adjusted[idx] = min(running, 1.0)
+    return adjusted
+
+
 def compute_task_variance(hidden_activity, mask=None):
     """Task, temporal and spatial variance of RNN hidden activity.
 
