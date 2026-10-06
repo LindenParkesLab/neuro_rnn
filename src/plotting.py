@@ -1,4 +1,5 @@
 import sys, os, platform
+import re
 import urllib.request
 from src.utils import get_p_val_string, compute_pc_var, get_my_colors
 
@@ -22,15 +23,32 @@ from src import use_arial
 CBIG_BASE_URL = (
     'https://raw.githubusercontent.com/ThomasYeoLab/CBIG/master/'
     'stable_projects/brain_parcellation/Schaefer2018_LocalGlobal/'
-    'Parcellations/FreeSurfer5.3/fsaverage5/label'
+    'Parcellations/FreeSurfer5.3'
 )
 
+# CBIG publishes annots for these three meshes only, and files the
+# full-resolution one under 'fsaverage' rather than 'fsaverage7'.
+ANNOT_MESH_DIR = {'fsaverage5': 'fsaverage5',
+                  'fsaverage6': 'fsaverage6',
+                  'fsaverage7': 'fsaverage',
+                  'fsaverage': 'fsaverage'}
 
-def _get_schaefer_annot(n_parcels=200, yeo_networks=7, data_dir=None):
-    """Download Schaefer FreeSurfer .annot files if not already cached."""
+
+def _get_schaefer_annot(n_parcels=200, yeo_networks=7, data_dir=None, mesh='fsaverage5'):
+    """Download Schaefer FreeSurfer .annot files if not already cached.
+
+    ``mesh`` picks the surface the labels are defined on; CBIG ships
+    fsaverage5, fsaverage6 and fsaverage7 (see :data:`ANNOT_MESH_DIR`).
+    Files are cached under ``<data_dir>/<mesh>/``.
+    """
     if data_dir is None:
         data_dir = os.path.join(os.path.expanduser('~'), 'nilearn_data', 'schaefer_2018')
-    annot_dir = os.path.join(data_dir, 'fsaverage5')
+    if mesh not in ANNOT_MESH_DIR:
+        raise ValueError(
+            f'no Schaefer annot published for {mesh!r}; '
+            f'choose one of {sorted(set(ANNOT_MESH_DIR))}')
+    mesh_dir = ANNOT_MESH_DIR[mesh]
+    annot_dir = os.path.join(data_dir, mesh_dir)
     os.makedirs(annot_dir, exist_ok=True)
 
     paths = {}
@@ -38,11 +56,15 @@ def _get_schaefer_annot(n_parcels=200, yeo_networks=7, data_dir=None):
         fname = f'{hemi}.Schaefer2018_{n_parcels}Parcels_{yeo_networks}Networks_order.annot'
         local_path = os.path.join(annot_dir, fname)
         if not os.path.isfile(local_path):
-            url = f'{CBIG_BASE_URL}/{fname}'
+            url = f'{CBIG_BASE_URL}/{mesh_dir}/label/{fname}'
             print(f'Downloading {fname} ...')
             urllib.request.urlretrieve(url, local_path)
         paths[hemi] = local_path
     return paths['lh'], paths['rh']
+
+
+_HEMI_SURFACES = {'lh': ('left', 'infl_left', 'sulc_left'),
+                  'rh': ('right', 'infl_right', 'sulc_right')}
 
 
 def _roi_to_vtx(roi_data, annot_file):
@@ -57,10 +79,89 @@ def _roi_to_vtx(roi_data, annot_file):
     return vtx_data
 
 
+def plot_surface_ax(data, ax, hemi='lh', view='lateral', n_parcels=200,
+                    yeo_networks=7, cmap='coolwarm', cblim=None, zoom=1.0,
+                    rasterized=True, data_dir=None):
+    """Draw one parcel map, one hemisphere, one view, into an existing 3-D axes.
+
+    The composable half of :func:`plot_surface`: it creates no figure, adds no
+    colorbar and never calls ``plt.show()``, so callers can assemble grids of
+    surfaces (Fig. 2b) without each panel escaping as a figure of its own.
+
+    Parameters
+    ----------
+    data : array-like
+        Parcel values, either for the requested hemisphere alone
+        (``n_parcels // 2`` values) or for both (``n_parcels``, LH then RH, of
+        which the requested half is taken).
+    ax : matplotlib 3-D axes
+        Created with ``subplot_kw={'projection': '3d'}``.
+    hemi : {'lh', 'rh'}
+    view : str
+        Any nilearn surface view, e.g. 'lateral' or 'medial'.
+    cblim : tuple or None
+        ``(vmin, vmax)``. Defaults to symmetric around zero for diverging
+        colormaps, the data range otherwise. Pass the same value across panels
+        that are meant to be read against each other.
+    zoom : float
+        Camera distance multiplier below 1 moves the camera in, which is how
+        the medial view is matched in size to the lateral one.
+    rasterized : bool
+        Rasterize the mesh when saving to a vector format. A hemisphere is
+        ~20k shaded polygons, so a grid of them runs to tens of megabytes of
+        SVG otherwise. Labels and axes stay vector either way.
+
+    Returns
+    -------
+    (vmin, vmax) : the colour limits used, e.g. to build a shared colorbar.
+    """
+    data = np.asarray(data, dtype=float)
+    half = n_parcels // 2
+    if data.size == half:
+        values = data
+    elif data.size == n_parcels:
+        values = data[:half] if hemi == 'lh' else data[half:]
+    else:
+        raise ValueError(f'expected {half} or {n_parcels} parcel values, got {data.size}')
+
+    lh_annot, rh_annot = _get_schaefer_annot(n_parcels, yeo_networks, data_dir)
+    fsaverage = datasets.fetch_surf_fsaverage(mesh='fsaverage5')
+    vtx = _roi_to_vtx(values, lh_annot if hemi == 'lh' else rh_annot)
+
+    if cblim is not None:
+        vmin, vmax = cblim
+    else:
+        vmax = np.nanmax(np.abs(values))
+        if cmap in ('coolwarm', 'RdBu_r', 'RdYlBu_r', 'bwr', 'seismic'):
+            vmin = -vmax
+        else:
+            vmin = np.nanmin(values)
+
+    hemi_label, surf_key, sulc_key = _HEMI_SURFACES[hemi]
+    nilearn_plotting.plot_surf_roi(
+        fsaverage[surf_key], roi_map=vtx,
+        hemi=hemi_label, view=view,
+        vmin=vmin, vmax=vmax,
+        bg_map=fsaverage[sulc_key], bg_on_data=True,
+        axes=ax, darkness=0.5,
+        cmap=cmap, colorbar=False,
+    )
+    if zoom != 1.0:
+        ax._dist = ax._dist * zoom
+    if rasterized:
+        for collection in ax.collections:
+            collection.set_rasterized(True)
+    return vmin, vmax
+
+
 def plot_surface(data, hemi='lh', n_parcels=200, yeo_networks=7,
                  cmap='coolwarm', cblim=None, title=None,
-                 figsize=(3.5, 2), data_dir=None):
+                 figsize=(3.5, 2), rasterized=True, data_dir=None):
     """Plot parcel-level data on an fsaverage5 inflated surface.
+
+    Lateral over medial, one column per hemisphere, with a colorbar. For a
+    single view drawn into axes you own -- a grid of many maps, say -- use
+    :func:`plot_surface_ax`, which this is a wrapper around.
 
     Parameters
     ----------
@@ -83,6 +184,8 @@ def plot_surface(data, hemi='lh', n_parcels=200, yeo_networks=7,
         Optional title for the figure.
     figsize : tuple
         Figure size (width, height).
+    rasterized : bool
+        Rasterize the meshes in vector output; see :func:`plot_surface_ax`.
     data_dir : str or None
         Directory for caching atlas files. Defaults to ~/nilearn_data/schaefer_2018.
 
@@ -91,74 +194,38 @@ def plot_surface(data, hemi='lh', n_parcels=200, yeo_networks=7,
     fig : matplotlib.figure.Figure
     """
     data = np.asarray(data, dtype=float)
-    lh_annot, rh_annot = _get_schaefer_annot(n_parcels, yeo_networks, data_dir)
-    fsaverage = datasets.fetch_surf_fsaverage(mesh='fsaverage5')
-    half = n_parcels // 2
+    hemis = ['lh', 'rh'] if hemi == 'both' else [hemi]
 
-    # determine which hemispheres to plot
-    if hemi == 'both':
-        hemis = ['lh', 'rh']
-        vtx = {
-            'lh': _roi_to_vtx(data[:half], lh_annot),
-            'rh': _roi_to_vtx(data[half:], rh_annot),
-        }
-    elif hemi == 'lh':
-        hemis = ['lh']
-        vtx = {'lh': _roi_to_vtx(data[:half], lh_annot)}
-    else:
-        hemis = ['rh']
-        vtx = {'rh': _roi_to_vtx(data[:half], rh_annot)}
-
-    # color limits
-    if cblim is not None:
-        vmin, vmax = cblim
-    else:
+    # One colour range across every panel of the figure, so the hemispheres and
+    # views can be read against each other.
+    if cblim is None:
         vmax = np.nanmax(np.abs(data))
-        if cmap in ('coolwarm', 'RdBu_r', 'RdYlBu_r', 'bwr', 'seismic'):
-            vmin = -vmax
-        else:
-            vmin = np.nanmin(data)
+        cblim = (-vmax, vmax) if cmap in ('coolwarm', 'RdBu_r', 'RdYlBu_r',
+                                          'bwr', 'seismic') else (np.nanmin(data), vmax)
 
     # layout: 2 rows (lateral, medial) x n_hemis columns
-    n_cols = len(hemis)
-    fig, axes = plt.subplots(2, n_cols, figsize=figsize,
+    fig, axes = plt.subplots(2, len(hemis), figsize=figsize,
                              subplot_kw={'projection': '3d'},
                              gridspec_kw={'hspace': 0.0, 'wspace': 0.0})
-    if n_cols == 1:
-        axes = axes.reshape(2, 1)
-
-    hemi_map = {'lh': ('left', 'infl_left', 'sulc_left'),
-                'rh': ('right', 'infl_right', 'sulc_right')}
+    axes = np.asarray(axes).reshape(2, len(hemis))
 
     for col, h in enumerate(hemis):
-        hemi_label, surf_key, sulc_key = hemi_map[h]
         for row, view in enumerate(['lateral', 'medial']):
-            ax = axes[row, col]
-            nilearn_plotting.plot_surf_roi(
-                fsaverage[surf_key], roi_map=vtx[h],
-                hemi=hemi_label, view=view,
-                vmin=vmin, vmax=vmax,
-                bg_map=fsaverage[sulc_key], bg_on_data=True,
-                axes=ax, darkness=0.5,
-                cmap=cmap, colorbar=False,
-            )
-            # bring the medial camera closer so both views appear the same size
-            if view == 'medial':
-                ax._dist = ax._dist * 0.85
+            vmin, vmax = plot_surface_ax(
+                data, axes[row, col], hemi=h, view=view, n_parcels=n_parcels,
+                yeo_networks=yeo_networks, cmap=cmap, cblim=cblim,
+                # bring the medial camera closer so both views appear the same size
+                zoom=0.85 if view == 'medial' else 1.0,
+                rasterized=rasterized, data_dir=data_dir)
 
-    # colorbar
-    im = plt.imshow(np.array([[vmin, vmax]]), cmap=cmap, vmin=vmin, vmax=vmax)
-    im.set_visible(False)
-    cb_ax = fig.add_axes([0.82, 0.25, 0.03, 0.5])
-    fig.colorbar(im, cax=cb_ax)
+    mappable = mpl.cm.ScalarMappable(norm=mpl.colors.Normalize(vmin, vmax), cmap=cmap)
+    fig.colorbar(mappable, cax=fig.add_axes([0.82, 0.25, 0.03, 0.5]))
 
     if title is not None:
         fig.suptitle(title, fontsize=10, y=0.95)
 
     fig.subplots_adjust(left=-0.15, right=0.8, bottom=-0.05, top=1.05,
                         wspace=0.0, hspace=0.0)
-    plt.show()
-
     return fig
 
 
@@ -542,3 +609,110 @@ def plot_iodata(
     # reset rc defaults (keep Arial as the default font)
     mpl.rcdefaults()
     use_arial()
+
+# ---------------------------------------------------------------------------
+# SVG post-processing for PowerPoint
+# ---------------------------------------------------------------------------
+#
+# With ``svg.fonttype = 'none'`` matplotlib writes every label as
+#
+#     <text style="fill: #262626; font: 10px 'Arial', 'DejaVu Sans', ...;
+#                  text-anchor: middle" ...>
+#
+# PowerPoint's SVG importer does not reliably parse the CSS ``font:``
+# shorthand. When it fails it drops the size and the anchor together, falling
+# back to its own default, which is what turns an imported figure into
+# oversized, left-aligned, overlapping labels. Splitting the shorthand into
+# discrete presentation attributes is enough to fix it, and leaves the text
+# editable -- unlike ``svg.fonttype = 'path'``, which outlines it.
+#
+# On units: matplotlib sizes the viewport in points and sets a viewBox of the
+# same extent, so one user unit is one point, and the ``10px`` above means ten
+# points. ``font-size`` is therefore written unitless -- i.e. in user units,
+# exactly what ``px`` meant here. Writing ``10pt`` instead would be resolved
+# through the CSS 96-dpi rule and come out a third too large.
+
+_FONT_SHORTHAND = re.compile(r'^\s*(?P<prefix>.*?)(?P<size>[\d.]+)px\s+(?P<family>.+?)\s*$')
+_FONT_STYLES = {'italic', 'oblique'}
+_FONT_WEIGHTS = {'bold', 'bolder', 'lighter', '100', '200', '300', '400',
+                 '500', '600', '700', '800', '900'}
+
+
+def _expand_font_shorthand(value):
+    """Longhand font properties from one CSS ``font:`` shorthand value."""
+    match = _FONT_SHORTHAND.match(value)
+    if match is None:                      # not a shape we recognise
+        return None
+    out = {'font-size': match.group('size'),
+           'font-family': match.group('family').replace("'", '').replace('"', '')}
+    for token in match.group('prefix').split():
+        if token in _FONT_STYLES:
+            out['font-style'] = token
+        elif token in _FONT_WEIGHTS:
+            out['font-weight'] = token
+    return out
+
+
+def _text_attributes(style):
+    """Presentation attributes replacing one ``<text>`` element's style."""
+    attributes = {}
+    for declaration in style.split(';'):
+        if ':' not in declaration:
+            continue
+        prop, _, value = declaration.partition(':')
+        prop, value = prop.strip(), value.strip()
+        if prop != 'font':
+            attributes[prop] = value
+            continue
+        expanded = _expand_font_shorthand(value)
+        if expanded is None:               # leave anything unexpected alone
+            attributes[prop] = value
+        else:
+            attributes.update(expanded)
+    return attributes
+
+
+def svg_for_powerpoint(src, dst=None, suffix='_ppt', drop_null_rotations=True):
+    """Rewrite a matplotlib SVG so PowerPoint imports it without re-flowing text.
+
+    Expands the CSS ``font:`` shorthand on every ``<text>`` element into
+    discrete ``font-family`` / ``font-size`` (and weight / style) presentation
+    attributes, unquoting the family list on the way. ``drop_null_rotations``
+    also removes the identity ``rotate(-0 x y)`` transforms matplotlib puts on
+    unrotated labels, which PowerPoint turns into needlessly rotated text
+    boxes.
+
+    Writes alongside the source with ``suffix`` appended unless ``dst`` is
+    given, and returns the path written. The original is left untouched: keep
+    it for Illustrator and the journal, and hand this one to PowerPoint.
+    """
+    if dst is None:
+        root, ext = os.path.splitext(src)
+        dst = f'{root}{suffix}{ext}'
+
+    with open(src, encoding='utf-8') as f:
+        svg = f.read()
+
+    converted = 0
+
+    def rewrite(match):
+        nonlocal converted
+        element = match.group(0)
+        style = re.search(r'\sstyle="([^"]*)"', element)
+        if style is None:
+            return element
+        attributes = _text_attributes(style.group(1))
+        if 'font-size' not in attributes:
+            return element
+        converted += 1
+        rendered = ' '.join(f'{k}="{v}"' for k, v in attributes.items())
+        return element[:style.start()] + ' ' + rendered + element[style.end():]
+
+    svg = re.sub(r'<text\b[^>]*>', rewrite, svg)
+    if drop_null_rotations:
+        svg = re.sub(r'\stransform="rotate\(-?0(?:\.0+)? [^)]*\)"', '', svg)
+
+    with open(dst, 'w', encoding='utf-8') as f:
+        f.write(svg)
+    print(f'{os.path.basename(dst)}: {converted} text elements converted')
+    return dst

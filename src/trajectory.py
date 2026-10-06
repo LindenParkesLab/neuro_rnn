@@ -1,7 +1,7 @@
 """Training-trajectory analyses: how structure, dynamics and behaviour co-evolve.
 
 Backs the ``biornn_analysis_trajectory`` and ``biornn_analysis_topology``
-notebooks (paper Figs. 3, 4 and Figs. S5, S8, S9).
+notebooks (paper Figs. 3, 4 and Figs. S5, S8, S9, S10).
 
 The heavy computation is done once by ``scripts/biornn_results_dynamics_trajectory.py``,
 which walks every run of every model across training checkpoints and writes a
@@ -173,13 +173,18 @@ def phase_onsets(wk_mean, accuracy_mean, window=SMOOTH_WINDOW,
             'mid_phase_iii': (accuracy_onset + accuracy_mean.size - 1) // 2}
 
 
-def turning_point(y, window=SMOOTH_WINDOW, snr=1.0, ci=None):
+def turning_point(y, window=None, snr=1.0, ci=None):
     """Index of the last prominent extremum of a smoothed trajectory.
 
     Used to start the window over which a metric is related to task accuracy,
     so that the large fluctuations early in training do not dominate.
-    ``ci`` (per-point half-widths) sets a noise floor for prominence.
+    ``ci`` (per-point half-widths) sets a noise floor for prominence, so a bump
+    has to stand out above run-to-run uncertainty to count. ``window`` defaults
+    to a width that grows with the number of checkpoints, so that a single noisy
+    checkpoint cannot pass for a bump on a densely sampled trajectory.
     """
+    y = np.asarray(y, float)
+    window = window or max(SMOOTH_WINDOW, (y.size // 20) * 2 + 1)
     y_smooth = smooth(y, window)
     span = np.nanmax(y_smooth) - np.nanmin(y_smooth)
     floor = snr * np.nanmedian(ci) if ci is not None else 0.0

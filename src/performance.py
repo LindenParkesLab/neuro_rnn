@@ -25,10 +25,11 @@ import os
 
 import numpy as np
 from scipy.optimize import curve_fit
-from scipy.stats import rankdata, wilcoxon
+from scipy.stats import wilcoxon
 
 import src.utils as utils
-from src.utils import significance_stars   # noqa: F401  (re-exported)
+from src.utils import (holm_bonferroni, rank_biserial,   # noqa: F401  (re-exported)
+                       significance_stars)
 from src.config import get_paths
 from src.neural_network import ModelDataManager
 
@@ -301,33 +302,6 @@ def derive_analysis_epoch(criteria, margin=ANALYSIS_EPOCH_MARGIN,
 # ---------------------------------------------------------------------------
 # Paired statistics (Fig. 1f)
 # ---------------------------------------------------------------------------
-
-def rank_biserial(diffs):
-    """Matched-pairs rank-biserial correlation.
-
-    Zero differences are dropped, as in the Wilcoxon signed-rank test itself.
-    Returns a value in [-1, 1]; NaN if all differences are zero.
-    """
-    d = np.asarray(diffs, float)
-    d = d[d != 0]
-    if d.size == 0:
-        return np.nan
-    ranks = rankdata(np.abs(d))
-    return (ranks[d > 0].sum() - ranks[d < 0].sum()) / ranks.sum()
-
-
-def holm_bonferroni(pvals):
-    """Holm-Bonferroni step-down adjusted p-values, order preserved."""
-    p = np.asarray(pvals, float)
-    order = np.argsort(p)
-    adjusted = np.empty_like(p)
-    running = 0.0
-    m = p.size
-    for rank, idx in enumerate(order):
-        running = max(running, (m - rank) * p[idx])
-        adjusted[idx] = min(running, 1.0)
-    return adjusted
-
 
 def compare_classes(fits, labels):
     """Pairwise paired comparisons of convergence epochs between classes.

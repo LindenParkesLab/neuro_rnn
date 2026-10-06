@@ -117,6 +117,22 @@ def load_embedding(kernel_type=None, datadir=None, hidden_size=100, kernel_norma
         brain_map = brain_map[:hidden_size] 
         distance_matrix = get_brainmap_distance(brain_map=brain_map)
         regularization_kernel = normalize_x(distance_matrix, kernel_normalization)
+    elif kernel_type == 'geodesic':
+        # Distances along the cortical surface rather than straight through
+        # the volume. Stored as a full bilateral matrix whose two
+        # cross-hemisphere blocks are nan, since geodesic distance is undefined
+        # across the midline. The schaefer{hidden_size * 2} naming convention
+        # keeps this slice inside the left hemisphere at every hidden_size, so
+        # those nans are never read; the check below only fires on a malformed
+        # or mis-sized file, rather than letting nan reach the kernel.
+        geo_mat = np.load(os.path.join(datadir, 'schaefer{0}_geodesic.npy'.format(hidden_size * 2)))
+        distance_matrix = geo_mat[:hidden_size, :][:, :hidden_size]
+        if not np.isfinite(distance_matrix).all():
+            raise ValueError(
+                f'schaefer{hidden_size * 2}_geodesic.npy has non-finite values in its '
+                f'first {hidden_size} parcels; the nan cross-hemisphere blocks should '
+                'fall outside this slice (expected a bilateral matrix, LH then RH)')
+        regularization_kernel = normalize_x(distance_matrix, kernel_normalization)
     elif kernel_type == 'struct_conn':
         conn_reg_mat = np.load(os.path.join(datadir, 'schaefer{0}_structural_conn_kernel.npy'.format(hidden_size * 2)))
         distance_matrix = conn_reg_mat[:hidden_size, :][:, :hidden_size] 
@@ -591,6 +607,44 @@ def get_my_colors(normalize=True, as_list=False, cat_trio=False):
     return my_colors
 
 
+def get_my_colors_accessible(normalize=True, as_list=False, cat_trio=False):
+    # Palette constructed to maximise the minimum pairwise perceptual distance
+    # evaluated simultaneously under normal vision and simulated protanopia,
+    # deuteranopia and tritanopia (Machado et al., 2009 model, in CIELAB).
+    # Worst-case min distance = 31 for the lead trio and ~29 from five colours
+    # on (limited by the pink/gold pair), so the set stays separable for all
+    # four viewer types.
+    #
+    # color palette (RGB / HEX), in returned order:
+    # crimson:  rgba(150,  0, 50,255) / #960032
+    # olive:    rgba(107,125,  0,255) / #6b7d00
+    # blue:     rgba( 27,118,247,255) / #1b76f7
+    # pink:     rgba(230,125,169,255) / #e67da9
+    # gold:     rgba(217,185, 28,255) / #d9b91c
+    # navy:     rgba(  2, 47,104,255) / #022f68
+    # green:    rgba( 25,224,130,255) / #19e082
+    # lavender: rgba(194,168,251,255) / #c2a8fb
+    my_colors = dict()
+    my_colors['crimson'] = [150, 0, 50]
+    my_colors['olive'] = [107, 125, 0]
+    my_colors['blue'] = [27, 118, 247]
+    if not cat_trio:
+        my_colors['pink'] = [230, 125, 169]
+        my_colors['gold'] = [217, 185, 28]
+        my_colors['navy'] = [2, 47, 104]
+        my_colors['green'] = [25, 224, 130]
+        my_colors['lavender'] = [194, 168, 251]
+
+    if normalize:
+        for key in my_colors.keys():
+            my_colors[key] = [color / 255 for color in my_colors[key]]
+
+    if as_list:
+        my_colors = list(my_colors.values())
+
+    return my_colors
+
+
 def get_slopes(feature, segment_size=20):
     n_runs, n_epochs = feature.shape
     n_epochs_trim = n_epochs - segment_size
@@ -1007,6 +1061,8 @@ def get_kernel_label(kernel_type='None', mask_weights=False, reg_weight=0.0, spa
         kernel_label = m + 'Myelin' + delay_label 
     elif kernel_type == 'euclidean':
         kernel_label = m + 'Eucl.' + delay_label 
+    elif kernel_type == 'geodesic':
+        kernel_label = m + 'Geod.' + delay_label 
     elif kernel_type == 'struct_conn':
         kernel_label = m + 'SC' + delay_label 
     elif kernel_type == 'sphere_euclidean':
@@ -1308,6 +1364,68 @@ def significance_stars(p, ns_label='n.s.'):
     if p < 0.05:
         return '*'
     return ns_label
+
+
+def format_p(p, floor=0.001):
+    """Render a p-value for a figure annotation, bottoming out at ``floor``."""
+    if not np.isfinite(p):
+        return 'p = n/a'
+    return f'p < {floor:g}' if p < floor else f'p = {p:.3f}'
+
+
+def rank_biserial(diffs):
+    """Matched-pairs rank-biserial correlation.
+
+    Zero differences are dropped, as in the Wilcoxon signed-rank test itself.
+    Returns a value in [-1, 1]; NaN if all differences are zero.
+    """
+    d = np.asarray(diffs, float)
+    d = d[d != 0]
+    if d.size == 0:
+        return np.nan
+    ranks = stats.rankdata(np.abs(d))
+    return (ranks[d > 0].sum() - ranks[d < 0].sum()) / ranks.sum()
+
+
+def paired_wilcoxon(a, b):
+    """Wilcoxon signed-rank test on matched observations.
+
+    Runs are seeded by their index, so run *i* of one class shares its
+    initialization and trial stream with run *i* of another: the classes are
+    matched, not independent samples. Pairs missing a value on either side are
+    dropped.
+
+    Returns a dict with ``n_pairs``, ``median_a``, ``median_b``, ``p`` and
+    ``rank_biserial`` (positive when ``a`` tends to exceed ``b``).
+    """
+    a, b = np.asarray(a, float), np.asarray(b, float)
+    if a.shape != b.shape:
+        raise ValueError(f'paired samples must match in shape: {a.shape} vs {b.shape}')
+
+    valid = np.isfinite(a) & np.isfinite(b)
+    a, b = a[valid], b[valid]
+    diffs = a - b
+    # scipy raises on an all-zero difference vector; that case is p = 1 by
+    # definition, with no ranks to form an effect size from.
+    p = 1.0 if diffs.size == 0 or np.all(diffs == 0) else stats.wilcoxon(a, b).pvalue
+    return {'n_pairs': int(a.size),
+            'median_a': float(np.median(a)) if a.size else np.nan,
+            'median_b': float(np.median(b)) if b.size else np.nan,
+            'p': float(p),
+            'rank_biserial': float(rank_biserial(diffs))}
+
+
+def holm_bonferroni(pvals):
+    """Holm-Bonferroni step-down adjusted p-values, order preserved."""
+    p = np.asarray(pvals, float)
+    order = np.argsort(p)
+    adjusted = np.empty_like(p)
+    running = 0.0
+    m = p.size
+    for rank, idx in enumerate(order):
+        running = max(running, (m - rank) * p[idx])
+        adjusted[idx] = min(running, 1.0)
+    return adjusted
 
 
 def compute_task_variance(hidden_activity, mask=None):

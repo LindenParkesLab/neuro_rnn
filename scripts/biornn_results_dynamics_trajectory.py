@@ -541,7 +541,14 @@ def main():
     print(f'Models to process: {n_models}')
 
     # ---- Load kernels ----
-    hidden_size = 100
+    # The parcel count follows the trained hidden layer: every VE and kernel
+    # measure below pairs a node with a parcel, so it cannot be fixed here.
+    if model_params.hidden_size.nunique() != 1:
+        raise ValueError(
+            f'rows {args.rows} of {args.model_params} mix hidden sizes '
+            f'({model_params.hidden_size.tolist()}); they cannot share one atlas')
+    hidden_size = int(model_params.hidden_size.iloc[0])
+    print(f'Nodes / parcels:  {hidden_size}')
     kernel_similarity_matrices = load_kernels(paths.data_dir, hidden_size)
     kernel_types_with_embedding = set(kernel_similarity_matrices.keys())
 
