@@ -258,8 +258,8 @@ exception noted below.
 |---|---|---|
 | `biornn_analysis_performance` | 1e, 1f, S1, S2 | models |
 | `biornn_analysis_dynamics` | 2b, 2c, 2d, 2e, S3, S4 | models + fMRI |
-| `biornn_analysis_trajectory` | 3a, 3b, S5, S9 | models + fMRI + trajectory results |
-| `biornn_analysis_topology` | 4, S6, S7, S8 | models + fMRI + trajectory results |
+| `biornn_analysis_trajectory` | 3a, 3b, S5, S10 | models + fMRI + trajectory results |
+| `biornn_analysis_topology` | 4, S6, S7, S8, S9 | models + fMRI + trajectory results |
 
 **Without HCP access**, `biornn_analysis_performance` still runs end to end: task
 performance, learning speed and the loss terms need only the trained networks. The other

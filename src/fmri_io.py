@@ -27,6 +27,11 @@ from src.config import get_paths   # noqa: F401  (re-exported for callers)
 # fMRI preprocessing
 # ---------------------------------------------------------------------------
 
+# The resting-state array is ordered Tian S1 subcortex first, then the cortical
+# Schaefer parcels, so the cortex starts at this column.
+N_SUBCORTICAL = 16
+
+
 def global_signal_regression(ts):
     """Regress the global signal out of a (time, nodes, subjects) array in place.
 
@@ -114,7 +119,9 @@ def load_fmri_data(datadir, fmridir, n_fmri_subj, hidden_size=100,
         Number of subjects to draw from those present in both task and rest.
     hidden_size : int
         Number of parcels to keep, matching the RNN hidden layer (100 = left
-        hemisphere of the Schaefer-200 atlas).
+        hemisphere of the Schaefer-200 atlas, 200 = both hemispheres). Take it
+        from the ``hidden_size`` column of the params CSV rather than assuming
+        a value, so the parcels and the network nodes cannot fall out of step.
     apply_gsr : bool
         Regress the global signal out of both modalities.
     pick_random_subjects : bool
@@ -159,7 +166,17 @@ def load_fmri_data(datadir, fmridir, n_fmri_subj, hidden_size=100,
     ], axis=1).to_numpy().all(axis=1)
     fmri_rest_data_df = fmri_rest_data_df.iloc[use_rest]
     fmri_rest_subjnames = [str(x) for x in fmri_rest_data_df.Subject]
-    fmri_rest_data_raw = np.load(fmri_data_file)[:, 16:116, 0, use_rest]
+    # Memory-mapped: the file holds subcortex and all four runs, an order of
+    # magnitude more than the cortical slice this reads out of it.
+    fmri_rest_raw = np.load(fmri_data_file, mmap_mode='r')
+    n_cortical = fmri_rest_raw.shape[1] - N_SUBCORTICAL
+    if n_nodes > n_cortical:
+        raise ValueError(
+            f'requested {n_nodes} parcels but {os.path.basename(fmri_data_file)} '
+            f'holds only {n_cortical} cortical parcels')
+    fmri_rest_data_raw = fmri_rest_raw[
+        :, N_SUBCORTICAL:N_SUBCORTICAL + n_nodes, 0, use_rest]
+    del fmri_rest_raw
 
     # common subjects (seeded so every caller selects the identical set)
     selected = select_common_subjects(
@@ -168,6 +185,11 @@ def load_fmri_data(datadir, fmridir, n_fmri_subj, hidden_size=100,
     rest_bool = [s in set(selected) for s in fmri_rest_subjnames]
 
     # assemble task fMRI array (over the selected subjects)
+    n_task_parcels = tfmri[selected[0]][fmri_task_parc][fmri_task_key].shape[1]
+    if n_nodes > n_task_parcels:
+        raise ValueError(
+            f'requested {n_nodes} parcels but {fmri_task_parc} in '
+            f'{os.path.basename(tfmri_file)} holds only {n_task_parcels}')
     fmri_task_nsteps = min(
         tfmri[s][fmri_task_parc][fmri_task_key].shape[0] for s in selected)
     fmri_task_ts = np.zeros((fmri_task_nsteps, n_nodes, n_fmri_subj))

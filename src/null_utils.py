@@ -19,6 +19,7 @@ from scipy import stats as sstats
 from sklearn.decomposition import PCA
 
 import src.pca_utils as pca_utils
+import src.utils as utils
 from src.neural_network import (ModelStateManager, create_rnn_and_env_for_model,
                                 run_testing, run_testing_rest)
 
@@ -337,6 +338,87 @@ def ve_to_z(value, null, modality, component=None):
                 f"this null holds {sorted(draws)}; pass component= explicitly")
     samples = np.asarray(draws[component], float)
     return (np.asarray(value, float) - samples.mean()) / samples.std(ddof=1)
+
+
+# ---------------------------------------------------------------------------
+# Testing a set of runs against the null's upper bound
+# ---------------------------------------------------------------------------
+
+def null_upper_bound(null, modality, component=None, percentile=97.5):
+    """Upper edge of the null distribution for one statistic, in raw VE units.
+
+    The default 97.5th percentile is the upper edge of the two-sided 95% chance
+    band the figures draw at z = +1.96. It is taken empirically rather than from
+    the z scale because the decomposition components' nulls are skewed -- a
+    ``shared`` null in particular piles up near zero -- so +1.96 sigma and the
+    97.5th percentile are not the same threshold there.
+    """
+    draws = null[modality]
+    if component is None:
+        component = 've' if 've' in draws else None
+        if component is None:
+            raise ValueError(
+                f"this null holds {sorted(draws)}; pass component= explicitly")
+    return float(np.percentile(np.asarray(draws[component], float), percentile))
+
+
+def wilcoxon_vs_null_upper(values, null, modality, component=None, percentile=97.5):
+    """One-sided Wilcoxon signed-rank test of per-run VE against the null's upper bound.
+
+    Asks whether the runs sit *above* the upper edge of the null distribution,
+    which is a stricter and more useful claim than clearing the null mean: it is
+    the threshold the chance band in the figures depicts. Runs are the sampling
+    unit, so this is the one-sample signed-rank test on ``values - bound``, with
+    ``alternative='greater'``.
+
+    ``values`` are raw (unstandardized) VE, one per run; the bound is drawn from
+    the matching null ``component``. Because :func:`ve_to_z` is a single affine
+    map shared by every run, the test is identical whether it is run on raw VE
+    or on z -- z versions of the median and bound are returned for reporting
+    alongside the figures.
+
+    Returns a dict with ``n``, ``bound``/``bound_z``, ``median``/``median_z``,
+    ``statistic``, ``p``, ``rank_biserial`` and ``n_above``.
+    """
+    v = np.asarray(values, float)
+    v = v[np.isfinite(v)]
+    bound = null_upper_bound(null, modality, component, percentile)
+    diffs = v - bound
+
+    if v.size == 0 or np.all(diffs == 0):
+        statistic, p = np.nan, 1.0
+    else:
+        res = sstats.wilcoxon(diffs, alternative='greater')
+        statistic, p = float(res.statistic), float(res.pvalue)
+
+    return {
+        'component': component,
+        'percentile': float(percentile),
+        'n': int(v.size),
+        'bound': bound,
+        'bound_z': float(ve_to_z(bound, null, modality, component)),
+        'median': float(np.median(v)) if v.size else np.nan,
+        'median_z': float(np.median(ve_to_z(v, null, modality, component)))
+                    if v.size else np.nan,
+        'statistic': statistic,
+        'p': p,
+        'rank_biserial': float(utils.rank_biserial(diffs)),
+        'n_above': int(np.sum(diffs > 0)),
+    }
+
+
+def wilcoxon_vs_null_upper_all(values_by_component, null, modality, percentile=97.5):
+    """:func:`wilcoxon_vs_null_upper` for several components, Holm-corrected.
+
+    ``values_by_component`` maps component name -> per-run raw VE. Each result
+    gains a ``p_holm`` entry, corrected across the components tested together.
+    """
+    results = {c: wilcoxon_vs_null_upper(v, null, modality, c, percentile)
+               for c, v in values_by_component.items()}
+    names = list(results)
+    for name, p_adj in zip(names, utils.holm_bonferroni([results[n]['p'] for n in names])):
+        results[name]['p_holm'] = float(p_adj)
+    return results
 
 
 # ---------------------------------------------------------------------------

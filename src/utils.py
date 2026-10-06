@@ -617,8 +617,8 @@ def get_my_colors_accessible(normalize=True, as_list=False, cat_trio=False):
     #
     # color palette (RGB / HEX), in returned order:
     # crimson:  rgba(150,  0, 50,255) / #960032
-    # blue:     rgba( 27,118,247,255) / #1b76f7
     # olive:    rgba(107,125,  0,255) / #6b7d00
+    # blue:     rgba( 27,118,247,255) / #1b76f7
     # pink:     rgba(230,125,169,255) / #e67da9
     # gold:     rgba(217,185, 28,255) / #d9b91c
     # navy:     rgba(  2, 47,104,255) / #022f68
@@ -626,8 +626,8 @@ def get_my_colors_accessible(normalize=True, as_list=False, cat_trio=False):
     # lavender: rgba(194,168,251,255) / #c2a8fb
     my_colors = dict()
     my_colors['crimson'] = [150, 0, 50]
-    my_colors['blue'] = [27, 118, 247]
     my_colors['olive'] = [107, 125, 0]
+    my_colors['blue'] = [27, 118, 247]
     if not cat_trio:
         my_colors['pink'] = [230, 125, 169]
         my_colors['gold'] = [217, 185, 28]
@@ -1385,6 +1385,34 @@ def rank_biserial(diffs):
         return np.nan
     ranks = stats.rankdata(np.abs(d))
     return (ranks[d > 0].sum() - ranks[d < 0].sum()) / ranks.sum()
+
+
+def paired_wilcoxon(a, b):
+    """Wilcoxon signed-rank test on matched observations.
+
+    Runs are seeded by their index, so run *i* of one class shares its
+    initialization and trial stream with run *i* of another: the classes are
+    matched, not independent samples. Pairs missing a value on either side are
+    dropped.
+
+    Returns a dict with ``n_pairs``, ``median_a``, ``median_b``, ``p`` and
+    ``rank_biserial`` (positive when ``a`` tends to exceed ``b``).
+    """
+    a, b = np.asarray(a, float), np.asarray(b, float)
+    if a.shape != b.shape:
+        raise ValueError(f'paired samples must match in shape: {a.shape} vs {b.shape}')
+
+    valid = np.isfinite(a) & np.isfinite(b)
+    a, b = a[valid], b[valid]
+    diffs = a - b
+    # scipy raises on an all-zero difference vector; that case is p = 1 by
+    # definition, with no ranks to form an effect size from.
+    p = 1.0 if diffs.size == 0 or np.all(diffs == 0) else stats.wilcoxon(a, b).pvalue
+    return {'n_pairs': int(a.size),
+            'median_a': float(np.median(a)) if a.size else np.nan,
+            'median_b': float(np.median(b)) if b.size else np.nan,
+            'p': float(p),
+            'rank_biserial': float(rank_biserial(diffs))}
 
 
 def holm_bonferroni(pvals):

@@ -218,6 +218,24 @@ def load_hidden_weights(model_info, run, epoch, model_dir):
     return np.asarray(state['rnn.weight_hh_l0'])
 
 
+def mean_abs_hidden_weights(model_info, epoch, model_dir, n_runs):
+    """Run-mean |W_hh| of an ensemble at a checkpoint.
+
+    Magnitudes are averaged rather than signed weights: which connections end
+    up excitatory is arbitrary from run to run, so the signed mean cancels the
+    very spatial pattern the snapshot is meant to show.
+    """
+    epoch = resolve_epoch(model_info, model_dir, epoch)
+    manager = ModelStateManager(os.path.join(model_dir, model_info.file_str_models))
+
+    total = None
+    for run in range(n_runs):
+        state = manager.load_model_states(run, epoch)
+        weights = np.abs(np.asarray(state['rnn.weight_hh_l0'], float))
+        total = weights if total is None else total + weights
+    return total / n_runs
+
+
 def weight_kernel_similarity(weights, kernel, metric='cosine', use_abs=False,
                              center=True):
     """Similarity between a recurrent weight matrix and a spatial kernel.
@@ -355,3 +373,34 @@ def model_functional_connectivity(hidden_activity, nodes=None):
     if nodes is not None:
         activity = activity[:, np.asarray(nodes, int)]
     return utils.compute_fc(activity)
+
+
+def group_model_fc(model_info, epoch, model_dir, n_runs, nodes=None,
+                   n_trials=100, seed=EVAL_SEED, device=None):
+    """Run-averaged functional connectivity of the networks' own activity.
+
+    Every run of the ensemble is driven through the same task battery and its
+    hidden activity correlated; the Fisher-z matrices are then averaged. One
+    run's FC is dominated by that particular network, so it is the group
+    average that is comparable to an empirical FC matrix.
+
+    The environment and network shell are built once and each run's weights are
+    loaded into them, which is what makes averaging over a full ensemble
+    affordable.
+    """
+    device = device or torch.device('cpu')
+    torch.set_num_threads(1)
+
+    epoch = resolve_epoch(model_info, model_dir, epoch)
+    dataset, rnn = create_rnn_and_env_for_model(model_info, 0, epoch, model_dir, device)
+    manager = ModelStateManager(os.path.join(model_dir, model_info.file_str_models))
+
+    total = None
+    for run in range(n_runs):
+        rnn.load_state_dict(manager.load_model_states(run, epoch))
+        rnn.eval()
+        _, _, _, hidden_task, _, _ = run_testing(
+            dataset=dataset, model=rnn, n_trials=n_trials, verbose=False, test_seed=seed)
+        fc = model_functional_connectivity(hidden_task, nodes)
+        total = fc if total is None else total + fc
+    return total / n_runs

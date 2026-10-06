@@ -1187,7 +1187,10 @@ def run_testing_rest(model, n_steps=1000, noise_mean=0.5, noise_sd=0.3, smooth_n
 
 
 def train_helper(run, config):
-    
+
+    # Runs are parallelised across processes, so each worker computes single-threaded.
+    torch.set_num_threads(1)
+
     # add short pause to avoid i/o issues for short training runs
     time.sleep(np.random.uniform(0, 5))
 

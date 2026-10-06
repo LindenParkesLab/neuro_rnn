@@ -61,8 +61,9 @@ n_threads=${N_THREADS:-4}
 if [ ${device} == 'cpu' ] && [ ${n_threads} -gt 1 ]; then
   echo "suspending all cuda devices"
   export CUDA_VISIBLE_DEVICES=""
-  export OMP_NUM_THREADS=${n_threads}
-  export MKL_NUM_THREADS=${n_threads}
+  # n_threads is the number of worker processes. Each worker stays single-threaded.
+  export OMP_NUM_THREADS=1
+  export MKL_NUM_THREADS=1
 elif [ ${device} != 'cpu' ]; then
   n_threads=1
 fi
