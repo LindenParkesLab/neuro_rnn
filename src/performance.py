@@ -91,8 +91,10 @@ def load_performance(model_params_name, rows=(0, 1, 2),
         ``accuracy``        (n_runs, n_points) test accuracy in percent
         ``final_accuracy``  (n_runs,) accuracy at the last logged epoch --
                             the quantity reported in the paper
-        ``loss_task``       (n_runs, n_epochs) per-epoch task loss
-        ``loss_spatial``    (n_runs, n_epochs) per-epoch regularization loss
+        ``loss_task``       (n_runs, n_points) task loss, averaged over the
+                            log_freq epochs ending at each point of ``epochs``
+        ``loss_spatial``    (n_runs, n_points) regularization loss, averaged
+                            the same way
     """
     paths = get_paths(model_params_name)
     model_dir = model_dir or paths.model_dir
@@ -120,9 +122,10 @@ def load_performance(model_params_name, rows=(0, 1, 2),
         # carry it, infer it from the length of the accuracy trace.
         log_freq = _read_log_freq(model_dir, row.file_str_outputs)
 
-        accuracy = manager.load_key_across_runs('test_accuracy', epoch=final_epoch)
-        loss_task = manager.load_key_across_runs('training_loss_task', epoch=final_epoch)
-        loss_spatial = manager.load_key_across_runs('training_loss_spatial', epoch=final_epoch)
+        # one value per log point; training losses are means over each log window
+        accuracy = manager.load_history('test_accuracy')
+        loss_task = manager.load_history('training_loss_task')
+        loss_spatial = manager.load_history('training_loss_spatial')
 
         # Drop the epoch-0 point (untrained network) and convert to percent.
         acc = np.vstack([np.asarray(a)[1:] for a in accuracy]) * 100.0
@@ -137,8 +140,8 @@ def load_performance(model_params_name, rows=(0, 1, 2),
             'epochs': epochs,
             'accuracy': acc,
             'final_accuracy': acc[:, -1],
-            'loss_task': _stack_ragged(loss_task),
-            'loss_spatial': _stack_ragged(loss_spatial),
+            'loss_task': _stack_ragged([np.asarray(l)[1:] for l in loss_task]),
+            'loss_spatial': _stack_ragged([np.asarray(l)[1:] for l in loss_spatial]),
         })
     return out
 
