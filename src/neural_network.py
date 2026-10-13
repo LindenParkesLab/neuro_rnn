@@ -560,6 +560,19 @@ def postanh(x):
     return 0.5 * (torch.tanh(2 * x) + 1)
 
 
+def retanh(x):
+    return torch.relu(torch.tanh(x))
+
+
+_ACTIVATIONS = {
+    'tanh': torch.tanh,
+    'relu': torch.relu,
+    'postanh': postanh,
+    'retanh': retanh,
+    'sigmoid': torch.sigmoid,
+}
+
+
 class CustomRNN(nn.RNNBase):
     def __init__(self, 
                  input_size: int,
@@ -650,9 +663,10 @@ class CustomRNN(nn.RNNBase):
         # Initialize output storage and hidden state
         output = []
         h_n = hx[0]  # Use first layer (single layer support)
-        
+
         # Pre-compute noise
-        if self.training and self.rec_noise > 0:
+        add_noise = self.training and self.rec_noise > 0
+        if add_noise:
             if isinstance(self.alpha, torch.Tensor):
                 # Per-node scale: shape [hidden_size], broadcasts over [seq, batch, hidden]
                 noise_scale = torch.sqrt((2.0 / self.alpha) * self.rec_noise ** 2)
@@ -660,35 +674,22 @@ class CustomRNN(nn.RNNBase):
                 noise_scale = float(np.sqrt((2 / self.alpha) * self.rec_noise ** 2))
             noise = torch.randn((seq_len, batch_size, hidden_size), device=input.device) * noise_scale
 
-        # Main sequence processing loop
-        for t in range(seq_len):
-            x_t = input_data[t]
-            
-            # Map inputs and previous hidden to current time step
-            preactivation = F.linear(x_t, w_ih, b_ih)
-            preactivation += F.linear(h_n, w_hh, b_hh) 
-            
-            # Add recurrent noise during training
-            if self.training and self.rec_noise > 0:
-                preactivation += noise[t]
-            
-            # Apply nonlinearity with alpha interpolation
-            # h_n = (1-alpha) * h_n + alpha * f(preactivation)
-            if self.nonlinearity == "tanh":
-                h_n = torch.lerp(h_n, torch.tanh(preactivation), self.alpha)
-            elif self.nonlinearity == "relu":
-                h_n = torch.lerp(h_n, torch.relu(preactivation), self.alpha)
-            elif self.nonlinearity == "postanh":
-                h_n = torch.lerp(h_n, postanh(preactivation), self.alpha)
-            elif self.nonlinearity == "retanh":
-                h_n = torch.lerp(h_n, torch.relu(torch.tanh(preactivation)), self.alpha)
-            elif self.nonlinearity == "sigmoid":
-                h_n = torch.lerp(h_n, torch.sigmoid(preactivation), self.alpha)
-            
-            # Ensure proper batch dimensions
-            # h_n = h_n.view(batch_size, -1)
-            
-            # Store hidden state for this time step
+        # Input drive for every timestep in one matrix product, with both biases and the
+        # recurrent noise folded in, so each step only adds the recurrent term:
+        # preactivation_t = W_ih x_t + b_ih + b_hh + noise_t + W_hh h_{t-1}
+        bias = None if b_ih is None else b_ih + b_hh
+        drive = F.linear(input_data, w_ih, bias)
+        if add_noise:
+            drive = drive + noise
+        w_hh_t = w_hh.t()
+        activation = _ACTIVATIONS[self.nonlinearity]
+
+        # Main sequence processing loop: h_n = (1-alpha) * h_n + alpha * f(preactivation).
+        # drive.unbind(0) yields every timestep slice from a single autograd node, whose
+        # backward stacks the per-step gradients once; indexing drive[t] would instead
+        # allocate a full-size zero gradient for every step.
+        for drive_t in drive.unbind(0):
+            h_n = torch.lerp(h_n, activation(torch.addmm(drive_t, h_n, w_hh_t)), self.alpha)
             output.append(h_n)
         
         # Stack outputs along sequence dimension
@@ -704,8 +705,8 @@ class CustomRNN(nn.RNNBase):
         return output, hidden
 
     
-# Trial-RNG seeds. Disjoint bands keep training / validation / test batteries from
-# ever sharing a seed, and every value stays < 2**32 (numpy RandomState limit).
+# Trial-RNG seeds. Training streams and the held-out test battery come from disjoint
+# seed bands, and every value stays < 2**32 (numpy RandomState limit).
 #
 # IMPORTANT: this env regenerates its *entire* batch from the current seed, so calling
 # `dataset.seed()` before every batch collapses the batch into identical trials
@@ -716,11 +717,14 @@ class CustomRNN(nn.RNNBase):
 #   - n_epochs-independent: the trial at epoch e depends on (run, e), not on n_epochs;
 #   - run-paired: a model and its spin-null counterpart (same run) see identical trials
 #     at every epoch (the kernel/perm never enters the seed).
-# Different runs (base + run) see different curricula, so run-to-run training noise --
-# including curriculum -- enters the variance-components null's sigma_train.
-_TRAIN_TRIAL_SEED_BASE = 0                  # per-run training stream: seed = base + run
-_VAL_TRIAL_SEED_BASE   = 2_000_000_000      # reservoir-mode validation battery (fixed)
-_TEST_TRIAL_SEED_BASE  = 3_000_000_000      # held-out test battery (fixed across runs & epochs)
+# `dataset.seed(s)` seeds batch slot i with s + i, so each run seeds at
+# base + run * stride and owns the block of slot seeds [s, s + stride). Runs never share
+# a trial stream, so run-to-run training noise -- including curriculum -- enters the
+# variance-components null's sigma_train. A slot's stream is the same at every batch
+# size, so changing batch_size adds or removes slots without altering the others.
+_TRAIN_TRIAL_SEED_BASE   = 0                # per-run training stream: seed = base + run * stride
+_TRAIN_TRIAL_SEED_STRIDE = 10_000           # seed block per run; must be >= batch_size
+_TEST_TRIAL_SEED_BASE    = 3_000_000_000    # held-out test battery (fixed across runs & epochs)
 
 
 def _n_unique_trials(inputs):
@@ -728,6 +732,18 @@ def _n_unique_trials(inputs):
     b = inputs.shape[1]
     flat = np.ascontiguousarray(np.round(inputs, 6).transpose(1, 0, 2)).reshape(b, -1)
     return len(np.unique(flat, axis=0))
+
+
+def _battery_loss(output_activity, labels, prepare_labels):
+    """Cross-entropy over every timestep of every trial in a test battery.
+
+    output_activity and labels are the per-trial lists returned by run_testing. Labels
+    pass through the same preparation as training labels, so this measures the training
+    objective on the held-out trials.
+    """
+    logits = torch.from_numpy(np.concatenate(output_activity)).float()
+    targets = np.concatenate([prepare_labels(l) for l in labels])
+    return F.cross_entropy(logits, torch.from_numpy(targets).long()).item()
 
 
 def run_training(dataset, model, optimizer=None, criterion=None, config=None, scheduler=None,
@@ -743,9 +759,17 @@ def run_training(dataset, model, optimizer=None, criterion=None, config=None, sc
         trim = int((decision - dt) / dt)
     except:
         pass
+
+    def prepare_labels(labels):
+        # Tasks with a decision period train on labels trimmed by fix_labels; for tasks
+        # without one, `decision`/`trim` are undefined and labels pass through unchanged.
+        try:
+            return fix_labels(labels, decision=int(decision / dt), trim=trim)
+        except:
+            return labels
+
     n_epochs = config['n_epochs']
-    batch_size = config['batch_size']
-    half = int(batch_size / 2)
+    n_test_trials = 100
 
     # RC-specific setup
     if reservoir_mode:
@@ -770,7 +794,9 @@ def run_training(dataset, model, optimizer=None, criterion=None, config=None, sc
             raise ValueError(f"reg_type='{reg_type}' does not support 3D time-varying kernels.")
         model.train()
 
-    # output containers — pre-populate from checkpoint data when resuming
+    # output containers — pre-populate from checkpoint data when resuming. Histories hold
+    # one value per log point (see _HISTORY_KEYS); training losses are averaged over each
+    # log window.
     # track model_state whenever it is needed for return or checkpoint writes
     track_model_state = return_models or (checkpoint_callback is not None)
     if initial_data is not None:
@@ -780,6 +806,7 @@ def run_training(dataset, model, optimizer=None, criterion=None, config=None, sc
         validation_loss = list(initial_data['validation_loss'])
         test_accuracy = list(initial_data['test_accuracy'])
         last_accuracy = test_accuracy[-1] if test_accuracy else 0.0
+        last_val_loss = validation_loss[-1] if validation_loss else float('nan')
         if track_model_state:
             model_state = dict()
     else:
@@ -789,18 +816,29 @@ def run_training(dataset, model, optimizer=None, criterion=None, config=None, sc
         validation_loss = []
         test_accuracy = []
         last_accuracy = 0.0
+        last_val_loss = float('nan')
         if track_model_state:
             model_state = dict()
+    # history entries already in the outputs file; each checkpoint writes the rest
+    n_written = len(test_accuracy)
 
+    # sums over the current log window (checkpoints fall on log points, so a window never
+    # spans a resume)
+    window_loss = window_loss_task = window_loss_spatial = 0.0
+    window_epochs = 0
     running_loss = 0.0
-    running_loss_val = 0.0
     running_loss_spatial = 0.0
     epoch_log_timestamp_last = timer()
 
     # Seed the trial stream ONCE per run (continuous stream -> diverse batches; see the
     # _TRAIN_TRIAL_SEED_BASE note). Per-batch reseeding would collapse each batch to
     # identical trials, so we never reseed inside the loop.
-    run_seed = _TRAIN_TRIAL_SEED_BASE + (0 if run is None else int(run))
+    if dataset.batch_size > _TRAIN_TRIAL_SEED_STRIDE:
+        raise ValueError(f'batch_size={dataset.batch_size} exceeds the per-run seed block '
+                         f'(_TRAIN_TRIAL_SEED_STRIDE={_TRAIN_TRIAL_SEED_STRIDE}); runs would share trial streams.')
+    run_seed = _TRAIN_TRIAL_SEED_BASE + (0 if run is None else int(run)) * _TRAIN_TRIAL_SEED_STRIDE
+    if run_seed + dataset.batch_size > _TEST_TRIAL_SEED_BASE:
+        raise ValueError(f'run={run} places training seeds inside the test-battery seed band.')
     dataset.seed(run_seed)
 
     # Separate env for in-loop evaluation, so test/validation seeding never perturbs the
@@ -838,22 +876,12 @@ def run_training(dataset, model, optimizer=None, criterion=None, config=None, sc
                     'reseeding collapses the batch to identical trials (effective batch size 1).')
         if microtiming:
             data_gen_time = time.time() - t1
-        try:
-            labels = fix_labels(labels, decision=int(decision / dt), trim=trim)
-        except:
-            pass
-        # split into train and validation
-        if microtiming:
-            t2 = time.time()
-        inputs_tra = inputs[:, :half, :]
-        labels_tra = labels[:, :half]
-        if microtiming:
-            data_split_time = time.time() - t2
-        # convert to tensor
+        labels = prepare_labels(labels)
+        # convert to tensor; every trial in the batch is a training trial
         if microtiming:
             t3 = time.time()
-        inputs_tra = torch.from_numpy(inputs_tra).type(torch.float).to(device)
-        labels_tra = torch.from_numpy(labels_tra.flatten()).type(torch.long).to(device)
+        inputs_tra = torch.from_numpy(inputs).type(torch.float).to(device)
+        labels_tra = torch.from_numpy(labels.flatten()).type(torch.long).to(device)
         if microtiming:
             data_transfer_time = time.time() - t3
 
@@ -870,11 +898,6 @@ def run_training(dataset, model, optimizer=None, criterion=None, config=None, sc
                 rc_b.addmm_(H_aug.T, Y_oh)
         else:
             # Gradient path: forward, loss, backward, optimize
-            inputs_val = inputs[:, half:, :]
-            labels_val = labels[:, half:]
-            inputs_val = torch.from_numpy(inputs_val).type(torch.float).to(device)
-            labels_val = torch.from_numpy(labels_val.flatten()).type(torch.long).to(device)
-
             optimizer.zero_grad()
 
             if microtiming:
@@ -907,36 +930,43 @@ def run_training(dataset, model, optimizer=None, criterion=None, config=None, sc
             if microtiming:
                 compute_time = time.time() - t4
 
-            # store loss
-            training_loss.append(loss.item())
-            training_loss_task.append(task_loss.item())
-            training_loss_spatial.append(reg.item())
+            # accumulate losses over the log window
+            loss_value = loss.item()
+            reg_value = reg.item()
+            window_loss += loss_value
+            window_loss_task += task_loss.item()
+            window_loss_spatial += reg_value
+            window_epochs += 1
 
             if microtiming:
                 if epoch % 10 == 0:
-                    print(f"Epoch {epoch}: Data gen: {data_gen_time:.3f}s, Data split: {data_split_time:.3f}, Transfer: {data_transfer_time:.3f}s, Compute: {compute_time:.3f}s", flush=True)
+                    print(f"Epoch {epoch}: Data gen: {data_gen_time:.3f}s, Transfer: {data_transfer_time:.3f}s, Compute: {compute_time:.3f}s", flush=True)
 
-            # validation
-            with torch.no_grad():
-                outputs_val, _ = model(inputs_val)
-                loss_val = criterion(outputs_val.view(-1, model.num_classes), labels_val)
-                validation_loss.append(loss_val.item())
-
-            running_loss += loss.item()
-            running_loss_val += loss_val.item()
-            running_loss_spatial += reg.item()
-            n_trials = 100
+            running_loss += loss_value
+            running_loss_spatial += reg_value
 
             # performance logging
             should_log = (epoch == 0) or (epoch > 0 and epoch % log_freq == int(log_freq - 1))
             if should_log:
+                # Evaluation runs in eval mode (no recurrent noise) on a fixed held-out
+                # battery: the same trials at every log point and in every run, so the
+                # logged curves reflect only the model, not test-trial sampling noise.
+                # Accuracy and validation loss both come from this battery, so
+                # validation_loss[i] and test_accuracy[i] describe the same trials and
+                # epoch. It uses a SEPARATE env and draws no torch randomness, so it
+                # never perturbs the training stream.
                 model.eval()
-                # fixed held-out battery (same trials every log point & every run) so the
-                # logged accuracy curve reflects only the model, not test-trial sampling noise.
-                # Uses a SEPARATE env so it never perturbs the training stream.
-                last_accuracy, _, _, _, _, _ = run_testing(dataset=test_dataset, model=model, n_trials=n_trials,
-                                                           verbose=False, test_seed=_TEST_TRIAL_SEED_BASE)
+                last_accuracy, _, battery_labels, _, battery_outputs, _ = run_testing(
+                    dataset=test_dataset, model=model, n_trials=n_test_trials,
+                    verbose=False, test_seed=_TEST_TRIAL_SEED_BASE)
+                last_val_loss = _battery_loss(battery_outputs, battery_labels, prepare_labels)
                 test_accuracy.append(last_accuracy)
+                validation_loss.append(last_val_loss)
+                training_loss.append(window_loss / window_epochs)
+                training_loss_task.append(window_loss_task / window_epochs)
+                training_loss_spatial.append(window_loss_spatial / window_epochs)
+                window_loss = window_loss_task = window_loss_spatial = 0.0
+                window_epochs = 0
                 if track_model_state:
                     model_state[epoch] = copy.deepcopy(model.state_dict())
                 model.train()
@@ -953,15 +983,16 @@ def run_training(dataset, model, optimizer=None, criterion=None, config=None, sc
                 else:
                     print(f'run {run:3d}  |  epoch {epoch:6d}  |  time since last update: {epoch_log_time_elapsed:3.2f}s', flush=True)
             else:
+                # training and spatial losses are averaged over the print window;
+                # validation loss and test accuracy are the most recent logged values
                 n_window = 1 if epoch == 0 else print_freq
                 if run is None:
                     print('epoch {:6d}  |  training loss: {:0.5f}  |  spatial loss: {:0.8f}  |  validation loss: {:0.5f}  |  test accuracy: {:5.1f}%  |  time since last update: {:3.2f}s'
-                        .format(epoch, running_loss / n_window, running_loss_spatial / n_window, running_loss_val / n_window, last_accuracy * 100, epoch_log_time_elapsed), flush=True)
+                        .format(epoch, running_loss / n_window, running_loss_spatial / n_window, last_val_loss, last_accuracy * 100, epoch_log_time_elapsed), flush=True)
                 else:
                     print('run {:3d}  |  epoch {:6d}  |  training loss: {:0.5f}  |  spatial loss: {:0.8f}  |  validation loss: {:0.5f}  |  test accuracy: {:5.1f}%  |  time since last update: {:3.2f}s'
-                        .format(run, epoch, running_loss / n_window, running_loss_spatial / n_window, running_loss_val / n_window, last_accuracy * 100, epoch_log_time_elapsed), flush=True)
+                        .format(run, epoch, running_loss / n_window, running_loss_spatial / n_window, last_val_loss, last_accuracy * 100, epoch_log_time_elapsed), flush=True)
                 running_loss = 0.0
-                running_loss_val = 0.0
                 running_loss_spatial = 0.0
 
         # checkpoint write (gradient path only)
@@ -970,14 +1001,16 @@ def run_training(dataset, model, optimizer=None, criterion=None, config=None, sc
             if should_write:
                 prev_write = epoch - write_freq
                 state_chunk = {ep: state for ep, state in model_state.items() if ep > prev_write}
-                accumulated_data = {
-                    'training_loss':         np.asarray(training_loss),
-                    'training_loss_task':    np.asarray(training_loss_task),
-                    'training_loss_spatial': np.asarray(training_loss_spatial),
-                    'validation_loss':       np.asarray(validation_loss),
-                    'test_accuracy':         np.asarray(test_accuracy),
+                # history logged since the previous checkpoint
+                history_chunk = {
+                    'training_loss':         np.asarray(training_loss[n_written:]),
+                    'training_loss_task':    np.asarray(training_loss_task[n_written:]),
+                    'training_loss_spatial': np.asarray(training_loss_spatial[n_written:]),
+                    'validation_loss':       np.asarray(validation_loss[n_written:]),
+                    'test_accuracy':         np.asarray(test_accuracy[n_written:]),
                 }
-                checkpoint_callback(epoch, state_chunk, optimizer, scheduler, accumulated_data)
+                checkpoint_callback(epoch, state_chunk, optimizer, scheduler, history_chunk)
+                n_written = len(test_accuracy)
 
     # RC post-loop: solve Ridge regression and compute loss
     if reservoir_mode:
@@ -991,33 +1024,16 @@ def run_training(dataset, model, optimizer=None, criterion=None, config=None, sc
             model.fc.weight.copy_(W[:hidden_size].T)  # (n_classes, hidden)
             model.fc.bias.copy_(W[hidden_size])       # (n_classes,)
 
-        # compute validation loss once over a fixed number of trials
-        n_val_trials = 100
-        rc_criterion = nn.CrossEntropyLoss()
-        running_val_loss = 0.0
+        # test accuracy and validation loss on the fixed held-out battery (separate env),
+        # as in the gradient path
         model.eval()
-        with torch.no_grad():
-            test_dataset.seed(_VAL_TRIAL_SEED_BASE)  # fixed validation battery (seeded once -> diverse)
-            for trial in range(n_val_trials):
-                inputs, labels = test_dataset()
-                try:
-                    labels = fix_labels(labels, decision=int(decision / dt), trim=trim)
-                except:
-                    pass
-
-                inputs_val = torch.from_numpy(inputs[:, half:, :]).float().to(device)
-                labels_val = torch.from_numpy(labels[:, half:].flatten()).long().to(device)
-
-                outputs_val, _ = model(inputs_val)
-                running_val_loss += rc_criterion(outputs_val.view(-1, model.num_classes), labels_val).item()
-
-        # compute test accuracy using run_testing (fixed held-out battery, separate env)
-        accuracy, *_ = run_testing(test_dataset, model, n_trials=1000, verbose=False, test_seed=_TEST_TRIAL_SEED_BASE)
+        accuracy, _, battery_labels, _, battery_outputs, _ = run_testing(
+            test_dataset, model, n_trials=1000, verbose=False, test_seed=_TEST_TRIAL_SEED_BASE)
 
         training_loss = np.array([])
         training_loss_task = np.array([])
         training_loss_spatial = np.array([])
-        validation_loss = np.array([running_val_loss / n_val_trials])
+        validation_loss = np.array([_battery_loss(battery_outputs, battery_labels, prepare_labels)])
         test_accuracy = np.array([accuracy])
 
         print(f'RC: validation loss: {validation_loss[0]:0.5f}  |  test accuracy: {accuracy*100:6.1f}%', flush=True)
@@ -1268,11 +1284,13 @@ def train_helper(run, config):
     criterion = nn.CrossEntropyLoss()
     scheduler = None
 
-    # check for an existing checkpoint and resume if found
+    # check for an existing checkpoint: resume an interrupted run, or, when training
+    # finished but the run's final outputs were never written, produce only those
     models_path  = config.get('models_path')
     outputs_path = config.get('outputs_path')
     start_epoch  = 0
     initial_data = None
+    training_done = False
 
     if models_path and outputs_path:
         model_manager  = ModelStateManager(models_path)
@@ -1283,7 +1301,11 @@ def train_helper(run, config):
 
         if model_epochs and output_epochs:
             last_epoch = min(max(model_epochs), max(output_epochs))
-            if last_epoch < config['n_epochs'] - 1:
+            if last_epoch == config['n_epochs'] - 1:
+                print(f'run {run:03d}: training complete; writing final outputs', flush=True)
+                model.load_state_dict(model_manager.load_model_states(run, last_epoch))
+                training_done = True
+            else:
                 print(f'run {run:03d}: resuming from epoch {last_epoch + 1}', flush=True)
                 start_epoch = last_epoch + 1
 
@@ -1291,9 +1313,8 @@ def train_helper(run, config):
                 saved_state = model_manager.load_model_states(run, last_epoch)
                 model.load_state_dict(saved_state)
 
-                # restore optimizer / scheduler state and accumulated metrics
-                saved_data   = output_manager.load_model_data(run, last_epoch)
-                resume_state = saved_data.pop('_resume_state', {})
+                # restore optimizer / scheduler state and the history logged so far
+                resume_state = output_manager.load_model_data(run, last_epoch).get('_resume_state', {})
                 if resume_state.get('optimizer'):
                     optimizer.load_state_dict(resume_state['optimizer'])
                 if scheduler is not None and resume_state.get('scheduler'):
@@ -1308,18 +1329,19 @@ def train_helper(run, config):
                     np.random.set_state(resume_state['numpy_rng'])
                 if resume_state.get('python_rng') is not None:
                     random.setstate(resume_state['python_rng'])
-                initial_data = saved_data  # accumulated metric arrays
+                initial_data = output_manager.load_run_history(run, upto_epoch=last_epoch)
 
     # build checkpoint callback
     checkpoint_callback = None
     if models_path and outputs_path:
-        def checkpoint_callback(epoch, state_chunk, optimizer, scheduler, accumulated_data):
+        def checkpoint_callback(epoch, state_chunk, optimizer, scheduler, history_chunk):
             # save all model states logged since the previous write boundary
             for ep, state in state_chunk.items():
                 model_manager.save_model_states(state, run=run, epoch=ep)
-            # save accumulated metrics + optimizer/scheduler state for resumption
+            # save the history logged since the previous write boundary, plus the
+            # optimizer/scheduler/RNG state needed to resume from this epoch
             checkpoint_data = {
-                **accumulated_data,
+                **history_chunk,
                 '_resume_state': {
                     'optimizer': optimizer.state_dict() if optimizer is not None else {},
                     'scheduler': scheduler.state_dict() if scheduler is not None else {},
@@ -1332,43 +1354,43 @@ def train_helper(run, config):
                     'python_rng':     random.getstate(),
                 },
             }
-            output_manager.save_model_data(checkpoint_data, run=run, epoch=epoch)
+            output_manager.save_run_data(checkpoint_data, run=run, epoch=epoch)
 
     # train the model
-    training_loss, validation_loss, test_accuracy, _, training_loss_task, training_loss_spatial \
-        = run_training(dataset=dataset,
-                       model=model,
-                       optimizer=optimizer,
-                       criterion=criterion,
-                       config=config,
-                       scheduler=scheduler,
-                       return_models=True,
-                       print_freq=config['print_freq'],
-                       log_freq=config['log_freq'],
-                       write_freq=config['write_freq'],
-                       run=run,
-                       checkpoint_callback=checkpoint_callback,
-                       start_epoch=start_epoch,
-                       initial_data=initial_data,
-                       reservoir_mode=reservoir_mode)
-    # save model state for RC (no checkpoint_callback during RC training)
-    if reservoir_mode and models_path and outputs_path:
-        last_epoch = config['n_epochs'] - 1
-        model_manager.save_model_states(model.state_dict(), run=run, epoch=last_epoch)
+    if not training_done:
+        training_loss, validation_loss, test_accuracy, _, training_loss_task, training_loss_spatial \
+            = run_training(dataset=dataset,
+                           model=model,
+                           optimizer=optimizer,
+                           criterion=criterion,
+                           config=config,
+                           scheduler=scheduler,
+                           return_models=True,
+                           print_freq=config['print_freq'],
+                           log_freq=config['log_freq'],
+                           write_freq=config['write_freq'],
+                           run=run,
+                           checkpoint_callback=checkpoint_callback,
+                           start_epoch=start_epoch,
+                           initial_data=initial_data,
+                           reservoir_mode=reservoir_mode)
+        # save model state for RC (no checkpoint_callback during RC training)
+        if reservoir_mode and models_path and outputs_path:
+            last_epoch = config['n_epochs'] - 1
+            model_manager.save_model_states(model.state_dict(), run=run, epoch=last_epoch)
 
-    # get all outputs for final model
+    # get all outputs for final model: noiseless (eval mode) responses to the fixed
+    # held-out battery used for in-training evaluation, so every run's final activity
+    # covers the same trials
+    model.eval()
     _, inputs, labels, hidden_activity, output_activity, info \
         = run_testing(dataset=dataset,
                       model=model,
-                      n_trials=n_trials)
+                      n_trials=n_trials,
+                      test_seed=_TEST_TRIAL_SEED_BASE)
 
     # package all outputs into a dict
     outputs = {
-                'training_loss':         training_loss,
-                'training_loss_task':    training_loss_task,
-                'training_loss_spatial': training_loss_spatial,
-                'validation_loss':       validation_loss,
-                'test_accuracy':         test_accuracy,
                 'inputs':                inputs,
                 'labels':                labels,
                 'hidden_activity':       hidden_activity,
@@ -1377,6 +1399,18 @@ def train_helper(run, config):
                 'run':                   run,
                 'device':                config['device'],
                 }
+    # Checkpoints have already written the gradient-path histories to the outputs file,
+    # one chunk per checkpoint. Histories no checkpoint wrote (reservoir mode, or training
+    # without output files) travel with the final outputs.
+    histories_checkpointed = checkpoint_callback is not None and not reservoir_mode
+    if not histories_checkpointed:
+        outputs.update({
+                'training_loss':         training_loss,
+                'training_loss_task':    training_loss_task,
+                'training_loss_spatial': training_loss_spatial,
+                'validation_loss':       validation_loss,
+                'test_accuracy':         test_accuracy,
+                })
 
     return outputs
 
@@ -1622,6 +1656,40 @@ class ModelStateManager:
         return data
 
 
+# Training histories: one value per log point (epoch 0 and every log_freq-th epoch after
+# it). test_accuracy and validation_loss are measured at the log epoch; the training losses
+# are means over the log window, i.e. the epochs after the previous log point up to and
+# including the log epoch.
+_HISTORY_KEYS = ('training_loss', 'training_loss_task', 'training_loss_spatial',
+                 'validation_loss', 'test_accuracy')
+# File attribute marking an outputs file whose groups hold per-checkpoint history chunks.
+# Files without it hold the cumulative history (per-epoch training losses) in every group.
+_HISTORY_LAYOUT_ATTR = 'history_layout'
+_HISTORY_LAYOUT_CHUNKED = 'log_point_chunks'
+# Key whose presence in a run's final epoch group marks the run's final outputs as written.
+_FINAL_OUTPUT_KEY = 'hidden_activity'
+
+
+def _log_window_means(history):
+    """Reduce the per-epoch training losses of a cumulative history to log-window means.
+
+    The number of logged test_accuracy values fixes log_freq; arrays that already hold
+    one value per log point (or cannot be split into log windows) are returned as is.
+    """
+    n_log = len(history.get('test_accuracy', ()))
+    reduced = {}
+    for key, values in history.items():
+        values = np.asarray(values)
+        n = len(values)
+        if key != 'test_accuracy' and n_log > 1 and n > n_log and n % (n_log - 1) == 0:
+            log_freq = n // (n_log - 1)
+            ends = np.r_[0, np.arange(1, n_log) * log_freq - 1]
+            starts = np.r_[0, ends[:-1] + 1]
+            values = np.array([values[s:e + 1].mean() for s, e in zip(starts, ends)])
+        reduced[key] = values
+    return reduced
+
+
 class ModelDataManager:
     """
     Description
@@ -1630,6 +1698,14 @@ class ModelDataManager:
 
     It allows the user to access the data from a specific model by specifying the training run
     and epoch. The file structure mirrors ModelStateManager: run_{N}/epoch_{M}/key.
+
+    Training writes one group per checkpoint epoch, holding the history logged since the
+    previous checkpoint (one value per log point; see _HISTORY_KEYS); the run's single
+    resume state sits in its latest checkpoint group. The final epoch's group also receives
+    the run's final outputs (test battery inputs, labels and activity) and keeps the final
+    resume state.
+    Read histories with load_history / load_run_history, which join the chunks; they also
+    read files whose groups hold cumulative histories.
 
     First initialize a new manager for the file you'd like to interact with:
     >>> manager = ModelDataManager('path/to/file.h5')
@@ -1640,8 +1716,12 @@ class ModelDataManager:
     -
     >>> manager.get_info()
     >>> manager.get_run_epochs(run)
+    >>> manager.run_is_complete(run, final_epoch)
+    >>> manager.save_run_data(data, run, epoch)
     >>> manager.save_model_data(data, run, epoch)
     >>> manager.load_model_data(run, epoch)
+    >>> manager.load_run_history(run, upto_epoch)
+    >>> manager.load_history(key)
     >>> manager.load_key_across_runs(key, epoch)
     """
 
@@ -1677,6 +1757,53 @@ class ModelDataManager:
                 return sorted(int(k.replace('epoch_', '')) for k in run_group.keys())
             except KeyError:
                 return []
+
+    def run_is_complete(self, run, final_epoch):
+        """
+        True once a run's final outputs are in the file (in its final epoch group).
+
+        >>> done = manager.run_is_complete(run=0, final_epoch=n_epochs - 1)
+        """
+        if not os.path.isfile(self.filename):
+            return False
+        with h5py.File(self.filename, 'r') as models_file:
+            return f'run_{run}/epoch_{final_epoch}/{_FINAL_OUTPUT_KEY}' in models_file
+
+    def save_run_data(self, data, run, epoch, max_retries=10):
+        """
+        Write one group of a run's training data: a checkpoint or the run's final outputs.
+
+        A run keeps at most one '_resume_state', from its latest checkpoint. When `data`
+        carries a new one, every existing copy is deleted before `data` is written, within
+        the same file session, so HDF5 reuses the freed space and the file does not grow with
+        the number of checkpoints. Final outputs carry none, so a completed run keeps the
+        resume state of its final checkpoint: the optimizer and RNG state needed to continue
+        its training past n_epochs. Keys already present in the target group are replaced.
+
+        >>> manager.save_run_data(checkpoint_data, run=my_run, epoch=my_epoch)
+        """
+        jitter = np.random.default_rng()  # retry delays never touch the global numpy RNG
+        for attempt in range(max_retries):
+            try:
+                with h5py.File(self.filename, 'a') as models_file:
+                    if _HISTORY_LAYOUT_ATTR not in models_file.attrs:
+                        models_file.attrs[_HISTORY_LAYOUT_ATTR] = _HISTORY_LAYOUT_CHUNKED
+                    run_group = models_file.require_group(f'run_{run}')
+                    if '_resume_state' in data:
+                        for epoch_key in run_group:
+                            if '_resume_state' in run_group[epoch_key]:
+                                del run_group[epoch_key]['_resume_state']
+                    epoch_group = run_group.require_group(f'epoch_{epoch}')
+                    for key, value in data.items():
+                        if key in epoch_group:
+                            del epoch_group[key]
+                        epoch_group.create_dataset(key, data=np.void(pickle.dumps(value)))
+                return
+            except BlockingIOError:
+                if attempt < max_retries - 1:
+                    time.sleep(jitter.uniform(0.5, 2.0))
+                else:
+                    raise
 
     def save_model_data(self, data, run=None, epoch=None):
         """
@@ -1776,6 +1903,56 @@ class ModelDataManager:
                     run_data[ep] = load_data_for_run_and_epoch(self.filename, r, ep)
                 loaded_data.append(run_data)
             return loaded_data
+
+    def load_run_history(self, run, upto_epoch=None):
+        """
+        Training history of one run: a dict of arrays with one value per log point for
+        each key in _HISTORY_KEYS, covering checkpoints up to and including `upto_epoch`
+        (default: all).
+
+        In chunked files the per-checkpoint chunks are joined in epoch order. In files whose
+        groups hold cumulative histories, the last group up to `upto_epoch` already holds
+        the whole history, and its per-epoch training losses are reduced to log-window
+        means, so both layouts return the same quantities.
+
+        >>> history = manager.load_run_history(run=0)
+        """
+        with h5py.File(self.filename, 'r') as models_file:
+            return self._run_history(models_file, run, upto_epoch, _HISTORY_KEYS)
+
+    def load_history(self, key):
+        """
+        One training history across all runs: a list with one array per run, in run order,
+        each holding one value per log point (see load_run_history).
+
+        E.g., to load the test accuracy curves of all runs:
+        >>> test_accuracy_all = manager.load_history('test_accuracy')
+        """
+        with h5py.File(self.filename, 'r') as models_file:
+            runs = sorted(int(r.replace('run_', '')) for r in models_file.keys() if r.startswith('run_'))
+            return [self._run_history(models_file, run, None, (key,))[key] for run in runs]
+
+    @staticmethod
+    def _run_history(models_file, run, upto_epoch, keys):
+        run_group = models_file[f'run_{run}']
+        epochs = sorted(int(e.replace('epoch_', '')) for e in run_group.keys())
+        if upto_epoch is not None:
+            epochs = [e for e in epochs if e <= upto_epoch]
+
+        def load(epoch, key):
+            return pickle.loads(run_group[f'epoch_{epoch}/{key}'][()].tobytes())
+
+        if models_file.attrs.get(_HISTORY_LAYOUT_ATTR) == _HISTORY_LAYOUT_CHUNKED:
+            history = {}
+            for key in keys:
+                chunks = [np.atleast_1d(load(e, key)) for e in epochs if key in run_group[f'epoch_{e}']]
+                history[key] = np.concatenate(chunks) if chunks else np.array([])
+            return history
+        # cumulative layout: test_accuracy fixes the log windows for the training losses
+        last = epochs[-1]
+        stored = [k for k in set(keys) | {'test_accuracy'} if k in run_group[f'epoch_{last}']]
+        history = _log_window_means({k: load(last, k) for k in stored})
+        return {k: history[k] for k in keys if k in history}
 
     def load_key_across_runs(self, key, epoch):
         """

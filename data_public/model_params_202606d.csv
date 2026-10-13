@@ -3,3 +3,4 @@ DelayMatchSampleDistractor1D-v0,5,50,0.1,0.05,-0.01 0.01,rnn-tanh,100,32,0.001,6
 DelayMatchSampleDistractor1D-v0,5,50,0.1,0.05,-0.01 0.01,rnn-tanh,100,32,0.001,60000,l2s,0.002,None,mean,True,100,0,0,0,
 DelayMatchSampleDistractor1D-v0,5,50,0.1,0.05,-0.01 0.01,rnn-tanh,100,32,0.001,60000,pearson_l2s,0.002,euclidean,mean,True,100,0,0,0,
 DelayMatchSampleDistractor1D-v0,5,50,0.1,0.05,-0.01 0.01,rnn-tanh,100,32,0.001,40000,pearson_l2s,0.002,euclidean,mean,True,5,200,0,0,14 24 32 57 87
+DelayMatchSampleDistractor1D-v0,5,50,0.1,0.05,-0.01 0.01,rnn-tanh,100,32,0.001,60000,pearson_l2s,0.002,geodesic,mean,True,100,0,0,0,

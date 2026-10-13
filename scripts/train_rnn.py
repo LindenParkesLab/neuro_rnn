@@ -111,17 +111,12 @@ def train_single(config):
     # [null_run, null_run + n_runs); see _run_ids)
     runs = _run_ids(config)
 
-    # check which runs are complete, partial, or not yet started
+    # check which runs are complete, partial, or not yet started. A run is complete once
+    # its final outputs are written; a run with checkpoints but no final outputs is partial
+    # (train_helper resumes it, or only writes its final outputs if training finished).
     if os.path.isfile(models_path) and os.path.isfile(outputs_path):
         print('found existing output files! checking for missing/incomplete runs...')
-        complete_runs = set()
-        for run in runs:
-            model_epochs  = model_manager.get_run_epochs(run)
-            output_epochs = output_manager.get_run_epochs(run)
-            if model_epochs and output_epochs:
-                last_epoch = min(max(model_epochs), max(output_epochs))
-                if last_epoch == n_epochs - 1:
-                    complete_runs.add(run)
+        complete_runs = {run for run in runs if output_manager.run_is_complete(run, n_epochs - 1)}
         n_complete = len(complete_runs)
         n_partial  = sum(
             1 for r in runs
@@ -181,7 +176,7 @@ def train_single(config):
                     # Save outputs
                     print(f'Saving outputs for runs {chunk+1}')
                     for idx, run in enumerate(chunk):
-                        output_manager.save_model_data(outputs_list[idx], run=run, epoch=n_epochs - 1)
+                        output_manager.save_run_data(outputs_list[idx], run=run, epoch=n_epochs - 1)
             
             else:
                 # Single GPU or sequential processing
@@ -199,7 +194,7 @@ def train_single(config):
 
                     # Save outputs
                     print(f'Saving outputs for run {run}')
-                    output_manager.save_model_data(outputs, run=run, epoch=n_epochs - 1)
+                    output_manager.save_run_data(outputs, run=run, epoch=n_epochs - 1)
         
         elif device.type == 'mps' or (device.type == 'cpu' and n_threads == 1):
             print(f'Running in serial on {device.type}...')
@@ -208,7 +203,7 @@ def train_single(config):
                 outputs = partial_train_helper(run)
                 # save outputs
                 print(f'saving outputs for run {run}')
-                output_manager.save_model_data(outputs, run=run, epoch=n_epochs - 1)
+                output_manager.save_run_data(outputs, run=run, epoch=n_epochs - 1)
         
         else:
             print(f'Running in parallel on {device.type} using {n_threads} threads...')
@@ -220,7 +215,7 @@ def train_single(config):
                 # save outputs
                 print(f'saving outputs for runs {chunk}')
                 for idx, run in enumerate(chunk):
-                    output_manager.save_model_data(outputs_list[idx], run=run, epoch=n_epochs - 1)
+                    output_manager.save_run_data(outputs_list[idx], run=run, epoch=n_epochs - 1)
         
         # save config (exclude internal runtime keys)
         config_to_save = {k: v for k, v in config.items() if k not in ('models_path', 'outputs_path')}
@@ -260,16 +255,11 @@ def _run_ids(config):
 def _incomplete_runs(models_path, outputs_path, model_manager, output_manager, runs, n_epochs):
     """Runs still needing training for one model file (resume-aware).
 
-    ``runs`` is the explicit list of run indices to check.
+    ``runs`` is the explicit list of run indices to check. A run is complete once its
+    final outputs are written.
     """
     if os.path.isfile(models_path) and os.path.isfile(outputs_path):
-        complete = set()
-        for run in runs:
-            me = model_manager.get_run_epochs(run)
-            oe = output_manager.get_run_epochs(run)
-            if me and oe and min(max(me), max(oe)) == n_epochs - 1:
-                complete.add(run)
-        return [r for r in runs if r not in complete]
+        return [r for r in runs if not output_manager.run_is_complete(r, n_epochs - 1)]
     return list(runs)
 
 
@@ -326,7 +316,7 @@ def train_null_parallel(config, perms):
                 processes=len(chunk), maxtasksperchild=1) as pool:
             results = pool.map(_null_train_job, chunk)
         for perm_index, run, outputs in results:
-            perm_ctx[perm_index]['om'].save_model_data(outputs, run=run, epoch=n_epochs - 1)
+            perm_ctx[perm_index]['om'].save_run_data(outputs, run=run, epoch=n_epochs - 1)
 
     # save each permutation's config (exclude runtime-only keys)
     for ctx in perm_ctx:
